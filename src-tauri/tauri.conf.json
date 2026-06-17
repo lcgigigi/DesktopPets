@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "华力AI桌面助手",
+  "version": "1.0.0",
+  "identifier": "com.huali.ai.mascot",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "mascot",
+        "title": "华力AI桌面助手",
+        "url": "index.html?window=mascot",
+        "width": 188,
+        "height": 188,
+        "decorations": false,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "shadow": false,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "acceptFirstMouse": true,
+        "resizable": false,
+        "visible": false,
+        "skipTaskbar": true,
+        "center": false
+      },
+      {
+        "label": "panel",
+        "title": "华力AI桌面助手",
+        "url": "index.html?window=panel",
+        "width": 390,
+        "height": 118,
+        "decorations": false,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "shadow": false,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "acceptFirstMouse": true,
+        "resizable": false,
+        "visible": false,
+        "skipTaskbar": true,
+        "center": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "华力 AI 桌面助手",
+    "longDescription": "华力 AI 桌面助手试点版，支持一句话创建待办、任务推送和 Web 平台联动。"
+  }
+}

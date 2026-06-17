@@ -1,0 +1,55 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: rgba(0, 0, 0, 0) !important;
+  overflow: hidden;
+}
+
+body {
+  overflow: hidden;
+  font-family:
+    Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #1f2a44;
+  background: rgba(0, 0, 0, 0) !important;
+  letter-spacing: 0;
+  user-select: none;
+}
+
+html[data-window='mascot'],
+body[data-window='mascot'],
+body[data-window='mascot'] #app {
+  width: 188px;
+  height: 188px;
+  background: rgba(0, 0, 0, 0) !important;
+}
+
+html[data-window='panel'],
+body[data-window='panel'],
+body[data-window='panel'] #app {
+  width: 390px;
+  height: 100%;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}

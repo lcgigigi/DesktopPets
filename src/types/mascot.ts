@@ -1,0 +1,19 @@
+export type MascotStatus =
+  | 'idle'
+  | 'hover'
+  | 'thinking'
+  | 'remind'
+  | 'success'
+  | 'error'
+
+export type MascotAnimationState =
+  | 'idle'
+  | 'running-left'
+  | 'running-right'
+  | 'waving'
+  | 'jumping'
+  | 'failed'
+  | 'waiting'
+  | 'remind'
+  | 'success'
+  | 'cooling-office'
