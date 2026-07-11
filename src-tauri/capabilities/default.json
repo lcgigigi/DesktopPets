@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "core:window:allow-set-position",
+    "deep-link:default",
+    "deep-link:allow-register",
     "opener:default",
     "notification:default"
   ]

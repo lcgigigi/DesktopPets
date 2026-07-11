@@ -33,6 +33,11 @@ export const websocketService = {
       return
     }
 
+    if (!env.wsUrl.trim()) {
+      emitStatus('closed')
+      return
+    }
+
     if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) {
       return
     }

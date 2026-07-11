@@ -15,7 +15,7 @@ export const useMascotStore = defineStore('mascot', {
     status: 'idle',
     panelVisible: false,
     alwaysOnTop: true,
-    message: '点击我创建待办'
+    message: ''
   }),
   actions: {
     setStatus(status: MascotStatus) {
@@ -37,14 +37,13 @@ export const useMascotStore = defineStore('mascot', {
       if (autoReset) {
         resetTimer = window.setTimeout(() => {
           this.status = 'idle'
-          this.message = '点击我创建待办'
+          this.message = ''
         }, 2200)
       }
     },
     resetStatus() {
       this.status = 'idle'
-      this.message = '点击我创建待办'
+      this.message = ''
     }
   }
 })
-

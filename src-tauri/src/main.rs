@@ -4,8 +4,12 @@ use tauri::tray::TrayIconBuilder;
 use tauri::window::Color;
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, Position, Size};
 
-const MASCOT_WIDTH: f64 = 188.0;
-const MASCOT_HEIGHT: f64 = 188.0;
+const MASCOT_WIDTH: f64 = 168.0;
+const MASCOT_HEIGHT: f64 = 168.0;
+const MASCOT_NOTIFICATION_WIDTH: f64 = 300.0;
+const MASCOT_NOTIFICATION_HEIGHT: f64 = 348.0;
+const MASCOT_MESSAGE_WIDTH: f64 = 200.0;
+const MASCOT_MESSAGE_HEIGHT: f64 = 232.0;
 const PANEL_WIDTH: f64 = 390.0;
 const PANEL_COMPACT_HEIGHT: f64 = 118.0;
 const PANEL_EXPANDED_HEIGHT: f64 = 118.0;
@@ -16,6 +20,29 @@ const TRANSPARENT: Option<Color> = Some(Color(0, 0, 0, 0));
 fn harden_transparent_window(window: &tauri::WebviewWindow) {
     let _ = window.set_shadow(false);
     let _ = window.set_background_color(TRANSPARENT);
+}
+
+fn mascot_logical_size(mascot: &tauri::WebviewWindow) -> (f64, f64) {
+    let scale = mascot.scale_factor().unwrap_or(1.0);
+    mascot
+        .outer_size()
+        .ok()
+        .map(|size| {
+            let logical = size.to_logical::<f64>(scale);
+            (logical.width, logical.height)
+        })
+        .unwrap_or((MASCOT_WIDTH, MASCOT_HEIGHT))
+}
+
+fn sync_panel_if_visible(app: &tauri::AppHandle) {
+    if let (Some(panel), Some(mascot)) = (
+        app.get_webview_window("panel"),
+        app.get_webview_window("mascot"),
+    ) {
+        if matches!(panel.is_visible(), Ok(true)) {
+            place_panel_near_mascot(&panel, &mascot, false);
+        }
+    }
 }
 
 fn place_bottom_right(window: &tauri::WebviewWindow, width: f64, height: f64) {
@@ -29,6 +56,36 @@ fn place_bottom_right(window: &tauri::WebviewWindow, width: f64, height: f64) {
         let y = screen_pos.y + screen_size.height - height - SCREEN_MARGIN;
         let _ = window.set_position(Position::Logical(LogicalPosition { x, y }));
     }
+}
+
+fn resize_mascot_for_notification(window: &tauri::WebviewWindow, visible: bool, compact: bool) {
+    let (target_width, target_height) = if !visible {
+        (MASCOT_WIDTH, MASCOT_HEIGHT)
+    } else if compact {
+        (MASCOT_MESSAGE_WIDTH, MASCOT_MESSAGE_HEIGHT)
+    } else {
+        (MASCOT_NOTIFICATION_WIDTH, MASCOT_NOTIFICATION_HEIGHT)
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let current_size = window
+        .outer_size()
+        .ok()
+        .map(|size| size.to_logical::<f64>(scale));
+
+    if let (Some(size), Ok(position)) = (current_size, window.outer_position()) {
+        let position = position.to_logical::<f64>(scale);
+        let delta_x = (target_width - size.width) / 2.0;
+        let delta_y = target_height - size.height;
+        let _ = window.set_position(Position::Logical(LogicalPosition {
+            x: position.x - delta_x,
+            y: position.y - delta_y,
+        }));
+    }
+
+    let _ = window.set_size(Size::Logical(LogicalSize {
+        width: target_width,
+        height: target_height,
+    }));
 }
 
 fn panel_height(expanded: bool) -> f64 {
@@ -53,6 +110,7 @@ fn place_panel_near_mascot(
     if let Ok(mascot_pos) = mascot.outer_position() {
         let scale = mascot.scale_factor().unwrap_or(1.0);
         let mascot_pos = mascot_pos.to_logical::<f64>(scale);
+        let (mascot_width, _mascot_height) = mascot_logical_size(mascot);
         let (min_x, max_x) = if let Ok(Some(monitor)) = mascot.current_monitor() {
             let screen_size = monitor.size().to_logical::<f64>(scale);
             let screen_pos = monitor.position().to_logical::<f64>(scale);
@@ -63,7 +121,7 @@ fn place_panel_near_mascot(
         } else {
             (SCREEN_MARGIN, f64::MAX)
         };
-        let raw_x = mascot_pos.x + (MASCOT_WIDTH - PANEL_WIDTH) / 2.0;
+        let raw_x = mascot_pos.x + (mascot_width - PANEL_WIDTH) / 2.0;
         let x = raw_x.clamp(min_x, max_x.max(min_x));
         let y = (mascot_pos.y - height + PANEL_GAP).max(SCREEN_MARGIN);
         let _ = panel.set_position(Position::Logical(LogicalPosition { x, y }));
@@ -71,6 +129,14 @@ fn place_panel_near_mascot(
     }
 
     place_bottom_right(panel, PANEL_WIDTH, height);
+}
+
+#[tauri::command]
+fn set_mascot_position(app: tauri::AppHandle, x: f64, y: f64) {
+    if let Some(mascot) = app.get_webview_window("mascot") {
+        let _ = mascot.set_position(Position::Logical(LogicalPosition { x, y }));
+        sync_panel_if_visible(&app);
+    }
 }
 
 #[tauri::command]
@@ -129,13 +195,13 @@ fn hide_panel_window(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn sync_panel_window(app: tauri::AppHandle) {
-    if let (Some(panel), Some(mascot)) = (
-        app.get_webview_window("panel"),
-        app.get_webview_window("mascot"),
-    ) {
-        if matches!(panel.is_visible(), Ok(true)) {
-            place_panel_near_mascot(&panel, &mascot, false);
-        }
+    sync_panel_if_visible(&app);
+}
+
+#[tauri::command]
+fn set_mascot_notification_visible(app: tauri::AppHandle, visible: bool, compact: Option<bool>) {
+    if let Some(window) = app.get_webview_window("mascot") {
+        resize_mascot_for_notification(&window, visible, compact.unwrap_or(false));
     }
 }
 
@@ -259,6 +325,8 @@ fn open_or_focus_web_url(url: String, match_url: String) -> bool {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
@@ -268,11 +336,21 @@ fn main() {
             show_panel_window,
             hide_panel_window,
             sync_panel_window,
+            set_mascot_position,
+            set_mascot_notification_visible,
             set_panel_expanded,
             exit_app,
             open_or_focus_web_url
         ])
         .setup(|app| {
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(error) = app.deep_link().register_all() {
+                    eprintln!("deep link register failed: {error}");
+                }
+            }
+
             if let Some(window) = app.get_webview_window("mascot") {
                 harden_transparent_window(&window);
                 place_bottom_right(&window, MASCOT_WIDTH, MASCOT_HEIGHT);
@@ -284,8 +362,9 @@ fn main() {
             let open = MenuItem::with_id(app, "open_workbench", "打开工作台", true, None::<&str>)?;
             let show = MenuItem::with_id(app, "show", "显示助手", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide", "隐藏助手", true, None::<&str>)?;
+            let logout = MenuItem::with_id(app, "logout", "退出登录", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &show, &hide, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &show, &hide, &logout, &quit])?;
 
             TrayIconBuilder::new()
                 .tooltip("华力 AI 桌面助手")
@@ -309,6 +388,9 @@ fn main() {
                         if let Some(window) = app.get_webview_window("panel") {
                             let _ = window.hide();
                         }
+                    }
+                    "logout" => {
+                        let _ = app.emit("tray-logout", ());
                     }
                     "quit" => app.exit(0),
                     _ => {}

@@ -25,8 +25,10 @@ body {
 html[data-window='mascot'],
 body[data-window='mascot'],
 body[data-window='mascot'] #app {
-  width: 188px;
-  height: 188px;
+  width: 100%;
+  height: 100%;
+  min-width: 168px;
+  min-height: 168px;
   background: rgba(0, 0, 0, 0) !important;
 }
 
