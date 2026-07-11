@@ -23,7 +23,7 @@ export interface TodoParseResponse {
 }
 
 export interface SmartTodoMain {
-  id?: number
+  id?: string | number
   title?: string
   content?: string
   remark?: string
@@ -33,7 +33,11 @@ export interface SmartTodoMain {
   assigneeNickName?: string | null
   handlerId?: string | null
   handlerNickName?: string | null
+  currentHandlerId?: string | null
+  currentHandlerName?: string | null
+  handleDesc?: string | null
   creatorId?: string | null
+  creatorName?: string | null
   creatorNickName?: string | null
   startDateShow?: string | null
   endDateShow?: string | null
@@ -42,5 +46,11 @@ export interface SmartTodoMain {
 }
 
 export interface SmartTodoDetailResponse {
-  mainTodo?: SmartTodoMain
+  mainTodo?: SmartTodoMain | null
+  childTodoList?: SmartTodoMain[] | null
+}
+
+export interface SmartTodoUser {
+  badge?: string | number | null
+  name?: string | null
 }

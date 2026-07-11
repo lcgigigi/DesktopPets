@@ -163,13 +163,14 @@ export const sysMessageService = {
     messageListeners.add(listener)
     return () => messageListeners.delete(listener)
   },
-  connect(userId: string) {
+  connect(userId: string, options: { force?: boolean } = {}) {
     if (env.enableMock) return
 
     const nextUserId = userId.trim()
     if (!nextUserId) return
 
     if (
+      !options.force &&
       activeUserId === nextUserId &&
       socket &&
       (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)

@@ -1,6 +1,11 @@
 import { request } from './request'
 import { mockParseTodo } from './mock.service'
-import type { SmartTodoDetailResponse, SmartTodoMain, TodoParseResponse } from '../types/todo'
+import type {
+  SmartTodoDetailResponse,
+  SmartTodoMain,
+  SmartTodoUser,
+  TodoParseResponse,
+} from '../types/todo'
 import { env } from '../utils/env'
 
 interface SmartTodoAnalyzeData {
@@ -15,6 +20,9 @@ interface SmartTodoAnalyzeData {
   assigneeIds?: string
   remark?: string
 }
+
+let userNameCache: Map<string, string> | null = null
+let userNameRequest: Promise<Map<string, string>> | null = null
 
 function todayDate() {
   return new Date().toISOString().slice(0, 10)
@@ -62,15 +70,60 @@ function normalizeAnalyzeResult(data: SmartTodoAnalyzeData, sourceText: string):
   }
 }
 
+function extractMainTodo(
+  data: SmartTodoMain | SmartTodoDetailResponse | null | undefined,
+): SmartTodoMain | null {
+  if (!data) return null
+  if ('mainTodo' in data) return (data as SmartTodoDetailResponse).mainTodo ?? null
+  return data as SmartTodoMain
+}
+
 export async function getTodoDetail(todoId: string): Promise<SmartTodoMain | null> {
   const id = todoId.trim()
   if (!id) return null
 
   try {
-    const data = await request.get<unknown, SmartTodoDetailResponse>(`/smart-todo/${encodeURIComponent(id)}`)
-    return data?.mainTodo ?? null
+    const data = await request.get<unknown, SmartTodoMain | SmartTodoDetailResponse>(
+      `/smart-todo/${encodeURIComponent(id)}`,
+    )
+    return extractMainTodo(data)
   } catch {
     return null
+  }
+}
+
+async function loadTodoUserNames() {
+  if (userNameCache) return userNameCache
+  if (userNameRequest) return userNameRequest
+
+  userNameRequest = request
+    .get<unknown, SmartTodoUser[]>('/smart-todo/user-list')
+    .then((users) => {
+      const names = new Map<string, string>()
+      for (const user of users ?? []) {
+        const id = user.badge === null || user.badge === undefined ? '' : String(user.badge).trim()
+        const name = user.name?.trim() || ''
+        if (id && name) names.set(id, name)
+      }
+      userNameCache = names
+      return names
+    })
+    .finally(() => {
+      userNameRequest = null
+    })
+
+  return userNameRequest
+}
+
+export async function resolveTodoUserNames(ids: string[]) {
+  const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+  if (uniqueIds.length === 0) return new Map<string, string>()
+
+  try {
+    const names = await loadTodoUserNames()
+    return new Map(uniqueIds.flatMap((id) => (names.has(id) ? [[id, names.get(id)!]] : [])))
+  } catch {
+    return new Map<string, string>()
   }
 }
 

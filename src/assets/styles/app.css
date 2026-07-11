@@ -349,14 +349,14 @@
 
 .sys-message-tip__body p {
   display: -webkit-box;
-  min-height: 36px;
+  min-height: 54px;
   margin: 0;
   overflow: hidden;
   color: var(--tip-text-body);
   font-size: 12px;
   line-height: 18px;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
 }
 
 .sys-message-tip__actions {

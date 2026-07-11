@@ -66,6 +66,10 @@ export const useUserStore = defineStore('user', {
       storage.setUserInfo(params.userInfo)
       storage.clearDesktopAuthState()
     },
+    setUserInfo(userInfo: UserInfo) {
+      this.userInfo = userInfo
+      storage.setUserInfo(userInfo)
+    },
     clearSession() {
       this.token = ''
       this.userInfo = null

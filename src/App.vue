@@ -5,6 +5,8 @@ import { emitTo, listen } from '@tauri-apps/api/event'
 import MascotWindow from './views/MascotWindow.vue'
 import PanelWindow from './views/PanelWindow.vue'
 import { createDesktopAuthState, listenDesktopAuthCallbacks } from './services/desktop-auth.service'
+import { onDesktopUnauthorized } from './services/request'
+import { validateDesktopSession } from './services/session.service'
 import { sysMessageService } from './services/sys-message.service'
 import { websocketService } from './services/websocket.service'
 import { openDesktopLogin, openSysMessageDetail, openWorkbench, showAssistant, showPanelWindow, hidePanelWindow } from './services/window.service'
@@ -26,6 +28,7 @@ const currentSysMessage = ref<SysMessageNotification | null>(null)
 const sysMessageQueue = ref<SysMessageNotification[]>([])
 const recentSysMessageKeys = new Set<string>()
 const authPending = ref(false)
+const SESSION_VALIDATION_INTERVAL = 5 * 60 * 1000
 let removeTaskListener: (() => void) | undefined
 let removeStatusListener: (() => void) | undefined
 let removeTrayListener: (() => void) | undefined
@@ -34,6 +37,8 @@ let removePanelTaskListener: (() => void) | undefined
 let removeMascotMessageListener: (() => void) | undefined
 let removeSysMessageListener: (() => void) | undefined
 let removeDeepLinkListener: UnlistenFn | undefined
+let removeUnauthorizedListener: (() => void) | undefined
+let sessionValidationTimer: number | undefined
 
 const currentTask = computed(() => taskStore.currentTask)
 const sysMessageUserId = computed(() => userStore.userInfo?.userId || env.desktopUserId || env.mockUserId)
@@ -63,10 +68,10 @@ function pushSysMessage(message: SysMessageNotification) {
   void emitTo('mascot', 'mascot-close-overlays', {})
 
   if (currentSysMessage.value) {
-    sysMessageQueue.value.push(currentSysMessage.value)
+    sysMessageQueue.value.push(message)
+  } else {
+    currentSysMessage.value = message
   }
-
-  currentSysMessage.value = message
   void hidePanelWindow()
 }
 
@@ -94,11 +99,60 @@ function handleSysMessageView(message: SysMessageNotification) {
   void openSysMessageDetail(message)
 }
 
-function connectDesktopSockets() {
+function connectDesktopSockets(options: { force?: boolean } = {}) {
   if (needsAuth.value) return
 
   websocketService.connect()
-  sysMessageService.connect(sysMessageUserId.value)
+  sysMessageService.connect(sysMessageUserId.value, options)
+}
+
+function stopSessionValidation() {
+  window.clearInterval(sessionValidationTimer)
+  sessionValidationTimer = undefined
+}
+
+function clearDesktopSession(message: string, status: MascotStatus = 'remind') {
+  websocketService.disconnect()
+  sysMessageService.disconnect()
+  userStore.clearSession()
+  authPending.value = false
+  currentSysMessage.value = null
+  sysMessageQueue.value = []
+  recentSysMessageKeys.clear()
+  socketStatus.value = env.enableMock ? 'mock' : 'closed'
+  stopSessionValidation()
+  mascotStore.showMessage(message, status, true)
+}
+
+function handleSessionExpired() {
+  if (!userStore.isAuthenticated || env.enableMock) return
+  clearDesktopSession('登录状态已过期，请重新登录', 'remind')
+}
+
+async function validateAndRestoreSession(options: { forceReconnect?: boolean } = {}) {
+  if (env.enableMock || !userStore.isAuthenticated) return
+
+  const currentUserId = userStore.userInfo?.userId || ''
+  const result = await validateDesktopSession(currentUserId)
+  if (result.status === 'unauthorized') {
+    handleSessionExpired()
+    return
+  }
+
+  if (result.status === 'valid') {
+    userStore.setUserInfo(result.userInfo)
+  }
+
+  connectDesktopSockets({ force: options.forceReconnect })
+}
+
+function startSessionValidation() {
+  stopSessionValidation()
+  if (env.enableMock || !userStore.isAuthenticated) return
+
+  sessionValidationTimer = window.setInterval(() => {
+    void validateAndRestoreSession({ forceReconnect: true })
+  }, SESSION_VALIDATION_INTERVAL)
 }
 
 function startDesktopLogin() {
@@ -115,21 +169,12 @@ function handleLogout() {
     return
   }
 
-  websocketService.disconnect()
-  sysMessageService.disconnect()
-  userStore.clearSession()
-  authPending.value = false
-  currentSysMessage.value = null
-  sysMessageQueue.value = []
-  recentSysMessageKeys.clear()
-  socketStatus.value = env.enableMock ? 'mock' : 'closed'
-
   if (env.enableMock) {
-    mascotStore.showMessage('已清除本地登录态', 'success', true)
+    clearDesktopSession('已清除本地登录态', 'success')
     return
   }
 
-  mascotStore.showMessage('已退出登录', 'success', true)
+  clearDesktopSession('已退出登录', 'success')
 }
 
 onMounted(async () => {
@@ -154,16 +199,20 @@ onMounted(async () => {
     removeSysMessageListener = sysMessageService.onMessage((message) => {
       pushSysMessage(message)
     })
+    removeUnauthorizedListener = onDesktopUnauthorized(handleSessionExpired)
     removeDeepLinkListener = await listenDesktopAuthCallbacks((payload) => {
       userStore.setSession(payload)
       authPending.value = false
       mascotStore.showMessage('登录成功，消息提醒已开启', 'success', true)
-      connectDesktopSockets()
+      connectDesktopSockets({ force: true })
+      startSessionValidation()
+      void validateAndRestoreSession()
     })
     if (needsAuth.value) {
       mascotStore.showMessage('请先登录后接收消息', 'remind', true)
     } else {
-      connectDesktopSockets()
+      void validateAndRestoreSession({ forceReconnect: true })
+      startSessionValidation()
     }
     void showAssistant()
   }
@@ -202,6 +251,8 @@ onUnmounted(() => {
   removeMascotMessageListener?.()
   removeSysMessageListener?.()
   removeDeepLinkListener?.()
+  removeUnauthorizedListener?.()
+  stopSessionValidation()
   if (windowMode === 'mascot') {
     websocketService.disconnect()
     sysMessageService.disconnect()

@@ -10,6 +10,7 @@
     "build": "npm run build:prod",
     "build:prod": "vue-tsc --noEmit && vite build --mode prod",
     "build:main": "vue-tsc --noEmit && vite build --mode main",
+    "test": "vitest run",
     "mascot:prepare": "node scripts/prepare-mascot-sprite.mjs",
     "mock:api": "node scripts/mock-api.mjs",
     "preview": "vite preview",
@@ -35,6 +36,7 @@
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "^5.7.3",
     "vite": "^6.0.7",
+    "vitest": "^3.2.4",
     "vue-tsc": "^2.2.0"
   }
 }
