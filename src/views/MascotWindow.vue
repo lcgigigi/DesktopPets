@@ -43,6 +43,7 @@ let dragState:
       startScreenY: number
       startWindowX: number
       startWindowY: number
+      startedOnAvatar: boolean
       dragging: boolean
     }
   | undefined
@@ -58,19 +59,17 @@ function clearAvatarSingleClickTimer() {
 }
 
 function scheduleAvatarSingleClick() {
-  clearAvatarSingleClickTimer()
+  if (avatarSingleClickTimer !== undefined) {
+    clearAvatarSingleClickTimer()
+    playTransientAnimation('jumping', 520)
+    void openWorkbench()
+    return
+  }
+
   avatarSingleClickTimer = window.setTimeout(() => {
     avatarSingleClickTimer = undefined
     togglePanel()
   }, avatarSingleClickDelayMs)
-}
-
-function handleAvatarDoubleClick(event: MouseEvent) {
-  event.preventDefault()
-  event.stopPropagation()
-  clearAvatarSingleClickTimer()
-  playTransientAnimation('jumping', 520)
-  void openWorkbench()
 }
 
 function dismissTransientOverlays() {
@@ -86,6 +85,9 @@ function isOverlayInteraction(target: EventTarget | null) {
 }
 
 function togglePanel() {
+  // 登录提示或系统消息展开时，优先让用户处理当前提示，避免吉祥物点击打开输入框。
+  if (hasExpandedNotification.value) return
+
   dismissTransientOverlays()
   playTransientAnimation('jumping', 520)
   void togglePanelWindow()
@@ -106,6 +108,8 @@ async function handlePointerDown(event: PointerEvent) {
   event.preventDefault()
   const target = event.currentTarget as HTMLElement
   target.setPointerCapture(event.pointerId)
+  const startedOnAvatar =
+    event.target instanceof Element && Boolean(event.target.closest('.mascot-avatar'))
 
   try {
     const appWindow = getCurrentWindow()
@@ -117,6 +121,7 @@ async function handlePointerDown(event: PointerEvent) {
       startScreenY: event.screenY,
       startWindowX: logicalPosition.x,
       startWindowY: logicalPosition.y,
+      startedOnAvatar,
       dragging: false
     }
   } catch {
@@ -165,6 +170,7 @@ function finishPointer(event: PointerEvent) {
   }
 
   const wasDragging = dragState.dragging
+  const startedOnAvatar = dragState.startedOnAvatar
   dragState = undefined
   isDragging.value = false
 
@@ -174,8 +180,7 @@ function finishPointer(event: PointerEvent) {
     return
   }
 
-  const onAvatar = event.target instanceof Element && event.target.closest('.mascot-avatar')
-  if (onAvatar) {
+  if (startedOnAvatar) {
     scheduleAvatarSingleClick()
     return
   }
@@ -214,7 +219,9 @@ function clampMenuPosition(x: number, y: number, width: number, height: number) 
 
 function handleContextMenu(event: MouseEvent) {
   event.preventDefault()
-  if (!props.needsAuth && !props.showLogout) return
+  // 登录提示已经提供登录入口时，不再显示重复的右键菜单入口。
+  if (props.needsAuth) return
+  if (!props.showLogout) return
 
   void hidePanelWindow()
   mascotStore.resetStatus()
@@ -337,7 +344,6 @@ onUnmounted(() => {
     <MascotAvatar
       :status="mascotStore.status"
       :animation-state="animationState"
-      @dblclick.stop="handleAvatarDoubleClick"
     />
   </section>
 </template>

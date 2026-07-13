@@ -131,21 +131,21 @@
 }
 
 .sys-message-tip {
-  --tip-accent: #5eb0ff;
-  --tip-accent-soft: #e6f3ff;
-  --tip-accent-deep: #2f7fd4;
-  --tip-badge-bg: linear-gradient(135deg, #d6eeff 0%, #a8d8ff 100%);
-  --tip-badge-text: #1f5f99;
-  --tip-card-bg: linear-gradient(155deg, #fcfeff 0%, #f3f9ff 46%, #eaf4ff 100%);
-  --tip-card-border: rgba(126, 186, 255, 0.52);
-  --tip-tail-bg: #f3f9ff;
-  --tip-primary-bg: linear-gradient(135deg, #7ec5ff 0%, #5eb0ff 52%, #4a9cf5 100%);
-  --tip-primary-shadow: rgba(94, 176, 255, 0.38);
-  --tip-glow: rgba(126, 197, 255, 0.28);
-  --tip-text-strong: #1a3f66;
-  --tip-text-body: #5f7f9f;
-  --tip-button-border: rgba(126, 186, 255, 0.42);
-  --tip-button-text: #4a7099;
+  --tip-accent: #82bfff;
+  --tip-accent-soft: rgba(130, 191, 255, 0.16);
+  --tip-accent-deep: #d9edff;
+  --tip-badge-bg: rgba(130, 191, 255, 0.12);
+  --tip-badge-text: #dceeff;
+  --tip-card-bg: rgba(11, 28, 49, 0.76);
+  --tip-card-border: rgba(212, 235, 255, 0.25);
+  --tip-tail-bg: rgba(11, 28, 49, 0.82);
+  --tip-primary-bg: linear-gradient(135deg, #8cc6ff 0%, #4e91e6 100%);
+  --tip-primary-shadow: rgba(68, 139, 225, 0.42);
+  --tip-glow: rgba(137, 197, 255, 0.34);
+  --tip-text-strong: #f5f9ff;
+  --tip-text-body: #c5d8ed;
+  --tip-button-border: rgba(222, 239, 255, 0.2);
+  --tip-button-text: #e1efff;
 
   position: absolute;
   top: 4px;
@@ -155,8 +155,8 @@
   transform: translateX(-50%);
   color: var(--tip-text-strong);
   cursor: grab;
-  filter: drop-shadow(0 10px 22px rgba(94, 176, 255, 0.16));
-  animation: sys-message-tip-in 420ms cubic-bezier(0.34, 1.45, 0.64, 1);
+  filter: none;
+  animation: sys-message-tip-in 300ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .mascot-window.is-dragging .sys-message-tip,
@@ -167,92 +167,46 @@
 }
 
 .sys-message-tip--notice {
-  --tip-accent: #67b7ff;
-  --tip-accent-soft: #e8f6ff;
-  --tip-accent-deep: #3a84c9;
-  --tip-badge-bg: linear-gradient(135deg, #cce9ff 0%, #9fd4ff 100%);
-  --tip-badge-text: #1c5688;
-  --tip-card-bg: linear-gradient(155deg, #fbfdff 0%, #f0f8ff 46%, #e7f3ff 100%);
-  --tip-card-border: rgba(111, 194, 255, 0.5);
-  --tip-tail-bg: #f0f8ff;
-  --tip-primary-bg: linear-gradient(135deg, #84caff 0%, #67b7ff 52%, #52a8f5 100%);
-  --tip-primary-shadow: rgba(103, 183, 255, 0.34);
-  --tip-glow: rgba(132, 202, 255, 0.26);
-  filter: drop-shadow(0 10px 22px rgba(103, 183, 255, 0.14));
+  --tip-accent: #a0c9ef;
+  --tip-card-bg: rgba(13, 29, 48, 0.74);
+  --tip-primary-bg: linear-gradient(135deg, #9ac8f1 0%, #6398c9 100%);
+  --tip-primary-shadow: rgba(91, 149, 202, 0.36);
 }
 
 .sys-message-tip__card {
   position: relative;
-  padding: 13px 13px 12px;
-  border: 2px solid var(--tip-card-border);
-  border-radius: 22px;
+  padding: 16px;
+  border: 1px solid var(--tip-card-border);
+  border-radius: 20px;
   background: var(--tip-card-bg);
+  backdrop-filter: blur(24px) saturate(145%);
+  -webkit-backdrop-filter: blur(24px) saturate(145%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 0 0 1px rgba(255, 255, 255, 0.55);
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.035);
   overflow: hidden;
 }
 
 .sys-message-tip__card::before {
   content: '';
   position: absolute;
-  top: -28px;
-  right: -18px;
-  width: 96px;
-  height: 96px;
-  border-radius: 50%;
-  background: radial-gradient(circle, var(--tip-glow) 0%, transparent 68%);
+  inset: 0;
+  background:
+    linear-gradient(122deg, rgba(255, 255, 255, 0.16), transparent 28%),
+    radial-gradient(circle at 100% 0%, var(--tip-glow), transparent 34%);
   pointer-events: none;
 }
 
 .sys-message-tip__card::after {
   content: '';
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 0;
-  height: 3px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, transparent, var(--tip-accent), transparent);
-  opacity: 0.35;
+  top: 0;
+  left: 16px;
+  right: 16px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.74), transparent);
+  opacity: 0.54;
   pointer-events: none;
-}
-
-.sys-message-tip__deco {
-  position: absolute;
-  pointer-events: none;
-  user-select: none;
-}
-
-.sys-message-tip__deco--star {
-  top: 10px;
-  right: 14px;
-  color: var(--tip-accent);
-  font-size: 14px;
-  line-height: 1;
-  opacity: 0.75;
-  animation: sys-message-tip-twinkle 2.4s ease-in-out infinite;
-}
-
-.sys-message-tip__deco--sparkle {
-  top: 36px;
-  right: 28px;
-  color: #8fd0ff;
-  font-size: 11px;
-  line-height: 1;
-  opacity: 0.55;
-  animation: sys-message-tip-float 3s ease-in-out infinite;
-}
-
-.sys-message-tip__deco--bubble {
-  bottom: 18px;
-  left: 10px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--tip-accent-soft);
-  opacity: 0.65;
-  animation: sys-message-tip-float 2.6s ease-in-out infinite reverse;
 }
 
 .sys-message-tip__header {
@@ -261,51 +215,46 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 9px;
+  margin-bottom: 14px;
 }
 
 .sys-message-tip__badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  min-height: 26px;
-  padding: 0 11px 0 8px;
-  border: 1.5px solid rgba(255, 255, 255, 0.72);
+  gap: 7px;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid rgba(219, 239, 255, 0.17);
   border-radius: 999px;
   background: var(--tip-badge-bg);
-  box-shadow:
-    0 2px 8px rgba(94, 176, 255, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   color: var(--tip-badge-text);
-  font-size: 11px;
-  font-weight: 800;
+  font-size: 10px;
+  font-weight: 750;
   line-height: 1;
-  letter-spacing: 0.03em;
-  animation: sys-message-tip-badge-wiggle 3.6s ease-in-out infinite;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-.sys-message-tip--notice .sys-message-tip__badge {
-  box-shadow:
-    0 2px 8px rgba(103, 183, 255, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.62);
-}
-
-.sys-message-tip__badge-emoji {
-  font-size: 12px;
-  line-height: 1;
-  transform: translateY(-0.5px);
+.sys-message-tip__badge-indicator {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--tip-accent);
+  box-shadow: 0 0 10px var(--tip-accent);
 }
 
 .sys-message-tip__queue-count {
   margin-left: auto;
-  margin-right: 8px;
-  min-width: 24px;
-  padding: 2px 7px;
+  margin-right: 9px;
+  min-width: 22px;
+  padding: 2px 6px;
   border-radius: 999px;
-  background: rgba(255, 107, 129, 0.16);
-  color: #ff4d6d;
-  font-size: 11px;
-  font-weight: 800;
+  border: 1px solid rgba(210, 232, 252, 0.16);
+  background: rgba(5, 17, 31, 0.24);
+  color: #d8eaff;
+  font-size: 10px;
+  font-weight: 700;
   line-height: 1.4;
   text-align: center;
 }
@@ -314,49 +263,57 @@
   position: relative;
   display: grid;
   place-items: center;
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
 }
 
 .sys-message-tip__live-dot-core {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--tip-accent);
   box-shadow: 0 0 0 0 var(--tip-primary-shadow);
-  animation: sys-message-tip-pulse 1.8s ease-in-out infinite;
+  animation: sys-message-tip-pulse 2.4s ease-in-out infinite;
 }
 
 .sys-message-tip__body {
   position: relative;
   z-index: 1;
   display: grid;
-  gap: 5px;
-  padding-right: 8px;
+  gap: 6px;
+  padding-right: 2px;
 }
 
 .sys-message-tip__body strong {
   display: block;
   overflow: hidden;
   color: var(--tip-text-strong);
-  font-size: 14px;
-  font-weight: 800;
-  line-height: 20px;
-  letter-spacing: 0.01em;
+  font-size: 16px;
+  font-weight: 740;
+  line-height: 22px;
+  letter-spacing: 0.015em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .sys-message-tip__body p {
   display: -webkit-box;
-  min-height: 54px;
+  min-height: 0;
   margin: 0;
   overflow: hidden;
   color: var(--tip-text-body);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 23px;
+  letter-spacing: 0.005em;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.sys-message-tip__summary.is-resolving {
+  color: rgba(213, 230, 247, 0.68);
+  font-size: 13px;
+  font-weight: 550;
 }
 
 .sys-message-tip__actions {
@@ -364,20 +321,22 @@
   z-index: 1;
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 9px;
+  margin-top: 18px;
+  padding-top: 13px;
+  border-top: 1px solid rgba(221, 240, 255, 0.12);
 }
 
 .sys-message-tip__button {
-  min-width: 72px;
-  min-height: 34px;
-  padding: 0 15px;
-  border: 2px solid var(--tip-button-border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
+  min-width: 82px;
+  min-height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--tip-button-border);
+  border-radius: 11px;
+  background: rgba(236, 246, 255, 0.07);
   color: var(--tip-button-text);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
   cursor: pointer;
   transition:
@@ -388,35 +347,30 @@
     box-shadow 160ms ease;
 }
 
-.sys-message-tip--notice .sys-message-tip__button {
-  border-color: rgba(111, 194, 255, 0.4);
-  color: #467aa8;
-}
-
 .sys-message-tip__button--primary {
-  border-color: transparent;
+  border-color: rgba(216, 238, 255, 0.24);
   background: var(--tip-primary-bg);
   color: #ffffff;
-  box-shadow: 0 4px 14px var(--tip-primary-shadow);
+  box-shadow: 0 8px 18px var(--tip-primary-shadow);
 }
 
 .sys-message-tip__button:hover {
-  transform: translateY(-2px) scale(1.02);
+  transform: translateY(-1px);
 }
 
 .sys-message-tip__button--primary:hover {
-  box-shadow: 0 6px 18px var(--tip-primary-shadow);
-  filter: saturate(1.08);
+  box-shadow: 0 10px 22px var(--tip-primary-shadow);
+  filter: brightness(1.06);
 }
 
 .sys-message-tip__button:not(.sys-message-tip__button--primary):hover {
-  border-color: var(--tip-accent);
-  background: var(--tip-accent-soft);
-  color: var(--tip-accent-deep);
+  border-color: rgba(217, 238, 255, 0.4);
+  background: rgba(235, 246, 255, 0.13);
+  color: #ffffff;
 }
 
 .sys-message-tip__button:active {
-  transform: translateY(0) scale(0.98);
+  transform: translateY(0);
 }
 
 .sys-message-tip__button:focus-visible {
@@ -426,13 +380,14 @@
 
 .sys-message-tip__tail {
   position: absolute;
-  bottom: -10px;
+  bottom: -9px;
   left: 50%;
   z-index: 0;
-  width: 20px;
-  height: 11px;
+  width: 22px;
+  height: 10px;
   transform: translateX(-50%);
   background: var(--tip-tail-bg);
+  backdrop-filter: blur(12px);
   clip-path: polygon(50% 100%, 0 0, 100% 0);
 }
 
@@ -440,8 +395,8 @@
   content: '';
   position: absolute;
   inset: 0;
-  clip-path: polygon(50% 100%, 6% 8%, 94% 8%);
-  border-bottom: 2px solid var(--tip-card-border);
+  clip-path: polygon(50% 100%, 7% 8%, 93% 8%);
+  border-bottom: 1px solid var(--tip-card-border);
 }
 
 @keyframes sys-message-tip-in {

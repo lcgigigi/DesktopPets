@@ -7,7 +7,7 @@ use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, Position, Size};
 const MASCOT_WIDTH: f64 = 168.0;
 const MASCOT_HEIGHT: f64 = 168.0;
 const MASCOT_NOTIFICATION_WIDTH: f64 = 300.0;
-const MASCOT_NOTIFICATION_HEIGHT: f64 = 370.0;
+const MASCOT_NOTIFICATION_HEIGHT: f64 = 420.0;
 const MASCOT_MESSAGE_WIDTH: f64 = 200.0;
 const MASCOT_MESSAGE_HEIGHT: f64 = 232.0;
 const PANEL_WIDTH: f64 = 390.0;

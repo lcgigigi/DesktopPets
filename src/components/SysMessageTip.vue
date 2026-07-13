@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { getSysMessageFallback, resolveSysMessageContent } from '../services/sys-message-content.service'
+import { resolveSysMessageContent } from '../services/sys-message-content.service'
 import type { SysMessageNotification } from '../types/sys-message'
 
 const props = defineProps<{
@@ -13,12 +13,17 @@ const emit = defineEmits<{
   read: [message: SysMessageNotification]
 }>()
 
-const displayContent = ref(getSysMessageFallback(props.message))
+const displayContent = ref('')
+const isResolvingContent = ref(true)
 
 async function resolveDisplayContent(message: SysMessageNotification, dedupeKey: string) {
-  displayContent.value = getSysMessageFallback(message)
+  displayContent.value = ''
+  isResolvingContent.value = true
   const content = await resolveSysMessageContent(message)
-  if (props.message.dedupeKey === dedupeKey) displayContent.value = content
+  if (props.message.dedupeKey === dedupeKey) {
+    displayContent.value = content
+    isResolvingContent.value = false
+  }
 }
 
 watch(
@@ -34,9 +39,9 @@ const isTodo = computed(() => /待办|todo/i.test(title.value))
 const isCompletedTodo = computed(() => /待办已完成|已完成|处理完成/.test(title.value))
 
 const badgeLabel = computed(() => {
-  if (isCompletedTodo.value) return '叮~ 待办完成'
-  if (isTodo.value) return '叮~ 新待办'
-  return '小力提醒你'
+  if (isCompletedTodo.value) return '待办已完成'
+  if (isTodo.value) return '新待办'
+  return '消息提醒'
 })
 
 const tipTone = computed(() => (isTodo.value ? 'todo' : 'notice'))
@@ -53,13 +58,9 @@ const tipTone = computed(() => (isTodo.value ? 'todo' : 'notice'))
     @click.stop
   >
     <div class="sys-message-tip__card">
-      <span class="sys-message-tip__deco sys-message-tip__deco--star" aria-hidden="true">✦</span>
-      <span class="sys-message-tip__deco sys-message-tip__deco--sparkle" aria-hidden="true">✧</span>
-      <span class="sys-message-tip__deco sys-message-tip__deco--bubble" aria-hidden="true" />
-
       <header class="sys-message-tip__header">
         <span class="sys-message-tip__badge">
-          <span class="sys-message-tip__badge-emoji" aria-hidden="true">{{ isTodo ? '🔔' : '💬' }}</span>
+          <span class="sys-message-tip__badge-indicator" aria-hidden="true" />
           {{ badgeLabel }}
         </span>
         <span v-if="(pendingCount ?? 0) > 0" class="sys-message-tip__queue-count">+{{ pendingCount }}</span>
@@ -70,7 +71,9 @@ const tipTone = computed(() => (isTodo.value ? 'todo' : 'notice'))
 
       <div class="sys-message-tip__body">
         <strong>{{ title }}</strong>
-        <p>{{ displayContent }}</p>
+        <p class="sys-message-tip__summary" :class="{ 'is-resolving': isResolvingContent }">
+          {{ isResolvingContent ? '正在整理提醒内容…' : displayContent }}
+        </p>
       </div>
 
       <div class="sys-message-tip__actions">
