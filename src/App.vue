@@ -7,6 +7,7 @@ import PanelWindow from './views/PanelWindow.vue'
 import { createDesktopAuthState, listenDesktopAuthCallbacks } from './services/desktop-auth.service'
 import { onDesktopUnauthorized } from './services/request'
 import { validateDesktopSession } from './services/session.service'
+import { getSysMessageFallback, resolveSysMessageContent } from './services/sys-message-content.service'
 import { sysMessageService } from './services/sys-message.service'
 import { websocketService } from './services/websocket.service'
 import { openDesktopLogin, openSysMessageDetail, openWorkbench, showAssistant, showPanelWindow, hidePanelWindow } from './services/window.service'
@@ -19,13 +20,19 @@ import type { TaskCreatedEvent } from './types/task'
 import { env } from './utils/env'
 import { storage } from './utils/storage'
 
+type ResolvedSysMessage = SysMessageNotification & {
+  displayContent: string
+}
+
 const taskStore = useTaskStore()
 const mascotStore = useMascotStore()
 const userStore = useUserStore()
 const windowMode = new URLSearchParams(window.location.search).get('window') || 'mascot'
 const socketStatus = ref(env.enableMock ? 'mock' : 'closed')
-const currentSysMessage = ref<SysMessageNotification | null>(null)
-const sysMessageQueue = ref<SysMessageNotification[]>([])
+const currentSysMessage = ref<ResolvedSysMessage | null>(null)
+const sysMessageQueue = ref<ResolvedSysMessage[]>([])
+const sysMessageResolutionQueue = ref<SysMessageNotification[]>([])
+const isResolvingSysMessage = ref(false)
 const recentSysMessageKeys = new Set<string>()
 const authPending = ref(false)
 const SESSION_VALIDATION_INTERVAL = 5 * 60 * 1000
@@ -39,11 +46,16 @@ let removeSysMessageListener: (() => void) | undefined
 let removeDeepLinkListener: UnlistenFn | undefined
 let removeUnauthorizedListener: (() => void) | undefined
 let sessionValidationTimer: number | undefined
+let sysMessageResolutionGeneration = 0
 
 const currentTask = computed(() => taskStore.currentTask)
 const sysMessageUserId = computed(() => userStore.userInfo?.userId || env.desktopUserId || env.mockUserId)
 const needsAuth = computed(() => !env.enableMock && !userStore.isAuthenticated)
 const showLogout = computed(() => !env.enableMock && userStore.isAuthenticated)
+const currentSysMessageContent = computed(() => currentSysMessage.value?.displayContent || '')
+const pendingSysMessageCount = computed(
+  () => sysMessageQueue.value.length + sysMessageResolutionQueue.value.length + Number(isResolvingSysMessage.value)
+)
 
 document.documentElement.dataset.window = windowMode
 document.body.dataset.window = windowMode
@@ -61,10 +73,7 @@ function showNextSysMessage() {
   }
 }
 
-function pushSysMessage(message: SysMessageNotification) {
-  if (recentSysMessageKeys.has(message.dedupeKey)) return
-  rememberSysMessageKey(message.dedupeKey)
-
+function showResolvedSysMessage(message: ResolvedSysMessage) {
   void emitTo('mascot', 'mascot-close-overlays', {})
 
   if (currentSysMessage.value) {
@@ -73,6 +82,40 @@ function pushSysMessage(message: SysMessageNotification) {
     currentSysMessage.value = message
   }
   void hidePanelWindow()
+}
+
+async function resolveQueuedSysMessages() {
+  if (isResolvingSysMessage.value) return
+
+  isResolvingSysMessage.value = true
+  const generation = sysMessageResolutionGeneration
+
+  while (sysMessageResolutionQueue.value.length && generation === sysMessageResolutionGeneration) {
+    const message = sysMessageResolutionQueue.value.shift()
+    if (!message) continue
+
+    let displayContent = getSysMessageFallback(message)
+    try {
+      displayContent = await resolveSysMessageContent(message)
+    } catch (error) {
+      console.warn('Failed to resolve sys_message content', error)
+    }
+
+    if (generation !== sysMessageResolutionGeneration) return
+    showResolvedSysMessage({ ...message, displayContent })
+  }
+
+  if (generation === sysMessageResolutionGeneration) {
+    isResolvingSysMessage.value = false
+  }
+}
+
+function pushSysMessage(message: SysMessageNotification) {
+  if (recentSysMessageKeys.has(message.dedupeKey)) return
+  rememberSysMessageKey(message.dedupeKey)
+
+  sysMessageResolutionQueue.value.push(message)
+  void resolveQueuedSysMessages()
 }
 
 function hideCurrentSysMessage(message: SysMessageNotification) {
@@ -116,8 +159,11 @@ function clearDesktopSession(message: string, status: MascotStatus = 'remind') {
   sysMessageService.disconnect()
   userStore.clearSession()
   authPending.value = false
+  sysMessageResolutionGeneration += 1
   currentSysMessage.value = null
   sysMessageQueue.value = []
+  sysMessageResolutionQueue.value = []
+  isResolvingSysMessage.value = false
   recentSysMessageKeys.clear()
   socketStatus.value = env.enableMock ? 'mock' : 'closed'
   stopSessionValidation()
@@ -151,7 +197,7 @@ function startSessionValidation() {
   if (env.enableMock || !userStore.isAuthenticated) return
 
   sessionValidationTimer = window.setInterval(() => {
-    void validateAndRestoreSession({ forceReconnect: true })
+    void validateAndRestoreSession()
   }, SESSION_VALIDATION_INTERVAL)
 }
 
@@ -268,7 +314,8 @@ onUnmounted(() => {
       :auth-pending="authPending"
       :show-logout="showLogout"
       :sys-message="currentSysMessage"
-      :pending-sys-message-count="sysMessageQueue.length"
+      :sys-message-content="currentSysMessageContent"
+      :pending-sys-message-count="pendingSysMessageCount"
       @login="startDesktopLogin"
       @logout="handleLogout"
       @read-sys-message="handleSysMessageRead"

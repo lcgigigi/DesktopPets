@@ -19,6 +19,7 @@ const props = defineProps<{
   authPending: boolean
   showLogout: boolean
   sysMessage: SysMessageNotification | null
+  sysMessageContent: string
   pendingSysMessageCount?: number
 }>()
 
@@ -89,7 +90,7 @@ function togglePanel() {
   if (hasExpandedNotification.value) return
 
   dismissTransientOverlays()
-  playTransientAnimation('jumping', 520)
+  playTransientAnimation('waiting', 900)
   void togglePanelWindow()
 }
 
@@ -255,6 +256,9 @@ function handleContextMenuKeydown(event: KeyboardEvent) {
 const hasBubbleMessage = computed(() => Boolean(mascotStore.message))
 const hasExpandedNotification = computed(() => Boolean(props.sysMessage || props.needsAuth))
 const isContextMenuOpen = computed(() => contextMenu.value !== null)
+const avatarAnimationState = computed<MascotAnimationState | undefined>(() => {
+  return props.sysMessage ? 'waving' : animationState.value
+})
 const isNotifying = computed(
   () => hasExpandedNotification.value || hasBubbleMessage.value || isContextMenuOpen.value
 )
@@ -336,6 +340,7 @@ onUnmounted(() => {
       v-else-if="sysMessage"
       :key="sysMessage.dedupeKey"
       :message="sysMessage"
+      :display-content="sysMessageContent"
       :pending-count="pendingSysMessageCount || 0"
       @read="emit('readSysMessage', $event)"
       @view="emit('viewSysMessage', $event)"
@@ -343,7 +348,7 @@ onUnmounted(() => {
     <MascotBubble v-else-if="mascotStore.message" :message="mascotStore.message" />
     <MascotAvatar
       :status="mascotStore.status"
-      :animation-state="animationState"
+      :animation-state="avatarAnimationState"
     />
   </section>
 </template>

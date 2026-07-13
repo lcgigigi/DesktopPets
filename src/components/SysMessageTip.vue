@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { resolveSysMessageContent } from '../services/sys-message-content.service'
+import { computed } from 'vue'
 import type { SysMessageNotification } from '../types/sys-message'
 
 const props = defineProps<{
   message: SysMessageNotification
+  displayContent: string
   pendingCount?: number
 }>()
 
@@ -12,27 +12,6 @@ const emit = defineEmits<{
   view: [message: SysMessageNotification]
   read: [message: SysMessageNotification]
 }>()
-
-const displayContent = ref('')
-const isResolvingContent = ref(true)
-
-async function resolveDisplayContent(message: SysMessageNotification, dedupeKey: string) {
-  displayContent.value = ''
-  isResolvingContent.value = true
-  const content = await resolveSysMessageContent(message)
-  if (props.message.dedupeKey === dedupeKey) {
-    displayContent.value = content
-    isResolvingContent.value = false
-  }
-}
-
-watch(
-  () => props.message.dedupeKey,
-  () => {
-    void resolveDisplayContent(props.message, props.message.dedupeKey)
-  },
-  { immediate: true }
-)
 
 const title = computed(() => props.message.msgSubject || '站内消息')
 const isTodo = computed(() => /待办|todo/i.test(title.value))
@@ -71,9 +50,7 @@ const tipTone = computed(() => (isTodo.value ? 'todo' : 'notice'))
 
       <div class="sys-message-tip__body">
         <strong>{{ title }}</strong>
-        <p class="sys-message-tip__summary" :class="{ 'is-resolving': isResolvingContent }">
-          {{ isResolvingContent ? '正在整理提醒内容…' : displayContent }}
-        </p>
+        <p class="sys-message-tip__summary">{{ displayContent }}</p>
       </div>
 
       <div class="sys-message-tip__actions">

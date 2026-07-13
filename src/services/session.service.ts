@@ -21,29 +21,47 @@ export type DesktopSessionCheck =
   | { status: 'unauthorized' }
   | { status: 'unavailable' }
 
+interface NormalizedCurrentUser {
+  userInfo: UserInfo
+  identifiers: string[]
+}
+
 function toText(value: unknown) {
   return value === null || value === undefined ? '' : String(value).trim()
 }
 
-function normalizeCurrentUser(data: CurrentUserPayload): UserInfo | null {
+function normalizeCurrentUser(data: CurrentUserPayload): NormalizedCurrentUser | null {
   const user = data.user ?? data
-  const userId = toText(user.userName) || toText(user.userId)
-  if (!userId) return null
+  const userId = toText(user.userId)
+  const userName = toText(user.userName)
+  const resolvedUserId = userId || userName
+  const identifiers = [userId, userName].filter(Boolean)
+  if (!resolvedUserId) return null
 
   return {
-    userId,
-    userName: toText(user.nickName) || toText(user.userName) || userId,
-    department: toText(user.department) || toText(user.deptName) || undefined,
+    userInfo: {
+      userId: resolvedUserId,
+      userName: toText(user.nickName) || userName || resolvedUserId,
+      department: toText(user.department) || toText(user.deptName) || undefined,
+    },
+    identifiers,
   }
 }
 
 export async function validateDesktopSession(expectedUserId: string): Promise<DesktopSessionCheck> {
   try {
     const data = await request.get<unknown, CurrentUserPayload>('/getInfo')
-    const userInfo = normalizeCurrentUser(data)
-    if (!userInfo || userInfo.userId !== expectedUserId.trim()) return { status: 'unauthorized' }
+    const currentUser = normalizeCurrentUser(data)
+    const expected = expectedUserId.trim()
+    if (!currentUser || !currentUser.identifiers.includes(expected)) return { status: 'unauthorized' }
 
-    return { status: 'valid', userInfo }
+    return {
+      status: 'valid',
+      userInfo: {
+        ...currentUser.userInfo,
+        userId: expected || currentUser.userInfo.userId,
+      },
+    }
   } catch (error) {
     if (
       error instanceof DesktopRequestError &&

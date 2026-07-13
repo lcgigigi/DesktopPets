@@ -88,14 +88,18 @@
 .mascot-bubble__text {
   position: relative;
   z-index: 1;
+  display: -webkit-box;
+  max-width: 100%;
   margin: 0;
+  overflow: hidden;
   color: #1b2f52;
   font-size: 12px;
   font-weight: 700;
-  line-height: 1;
+  line-height: 16px;
   letter-spacing: 0.02em;
-  white-space: nowrap;
   text-align: center;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .mascot-bubble__tail {
@@ -308,12 +312,6 @@
   letter-spacing: 0.005em;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
-}
-
-.sys-message-tip__summary.is-resolving {
-  color: rgba(213, 230, 247, 0.68);
-  font-size: 13px;
-  font-weight: 550;
 }
 
 .sys-message-tip__actions {
@@ -652,44 +650,26 @@
 .mascot-sprite {
   position: relative;
   z-index: 1;
-  width: 160px;
+  width: 147.6923077px;
   height: 160px;
   display: block;
   background-position: 0 0;
   background-repeat: no-repeat;
-  background-size: 3840px 160px;
+  background-size: 1181.5384616px 1440px;
   pointer-events: none;
   user-select: none;
-  transition: transform 180ms ease, filter 180ms ease;
-  animation: mascot-sprite-idle 4.8s steps(24) infinite;
+  will-change: background-position;
+  animation: var(--sprite-animation);
 }
 
-@keyframes mascot-sprite-idle {
+@keyframes mascot-sprite-play {
   from {
-    background-position: 0 0;
+    background-position: 0 var(--sprite-row-offset);
   }
 
   to {
-    background-position: -3840px 0;
+    background-position: var(--sprite-end-offset) var(--sprite-row-offset);
   }
-}
-
-.mascot-avatar.is-visual-thinking .mascot-sprite,
-.mascot-avatar.is-visual-waiting .mascot-sprite {
-  filter: drop-shadow(0 10px 14px rgba(59, 130, 246, 0.16));
-}
-
-.mascot-avatar.is-visual-remind .mascot-sprite {
-  transform: translateY(-3px);
-}
-
-.mascot-avatar.is-visual-success .mascot-sprite {
-  filter: drop-shadow(0 10px 14px rgba(52, 198, 168, 0.16));
-}
-
-.mascot-avatar.is-visual-error .mascot-sprite,
-.mascot-avatar.is-visual-failed .mascot-sprite {
-  filter: drop-shadow(0 10px 14px rgba(239, 68, 68, 0.16));
 }
 
 .status-orbit {

@@ -37,6 +37,44 @@ describe('validateDesktopSession', () => {
     })
   })
 
+  it('prefers the real userId over userName when validating the desktop session', async () => {
+    mocks.get.mockResolvedValue({
+      user: {
+        userId: 'u-10001',
+        userName: '10001',
+        nickName: '王小明',
+      },
+    })
+
+    await expect(validateDesktopSession('u-10001')).resolves.toEqual({
+      status: 'valid',
+      userInfo: {
+        userId: 'u-10001',
+        userName: '王小明',
+        department: undefined,
+      },
+    })
+  })
+
+  it('keeps the callback userId when getInfo uses a different internal userId but the userName matches', async () => {
+    mocks.get.mockResolvedValue({
+      user: {
+        userId: 'internal-42',
+        userName: '10001',
+        nickName: '王小明',
+      },
+    })
+
+    await expect(validateDesktopSession('10001')).resolves.toEqual({
+      status: 'valid',
+      userInfo: {
+        userId: '10001',
+        userName: '王小明',
+        department: undefined,
+      },
+    })
+  })
+
   it('treats an account mismatch or an unauthorized response as an expired desktop session', async () => {
     mocks.get.mockResolvedValue({ user: { userName: '10002', nickName: '李华' } })
     await expect(validateDesktopSession('10001')).resolves.toEqual({ status: 'unauthorized' })
