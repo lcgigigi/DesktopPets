@@ -62,7 +62,6 @@ function clearAvatarSingleClickTimer() {
 function scheduleAvatarSingleClick() {
   if (avatarSingleClickTimer !== undefined) {
     clearAvatarSingleClickTimer()
-    playTransientAnimation('jumping', 520)
     void openWorkbench()
     return
   }
@@ -176,7 +175,7 @@ function finishPointer(event: PointerEvent) {
   isDragging.value = false
 
   if (wasDragging) {
-    playTransientAnimation('jumping', 360)
+    animationState.value = undefined
     void syncPanelWindow()
     return
   }

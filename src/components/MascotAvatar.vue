@@ -25,17 +25,15 @@ const spriteStates: Record<string, SpriteState> = {
   waiting: { row: 6, frames: 6, duration: 2200 },
   remind: { row: 3, frames: 4, duration: 900 },
   waving: { row: 3, frames: 4, duration: 900 },
-  success: { row: 4, frames: 5, duration: 900 },
-  jumping: { row: 4, frames: 5, duration: 900 },
-  error: { row: 5, frames: 8, duration: 1800 },
-  failed: { row: 5, frames: 8, duration: 1800 },
   'running-left': { row: 2, frames: 8, duration: 720 },
   'running-right': { row: 1, frames: 8, duration: 720 },
   'cooling-office': { row: 7, frames: 6, duration: 1800 }
 }
 
 const resolvedState = computed<MascotStatus | MascotAnimationState>(() => {
+  if (props.animationState === 'jumping' || props.animationState === 'failed') return 'idle'
   if (props.animationState) return props.animationState
+  if (props.status === 'success' || props.status === 'error') return 'idle'
   return props.status
 })
 
