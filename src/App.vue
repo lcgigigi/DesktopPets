@@ -1,20 +1,24 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import MascotWindow from './views/MascotWindow.vue'
 import PanelWindow from './views/PanelWindow.vue'
-import { loginDesktop } from './services/login.service'
+import {
+  createDesktopAuthState,
+  listenDesktopAuthCallbacks,
+  type DesktopAuthCallbackError,
+} from './services/desktop-auth.service'
 import { onDesktopUnauthorized } from './services/request'
 import { validateDesktopSession } from './services/session.service'
 import { getSysMessageFallback, resolveSysMessageContent } from './services/sys-message-content.service'
 import { sysMessageService } from './services/sys-message.service'
 import { websocketService } from './services/websocket.service'
-import { openSysMessageDetail, openWorkbench, showAssistant, showPanelWindow, hidePanelWindow } from './services/window.service'
+import { openDesktopLogin, openSysMessageDetail, openWorkbench, showAssistant, showPanelWindow, hidePanelWindow } from './services/window.service'
 import { useMascotStore } from './stores/mascot'
 import { useTaskStore } from './stores/task'
 import { useUserStore } from './stores/user'
 import type { MascotStatus } from './types/mascot'
-import type { DesktopLoginCredentials } from './types/auth'
 import type { SysMessageNotification } from './types/sys-message'
 import type { TaskCreatedEvent } from './types/task'
 import { env } from './utils/env'
@@ -44,6 +48,7 @@ let removeTrayLogoutListener: (() => void) | undefined
 let removePanelTaskListener: (() => void) | undefined
 let removeMascotMessageListener: (() => void) | undefined
 let removeSysMessageListener: (() => void) | undefined
+let removeDeepLinkListener: UnlistenFn | undefined
 let removeUnauthorizedListener: (() => void) | undefined
 let sessionValidationTimer: number | undefined
 let sysMessageResolutionGeneration = 0
@@ -201,30 +206,13 @@ function startSessionValidation() {
   }, SESSION_VALIDATION_INTERVAL)
 }
 
-async function startDesktopLogin(credentials?: DesktopLoginCredentials) {
-  if (!credentials) {
-    authErrorMessage.value = '请在登录卡中输入账号和密码'
-    return
-  }
-  if (authPending.value) return
-
+function startDesktopLogin() {
+  const state = createDesktopAuthState()
   authPending.value = true
   authErrorMessage.value = ''
   void hidePanelWindow()
-  try {
-    const session = await loginDesktop(credentials)
-    userStore.setSession(session)
-    mascotStore.showMessage('登录成功，消息提醒已开启', 'success', true)
-    connectDesktopSockets({ force: true })
-    startSessionValidation()
-    void validateAndRestoreSession()
-  } catch (error) {
-    authErrorMessage.value = error instanceof Error
-      ? error.message
-      : '登录失败，请检查账号、密码和网络'
-  } finally {
-    authPending.value = false
-  }
+  mascotStore.showMessage('已打开网页登录', 'thinking', true)
+  void openDesktopLogin(state)
 }
 
 function handleLogout() {
@@ -239,6 +227,18 @@ function handleLogout() {
   }
 
   clearDesktopSession('已退出登录', 'success')
+}
+
+function handleDesktopAuthCallbackError(error: DesktopAuthCallbackError) {
+  if (!authPending.value) return
+
+  authPending.value = false
+  const message = error === 'expired'
+    ? '登录回调已失效，请重新登录'
+    : error === 'missing-identity'
+      ? '网页登录未返回完整身份，请重试'
+      : 'Windows 已唤起助手，但未传入登录回调链接'
+  authErrorMessage.value = message
 }
 
 onMounted(async () => {
@@ -264,6 +264,20 @@ onMounted(async () => {
       pushSysMessage(message)
     })
     removeUnauthorizedListener = onDesktopUnauthorized(handleSessionExpired)
+    removeDeepLinkListener = await listenDesktopAuthCallbacks(
+      (payload) => {
+        // 登录卡消失时直接恢复普通窗口，避免 Windows 在“大卡片 -> 小气泡”
+        // 连续缩放中出现窗口尺寸与 WebView 渲染尺寸不同步。
+        mascotStore.resetStatus()
+        userStore.setSession(payload)
+        authPending.value = false
+        authErrorMessage.value = ''
+        connectDesktopSockets({ force: true })
+        startSessionValidation()
+        void validateAndRestoreSession()
+      },
+      handleDesktopAuthCallbackError,
+    )
     if (needsAuth.value) {
       mascotStore.showMessage('请先登录后接收消息', 'remind', true)
     } else {
@@ -306,6 +320,7 @@ onUnmounted(() => {
   removePanelTaskListener?.()
   removeMascotMessageListener?.()
   removeSysMessageListener?.()
+  removeDeepLinkListener?.()
   removeUnauthorizedListener?.()
   stopSessionValidation()
   if (windowMode === 'mascot') {

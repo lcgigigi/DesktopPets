@@ -1,5 +1,6 @@
 import type { SysMessageNotification, SysMessagePushPayload, SysMessageStatus } from '../types/sys-message'
 import { env } from '../utils/env'
+import { request } from './request'
 
 type MessageListener = (message: SysMessageNotification) => void
 
@@ -8,15 +9,52 @@ let reconnectTimer: number | undefined
 let reconnectAttempts = 0
 let shouldReconnect = true
 let activeUserId = ''
+let pollTimer: number | undefined
+let polling = false
+let pollInitialized = false
 const messageListeners = new Set<MessageListener>()
+const knownMessageIds = new Set<string>()
+const SYS_MESSAGE_POLL_INTERVAL = 10_000
+const MAX_KNOWN_MESSAGE_IDS = 500
 
 interface LocationLike {
   protocol: string
   host: string
 }
 
+interface SysMessageBackendItem {
+  id?: string | number
+  msgSubject?: string | null
+  msgContent?: string | null
+  msgStatus?: number | null
+  msgType?: number | null
+  bizType?: number | null
+  bizId?: string | number | null
+  createTime?: string | null
+}
+
+interface SysMessagePagePayload {
+  rows?: SysMessageBackendItem[] | null
+  list?: SysMessageBackendItem[] | null
+}
+
 function notifyMessage(message: SysMessageNotification) {
   messageListeners.forEach((listener) => listener(message))
+}
+
+function rememberMessage(message: SysMessageNotification) {
+  if (knownMessageIds.has(message.id)) return false
+
+  knownMessageIds.add(message.id)
+  if (knownMessageIds.size > MAX_KNOWN_MESSAGE_IDS) {
+    const oldestId = knownMessageIds.values().next().value
+    if (oldestId) knownMessageIds.delete(oldestId)
+  }
+  return true
+}
+
+function deliverMessage(message: SysMessageNotification) {
+  if (rememberMessage(message)) notifyMessage(message)
 }
 
 function toId(value?: string | number | null) {
@@ -32,9 +70,7 @@ function toStatus(value: unknown): SysMessageStatus {
   return Number(value) === 1 ? 1 : 0
 }
 
-function normalizeSysMessage(payload: SysMessagePushPayload): SysMessageNotification | null {
-  if (payload.type !== 'sys_message') return null
-
+function normalizeSysMessageItem(payload: SysMessageBackendItem): SysMessageNotification | null {
   const id = toId(payload.id)
   if (!id) return null
 
@@ -57,6 +93,11 @@ function normalizeSysMessage(payload: SysMessagePushPayload): SysMessageNotifica
     bizId: toId(payload.bizId) || undefined,
     createTime
   }
+}
+
+function normalizeSysMessage(payload: SysMessagePushPayload): SysMessageNotification | null {
+  if (payload.type !== 'sys_message') return null
+  return normalizeSysMessageItem(payload)
 }
 
 function toWsProtocol(protocol: string) {
@@ -103,6 +144,63 @@ function buildSysMessageWebSocketUrl(userId: string) {
   return `${baseUrl}/${encodeURIComponent(userId.trim())}`
 }
 
+async function pollUnreadMessages() {
+  if (polling || !activeUserId.trim()) return
+
+  polling = true
+  try {
+    const payload = await request.get<unknown, SysMessagePagePayload>('/sys-message/page', {
+      params: {
+        pageNum: 1,
+        pageSize: 20,
+        msgStatus: 0,
+      },
+    })
+    const messages = (payload?.rows ?? payload?.list ?? [])
+      .map((item) => normalizeSysMessageItem(item))
+      .filter((item): item is SysMessageNotification => Boolean(item))
+
+    if (!pollInitialized) {
+      pollInitialized = true
+      const newestMessage = messages[0]
+      const shouldNotifyNewest = Boolean(newestMessage && !knownMessageIds.has(newestMessage.id))
+      messages.forEach((message) => rememberMessage(message))
+      if (newestMessage && shouldNotifyNewest) notifyMessage(newestMessage)
+      return
+    }
+
+    messages
+      .filter((message) => !knownMessageIds.has(message.id))
+      .reverse()
+      .forEach((message) => deliverMessage(message))
+  } catch (error) {
+    console.warn('Sys message polling failed', error)
+  } finally {
+    polling = false
+  }
+}
+
+function startPolling(reset: boolean) {
+  window.clearInterval(pollTimer)
+  if (reset) {
+    pollInitialized = false
+    knownMessageIds.clear()
+  }
+
+  void pollUnreadMessages()
+  pollTimer = window.setInterval(() => {
+    void pollUnreadMessages()
+  }, SYS_MESSAGE_POLL_INTERVAL)
+}
+
+function stopPolling() {
+  window.clearInterval(pollTimer)
+  pollTimer = undefined
+  polling = false
+  pollInitialized = false
+  knownMessageIds.clear()
+}
+
 function teardownSocket() {
   window.clearTimeout(reconnectTimer)
   if (!socket) return
@@ -131,7 +229,14 @@ function connectSocket() {
 
   teardownSocket()
 
-  const nextSocket = new WebSocket(url)
+  let nextSocket: WebSocket
+  try {
+    nextSocket = new WebSocket(url)
+  } catch (error) {
+    console.warn('Sys message websocket connection failed', error)
+    scheduleReconnect()
+    return
+  }
   socket = nextSocket
 
   nextSocket.addEventListener('open', () => {
@@ -143,7 +248,7 @@ function connectSocket() {
 
     try {
       const message = normalizeSysMessage(JSON.parse(event.data) as SysMessagePushPayload)
-      if (message) notifyMessage(message)
+      if (message) deliverMessage(message)
     } catch (error) {
       console.warn('Invalid sys_message websocket payload', error)
     }
@@ -168,24 +273,28 @@ export const sysMessageService = {
 
     const nextUserId = userId.trim()
     if (!nextUserId) return
+    const userChanged = activeUserId !== nextUserId
+
+    activeUserId = nextUserId
+    shouldReconnect = true
+    startPolling(userChanged)
 
     if (
       !options.force &&
-      activeUserId === nextUserId &&
+      !userChanged &&
       socket &&
       (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)
     ) {
       return
     }
 
-    activeUserId = nextUserId
-    shouldReconnect = true
     reconnectAttempts = 0
     connectSocket()
   },
   disconnect() {
     shouldReconnect = false
     activeUserId = ''
+    stopPolling()
     teardownSocket()
   }
 }

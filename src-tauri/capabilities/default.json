@@ -8,14 +8,6 @@
     "core:window:allow-set-position",
     "deep-link:default",
     "deep-link:allow-register",
-    {
-      "identifier": "http:default",
-      "allow": [
-        { "url": "http://10.8.7.57:5900/**" },
-        { "url": "http://192.168.0.210:8066/**" },
-        { "url": "http://192.168.0.211:8066/**" }
-      ]
-    },
     "opener:default",
     "notification:default"
   ]

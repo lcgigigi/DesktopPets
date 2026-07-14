@@ -1,5 +1,3 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 use std::fs;
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
@@ -139,20 +137,27 @@ fn resize_mascot_for_notification(window: &tauri::WebviewWindow, visible: bool, 
         .ok()
         .map(|size| size.to_logical::<f64>(scale));
 
-    if let (Some(size), Ok(position)) = (current_size, window.outer_position()) {
+    let next_position = if let (Some(size), Ok(position)) = (current_size, window.outer_position()) {
         let position = position.to_logical::<f64>(scale);
         let delta_x = (target_width - size.width) / 2.0;
         let delta_y = target_height - size.height;
-        let _ = window.set_position(Position::Logical(LogicalPosition {
+        Some(LogicalPosition {
             x: position.x - delta_x,
             y: position.y - delta_y,
-        }));
-    }
+        })
+    } else {
+        None
+    };
 
+    // Windows WebView2 在连续缩放时需要先更新窗口尺寸，再恢复右下角锚点。
+    // 否则位置先变、尺寸后变的瞬间可能让透明 WebView 裁掉一部分角色。
     let _ = window.set_size(Size::Logical(LogicalSize {
         width: target_width,
         height: target_height,
     }));
+    if let Some(position) = next_position {
+        let _ = window.set_position(Position::Logical(position));
+    }
 }
 
 fn panel_height(expanded: bool) -> f64 {
@@ -414,7 +419,6 @@ fn main() {
             },
         ))
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
