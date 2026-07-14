@@ -11,12 +11,14 @@ import MascotBubble from '../components/MascotBubble.vue'
 import SysMessageTip from '../components/SysMessageTip.vue'
 import { hidePanelWindow, openWorkbench, setMascotNotificationVisible, setMascotPosition, syncPanelWindow, togglePanelWindow } from '../services/window.service'
 import { useMascotStore } from '../stores/mascot'
+import type { DesktopLoginCredentials } from '../types/auth'
 import type { MascotAnimationState } from '../types/mascot'
 import type { SysMessageNotification } from '../types/sys-message'
 
 const props = defineProps<{
   needsAuth: boolean
   authPending: boolean
+  authErrorMessage?: string
   showLogout: boolean
   sysMessage: SysMessageNotification | null
   sysMessageContent: string
@@ -24,7 +26,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  login: []
+  login: [credentials?: DesktopLoginCredentials]
   logout: []
   readSysMessage: [message: SysMessageNotification]
   viewSysMessage: [message: SysMessageNotification]
@@ -333,7 +335,8 @@ onUnmounted(() => {
     <AuthLoginTip
       v-if="needsAuth"
       :pending="authPending"
-      @login="emit('login')"
+      :message="authErrorMessage"
+      @login="emit('login', $event)"
     />
     <SysMessageTip
       v-else-if="sysMessage"

@@ -1,4 +1,10 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use std::fs;
+use std::path::PathBuf;
+#[cfg(target_os = "macos")]
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::window::Color;
@@ -6,6 +12,67 @@ use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, Position, Size};
 
 const MASCOT_WIDTH: f64 = 168.0;
 const MASCOT_HEIGHT: f64 = 168.0;
+const DESKTOP_AUTH_CALLBACK_PREFIX: &str = "huali-ai-mascot://auth-callback";
+const DESKTOP_AUTH_CALLBACK_FILE: &str = "huali-ai-mascot-auth-callback.tmp";
+
+#[derive(Clone, Default)]
+struct PendingDesktopAuthCallback(Arc<Mutex<Option<NativeDesktopAuthCallback>>>);
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeDesktopAuthCallback {
+    callback_url: Option<String>,
+    argument_count: usize,
+}
+
+fn find_desktop_auth_callback(args: &[String]) -> Option<String> {
+    args.iter()
+        .find(|arg| arg.starts_with(DESKTOP_AUTH_CALLBACK_PREFIX))
+        .cloned()
+}
+
+fn desktop_auth_callback_file() -> PathBuf {
+    std::env::temp_dir().join(DESKTOP_AUTH_CALLBACK_FILE)
+}
+
+fn persist_startup_desktop_auth_callback(callback_url: &str) {
+    let _ = fs::write(desktop_auth_callback_file(), callback_url.as_bytes());
+}
+
+fn take_persisted_desktop_auth_callback() -> Option<NativeDesktopAuthCallback> {
+    let path = desktop_auth_callback_file();
+    let callback_url = fs::read_to_string(&path).ok();
+    let _ = fs::remove_file(path);
+
+    callback_url.map(|callback_url| NativeDesktopAuthCallback {
+        callback_url: Some(callback_url),
+        argument_count: 2,
+    })
+}
+
+impl PendingDesktopAuthCallback {
+    fn capture(&self, args: &[String]) -> Option<String> {
+        let callback_url = find_desktop_auth_callback(args);
+        if let Ok(mut pending) = self.0.lock() {
+            pending.replace(NativeDesktopAuthCallback {
+                callback_url: callback_url.clone(),
+                argument_count: args.len(),
+            });
+        }
+        callback_url
+    }
+
+    fn take(&self) -> Option<NativeDesktopAuthCallback> {
+        self.0.lock().ok()?.take()
+    }
+}
+
+#[tauri::command]
+fn take_desktop_auth_callback(
+    state: tauri::State<'_, PendingDesktopAuthCallback>,
+) -> Option<NativeDesktopAuthCallback> {
+    state.take().or_else(take_persisted_desktop_auth_callback)
+}
 const MASCOT_NOTIFICATION_WIDTH: f64 = 300.0;
 const MASCOT_NOTIFICATION_HEIGHT: f64 = 420.0;
 const MASCOT_MESSAGE_WIDTH: f64 = 200.0;
@@ -324,9 +391,30 @@ fn open_or_focus_web_url(url: String, match_url: String) -> bool {
 }
 
 fn main() {
+    let startup_args = std::env::args().collect::<Vec<_>>();
+    if let Some(callback_url) = find_desktop_auth_callback(&startup_args) {
+        persist_startup_desktop_auth_callback(&callback_url);
+    }
+
+    let pending_desktop_auth = PendingDesktopAuthCallback::default();
+    let single_instance_desktop_auth = pending_desktop_auth.clone();
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
+        .manage(pending_desktop_auth)
+        .plugin(tauri_plugin_single_instance::init(
+            move |app, argv, _cwd| {
+                if let Some(callback_url) = single_instance_desktop_auth.capture(&argv) {
+                    let _ = app.emit("desktop-auth-callback", callback_url);
+                }
+
+                if let Some(window) = app.get_webview_window("mascot") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            },
+        ))
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
@@ -340,9 +428,14 @@ fn main() {
             set_mascot_notification_visible,
             set_panel_expanded,
             exit_app,
-            open_or_focus_web_url
+            open_or_focus_web_url,
+            take_desktop_auth_callback
         ])
         .setup(|app| {
+            let startup_args = std::env::args().collect::<Vec<_>>();
+            app.state::<PendingDesktopAuthCallback>()
+                .capture(&startup_args);
+
             #[cfg(any(windows, target_os = "linux"))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;

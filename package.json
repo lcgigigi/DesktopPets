@@ -1,6 +1,6 @@
 {
   "name": "huali-ai-mascot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "build": "npm run build:prod",
     "build:prod": "vue-tsc --noEmit && vite build --mode prod",
     "build:main": "vue-tsc --noEmit && vite build --mode main",
+    "build:intranet": "vue-tsc --noEmit && vite build --mode intranet",
     "test": "vitest run",
     "mascot:prepare": "node scripts/prepare-mascot-sprite.mjs",
     "mock:api": "node scripts/mock-api.mjs",
@@ -20,11 +21,13 @@
     "build:windows-installer:prod": "BUILD_MODE=prod bash scripts/build-windows-installer.sh",
     "build:windows-installer:main": "BUILD_MODE=main bash scripts/build-windows-installer.sh",
     "build:windows-portable:prod": "BUILD_MODE=prod bash scripts/build-windows-portable.sh",
-    "build:windows-portable:main": "BUILD_MODE=main bash scripts/build-windows-portable.sh"
+    "build:windows-portable:main": "BUILD_MODE=main bash scripts/build-windows-portable.sh",
+    "build:windows-portable:intranet": "BUILD_MODE=intranet bash scripts/build-windows-portable.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",
     "@tauri-apps/plugin-deep-link": "^2.4.9",
+    "@tauri-apps/plugin-http": "^2.5.9",
     "@tauri-apps/plugin-notification": "^2.2.1",
     "@tauri-apps/plugin-opener": "^2.2.7",
     "axios": "^1.7.9",

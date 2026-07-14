@@ -1,20 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import type { UnlistenFn } from '@tauri-apps/api/event'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import MascotWindow from './views/MascotWindow.vue'
 import PanelWindow from './views/PanelWindow.vue'
-import { createDesktopAuthState, listenDesktopAuthCallbacks } from './services/desktop-auth.service'
+import { loginDesktop } from './services/login.service'
 import { onDesktopUnauthorized } from './services/request'
 import { validateDesktopSession } from './services/session.service'
 import { getSysMessageFallback, resolveSysMessageContent } from './services/sys-message-content.service'
 import { sysMessageService } from './services/sys-message.service'
 import { websocketService } from './services/websocket.service'
-import { openDesktopLogin, openSysMessageDetail, openWorkbench, showAssistant, showPanelWindow, hidePanelWindow } from './services/window.service'
+import { openSysMessageDetail, openWorkbench, showAssistant, showPanelWindow, hidePanelWindow } from './services/window.service'
 import { useMascotStore } from './stores/mascot'
 import { useTaskStore } from './stores/task'
 import { useUserStore } from './stores/user'
 import type { MascotStatus } from './types/mascot'
+import type { DesktopLoginCredentials } from './types/auth'
 import type { SysMessageNotification } from './types/sys-message'
 import type { TaskCreatedEvent } from './types/task'
 import { env } from './utils/env'
@@ -35,6 +35,7 @@ const sysMessageResolutionQueue = ref<SysMessageNotification[]>([])
 const isResolvingSysMessage = ref(false)
 const recentSysMessageKeys = new Set<string>()
 const authPending = ref(false)
+const authErrorMessage = ref('')
 const SESSION_VALIDATION_INTERVAL = 5 * 60 * 1000
 let removeTaskListener: (() => void) | undefined
 let removeStatusListener: (() => void) | undefined
@@ -43,7 +44,6 @@ let removeTrayLogoutListener: (() => void) | undefined
 let removePanelTaskListener: (() => void) | undefined
 let removeMascotMessageListener: (() => void) | undefined
 let removeSysMessageListener: (() => void) | undefined
-let removeDeepLinkListener: UnlistenFn | undefined
 let removeUnauthorizedListener: (() => void) | undefined
 let sessionValidationTimer: number | undefined
 let sysMessageResolutionGeneration = 0
@@ -201,12 +201,30 @@ function startSessionValidation() {
   }, SESSION_VALIDATION_INTERVAL)
 }
 
-function startDesktopLogin() {
-  const state = createDesktopAuthState()
+async function startDesktopLogin(credentials?: DesktopLoginCredentials) {
+  if (!credentials) {
+    authErrorMessage.value = '请在登录卡中输入账号和密码'
+    return
+  }
+  if (authPending.value) return
+
   authPending.value = true
+  authErrorMessage.value = ''
   void hidePanelWindow()
-  mascotStore.showMessage('已打开网页登录', 'thinking', true)
-  void openDesktopLogin(state)
+  try {
+    const session = await loginDesktop(credentials)
+    userStore.setSession(session)
+    mascotStore.showMessage('登录成功，消息提醒已开启', 'success', true)
+    connectDesktopSockets({ force: true })
+    startSessionValidation()
+    void validateAndRestoreSession()
+  } catch (error) {
+    authErrorMessage.value = error instanceof Error
+      ? error.message
+      : '登录失败，请检查账号、密码和网络'
+  } finally {
+    authPending.value = false
+  }
 }
 
 function handleLogout() {
@@ -246,14 +264,6 @@ onMounted(async () => {
       pushSysMessage(message)
     })
     removeUnauthorizedListener = onDesktopUnauthorized(handleSessionExpired)
-    removeDeepLinkListener = await listenDesktopAuthCallbacks((payload) => {
-      userStore.setSession(payload)
-      authPending.value = false
-      mascotStore.showMessage('登录成功，消息提醒已开启', 'success', true)
-      connectDesktopSockets({ force: true })
-      startSessionValidation()
-      void validateAndRestoreSession()
-    })
     if (needsAuth.value) {
       mascotStore.showMessage('请先登录后接收消息', 'remind', true)
     } else {
@@ -296,7 +306,6 @@ onUnmounted(() => {
   removePanelTaskListener?.()
   removeMascotMessageListener?.()
   removeSysMessageListener?.()
-  removeDeepLinkListener?.()
   removeUnauthorizedListener?.()
   stopSessionValidation()
   if (windowMode === 'mascot') {
@@ -312,6 +321,7 @@ onUnmounted(() => {
       v-if="windowMode === 'mascot'"
       :needs-auth="needsAuth"
       :auth-pending="authPending"
+      :auth-error-message="authErrorMessage"
       :show-logout="showLogout"
       :sys-message="currentSysMessage"
       :sys-message-content="currentSysMessageContent"

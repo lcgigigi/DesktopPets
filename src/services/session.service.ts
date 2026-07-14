@@ -48,18 +48,28 @@ function normalizeCurrentUser(data: CurrentUserPayload): NormalizedCurrentUser |
   }
 }
 
+export async function loadDesktopCurrentUser(): Promise<UserInfo> {
+  const data = await request.get<unknown, CurrentUserPayload>('/getInfo')
+  const currentUser = normalizeCurrentUser(data)
+  if (!currentUser) throw new DesktopRequestError('后台未返回有效用户信息')
+  return currentUser.userInfo
+}
+
 export async function validateDesktopSession(expectedUserId: string): Promise<DesktopSessionCheck> {
   try {
     const data = await request.get<unknown, CurrentUserPayload>('/getInfo')
     const currentUser = normalizeCurrentUser(data)
+    if (!currentUser) throw new DesktopRequestError('后台未返回有效用户信息')
+
+    const { userInfo, identifiers } = currentUser
     const expected = expectedUserId.trim()
-    if (!currentUser || !currentUser.identifiers.includes(expected)) return { status: 'unauthorized' }
+    if (expected && !identifiers.includes(expected)) return { status: 'unauthorized' }
 
     return {
       status: 'valid',
       userInfo: {
-        ...currentUser.userInfo,
-        userId: expected || currentUser.userInfo.userId,
+        ...userInfo,
+        userId: expected || userInfo.userId,
       },
     }
   } catch (error) {

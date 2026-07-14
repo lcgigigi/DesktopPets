@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process'
 
-const validModes = ['prod', 'main']
+const validModes = ['prod', 'main', 'intranet']
 const mode = process.env.BUILD_MODE || 'prod'
 
 if (!validModes.includes(mode)) {
