@@ -2,16 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
+  put: vi.fn(),
 }))
 
 vi.mock('./request', () => ({
-  request: { get: mocks.get },
+  request: { get: mocks.get, put: mocks.put },
 }))
 
 vi.mock('../utils/env', () => ({
   env: {
     enableMock: false,
-    sysMessageWsBaseUrl: 'http://10.8.7.57:5900',
+    sysMessageWsBaseUrl: 'http://hlai.hlmc.cn:5900',
   },
 }))
 
@@ -53,6 +54,7 @@ describe('sysMessageService', () => {
     })
     vi.stubGlobal('WebSocket', FakeWebSocket)
     mocks.get.mockReset()
+    mocks.put.mockReset()
   })
 
   afterEach(() => {
@@ -100,5 +102,24 @@ describe('sysMessageService', () => {
     )
 
     removeListener()
+  })
+
+  it('marks the selected message as read in the backend', async () => {
+    mocks.get.mockResolvedValue({ rows: [] })
+    mocks.put.mockResolvedValue(true)
+    const message = {
+      id: '101',
+      rawId: 101,
+      dedupeKey: '101',
+      msgSubject: '新待办提醒',
+      msgContent: '你有一条新待办',
+      msgStatus: 0 as const,
+      msgType: 1,
+    }
+
+    await expect(sysMessageService.markRead(message)).resolves.toBe(true)
+
+    expect(mocks.put).toHaveBeenCalledWith('/sys-message/read', { ids: [101] })
+    expect(message.msgStatus).toBe(1)
   })
 })

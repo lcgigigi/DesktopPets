@@ -70,6 +70,12 @@ function toStatus(value: unknown): SysMessageStatus {
   return Number(value) === 1 ? 1 : 0
 }
 
+function normalizeRequestId(id: string | number) {
+  if (typeof id === 'number') return id
+  const numeric = Number(id)
+  return Number.isFinite(numeric) && String(numeric) === id.trim() ? numeric : id
+}
+
 function normalizeSysMessageItem(payload: SysMessageBackendItem): SysMessageNotification | null {
   const id = toId(payload.id)
   if (!id) return null
@@ -290,6 +296,15 @@ export const sysMessageService = {
 
     reconnectAttempts = 0
     connectSocket()
+  },
+  async markRead(message: SysMessageNotification) {
+    if (message.msgStatus === 1) return true
+
+    await request.put<unknown, boolean>('/sys-message/read', {
+      ids: [normalizeRequestId(message.rawId)],
+    })
+    message.msgStatus = 1
+    return true
   },
   disconnect() {
     shouldReconnect = false

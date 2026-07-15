@@ -14,7 +14,7 @@ import { validateDesktopSession } from './services/session.service'
 import { getSysMessageFallback, resolveSysMessageContent } from './services/sys-message-content.service'
 import { sysMessageService } from './services/sys-message.service'
 import { websocketService } from './services/websocket.service'
-import { openDesktopLogin, openSysMessageDetail, openWorkbench, showAssistant, showPanelWindow, hidePanelWindow } from './services/window.service'
+import { openDesktopLogin, openSysMessageDetail, openWorkbench, showAssistant, showNotificationWindow, showPanelWindow, hidePanelWindow } from './services/window.service'
 import { useMascotStore } from './stores/mascot'
 import { useTaskStore } from './stores/task'
 import { useUserStore } from './stores/user'
@@ -86,6 +86,7 @@ function showResolvedSysMessage(message: ResolvedSysMessage) {
   } else {
     currentSysMessage.value = message
   }
+  void showNotificationWindow()
   void hidePanelWindow()
 }
 
@@ -132,8 +133,14 @@ function hideCurrentSysMessage(message: SysMessageNotification) {
   sysMessageQueue.value = sysMessageQueue.value.filter((item) => item.dedupeKey !== message.dedupeKey)
 }
 
-function handleSysMessageRead(message: SysMessageNotification) {
-  hideCurrentSysMessage(message)
+async function handleSysMessageRead(message: SysMessageNotification) {
+  try {
+    await sysMessageService.markRead(message)
+    hideCurrentSysMessage(message)
+  } catch (error) {
+    console.warn('Failed to mark sys_message as read', error)
+    mascotStore.showMessage('标记已读失败，请检查网络后重试', 'error', true)
+  }
 }
 
 function handleSysMessageView(message: SysMessageNotification) {
@@ -144,6 +151,9 @@ function handleSysMessageView(message: SysMessageNotification) {
     bizType: message.bizType
   })
   hideCurrentSysMessage(message)
+  void sysMessageService.markRead(message).catch((error) => {
+    console.warn('Failed to mark viewed sys_message as read', error)
+  })
   void openSysMessageDetail(message)
 }
 

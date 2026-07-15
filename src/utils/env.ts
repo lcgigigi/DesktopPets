@@ -1,4 +1,4 @@
-const webBaseUrl = import.meta.env.VITE_WEB_BASE_URL || 'http://127.0.0.1:5173'
+const webBaseUrl = import.meta.env.VITE_WEB_BASE_URL || 'http://hlai.hlmc.cn:5900'
 const enableMock = import.meta.env.VITE_ENABLE_MOCK !== 'false'
 
 export const env = {

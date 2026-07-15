@@ -1,8 +1,14 @@
 <script setup lang="ts">
-import { emitTo } from '@tauri-apps/api/event'
-import { onMounted, ref } from 'vue'
+import { emitTo, listen } from '@tauri-apps/api/event'
+import type { UnlistenFn } from '@tauri-apps/api/event'
+import { onMounted, onUnmounted, ref } from 'vue'
 import TodoInputBox from '../components/TodoInputBox.vue'
-import { hidePanelWindow, openWorkbench, setPanelExpanded } from '../services/window.service'
+import {
+  PANEL_REVEAL_EVENT,
+  hidePanelWindow,
+  openWorkbench,
+  setPanelExpanded
+} from '../services/window.service'
 import { useMascotStore } from '../stores/mascot'
 import type { MascotStatus } from '../types/mascot'
 
@@ -15,10 +21,34 @@ defineProps<{
 const mascotStore = useMascotStore()
 const inputBoxRef = ref<InstanceType<typeof TodoInputBox> | null>(null)
 const loading = ref(false)
+const isRevealing = ref(false)
+let revealTimer: number | undefined
+let revealFrame: number | undefined
+let removeRevealListener: UnlistenFn | undefined
 
-onMounted(() => {
-  void setPanelExpanded(false)
+function playPanelReveal() {
+  window.clearTimeout(revealTimer)
+  window.cancelAnimationFrame(revealFrame ?? 0)
+  isRevealing.value = false
+  revealFrame = window.requestAnimationFrame(() => {
+    isRevealing.value = true
+    revealTimer = window.setTimeout(() => {
+      isRevealing.value = false
+    }, 220)
+  })
   window.setTimeout(() => inputBoxRef.value?.focus(), 80)
+}
+
+onMounted(async () => {
+  void setPanelExpanded(false)
+  playPanelReveal()
+  removeRevealListener = await listen(PANEL_REVEAL_EVENT, playPanelReveal)
+})
+
+onUnmounted(() => {
+  window.clearTimeout(revealTimer)
+  window.cancelAnimationFrame(revealFrame ?? 0)
+  removeRevealListener?.()
 })
 
 function showMascotMessage(message: string, status?: MascotStatus, autoReset = false) {
@@ -42,7 +72,11 @@ async function submitTodo(text: string) {
 </script>
 
 <template>
-  <section class="pet-prompt" aria-label="一句话创建">
+  <section
+    class="pet-prompt"
+    :class="{ 'is-revealing': isRevealing }"
+    aria-label="一句话创建"
+  >
     <TodoInputBox ref="inputBoxRef" :loading="loading" @submit="submitTodo" />
     <span class="pet-prompt__tail" aria-hidden="true" />
   </section>

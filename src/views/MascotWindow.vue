@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { LogicalPosition } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
@@ -9,10 +8,25 @@ import MascotContextMenu from '../components/MascotContextMenu.vue'
 import MascotAvatar from '../components/MascotAvatar.vue'
 import MascotBubble from '../components/MascotBubble.vue'
 import SysMessageTip from '../components/SysMessageTip.vue'
-import { hidePanelWindow, openWorkbench, setMascotNotificationVisible, setMascotPosition, syncPanelWindow, togglePanelWindow } from '../services/window.service'
+import {
+  MASCOT_NATIVE_DRAG_ENDED_EVENT,
+  MASCOT_REVEAL_EVENT,
+  hidePanelWindow,
+  openWorkbench,
+  peekMascotWindow,
+  revealMascotWindow,
+  setMascotNotificationVisible,
+  startMascotWindowDrag,
+  syncPanelWindow,
+  togglePanelWindow
+} from '../services/window.service'
 import { useMascotStore } from '../stores/mascot'
 import type { MascotAnimationState } from '../types/mascot'
 import type { SysMessageNotification } from '../types/sys-message'
+import {
+  advanceRunningDirection,
+  createRunningDirectionState
+} from '../utils/mascot-drag-motion'
 
 const props = defineProps<{
   needsAuth: boolean
@@ -35,25 +49,101 @@ const mascotStore = useMascotStore()
 const contextMenu = ref<{ x: number; y: number } | null>(null)
 const isDragging = ref(false)
 const contextMenuSize = { width: 124, height: 40 }
+const compactOverlaySize = { width: 220, height: 176 }
 const animationState = ref<MascotAnimationState>()
 const dragThreshold = 5
 const avatarSingleClickDelayMs = 280
+const idleHideDelayMs = 60 * 1000
+const peekRevealDurationMs = 420
+const nativeDragSafetyTimeoutMs = 15 * 1000
+const isPeeked = ref(false)
+const isPointerInside = ref(false)
+const peekTransition = ref<'revealing'>()
 let dragState:
   | {
       pointerId: number
       startScreenX: number
       startScreenY: number
-      startWindowX: number
-      startWindowY: number
       startedOnAvatar: boolean
       dragging: boolean
+      nativeDragStarted: boolean
+      lastScreenX: number
     }
   | undefined
-let pendingFrame = 0
-let pendingPosition: LogicalPosition | undefined
 let transientAnimationTimer: number | undefined
 let avatarSingleClickTimer: number | undefined
+let idleHideTimer: number | undefined
+let peekTransitionTimer: number | undefined
+let nativeDragIdleTimer: number | undefined
+let lastNativeWindowX: number | undefined
+let runningMotion = createRunningDirectionState()
 let removeCloseOverlaysListener: UnlistenFn | undefined
+let removeWindowMovedListener: UnlistenFn | undefined
+let removeNativeDragEndedListener: UnlistenFn | undefined
+
+function clearIdleHideTimer() {
+  window.clearTimeout(idleHideTimer)
+  idleHideTimer = undefined
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+function scheduleIdleHide() {
+  clearIdleHideTimer()
+  if (isNotifying.value || isDragging.value || isPeeked.value || isPointerInside.value) return
+
+  idleHideTimer = window.setTimeout(() => {
+    idleHideTimer = undefined
+    if (isNotifying.value || isDragging.value || isPointerInside.value) {
+      scheduleIdleHide()
+      return
+    }
+    isPeeked.value = true
+    peekTransition.value = undefined
+    void peekMascotWindow(prefersReducedMotion())
+  }, idleHideDelayMs)
+}
+
+function handlePointerEnter() {
+  isPointerInside.value = true
+  clearIdleHideTimer()
+  if (!isPeeked.value) return
+
+  startPeekReveal()
+}
+
+function handlePointerLeave() {
+  isPointerInside.value = false
+  scheduleIdleHide()
+}
+
+function revealFromInteraction() {
+  clearIdleHideTimer()
+  const wasPeeked = startPeekReveal()
+  scheduleIdleHide()
+  return wasPeeked
+}
+
+function handleExternalReveal() {
+  if (isPeeked.value) startPeekReveal(false)
+  scheduleIdleHide()
+}
+
+function startPeekReveal(moveWindow = true) {
+  if (!isPeeked.value) return false
+
+  isPeeked.value = false
+  peekTransition.value = 'revealing'
+  window.clearTimeout(peekTransitionTimer)
+  const reducedMotion = prefersReducedMotion()
+  peekTransitionTimer = window.setTimeout(() => {
+    peekTransition.value = undefined
+  }, reducedMotion ? 0 : peekRevealDurationMs)
+  if (moveWindow) void revealMascotWindow(reducedMotion)
+  return true
+}
 
 function clearAvatarSingleClickTimer() {
   window.clearTimeout(avatarSingleClickTimer)
@@ -102,8 +192,29 @@ function playTransientAnimation(state: MascotAnimationState, durationMs: number)
   }, durationMs)
 }
 
-async function handlePointerDown(event: PointerEvent) {
+function resetRunningCadence() {
+  runningMotion = createRunningDirectionState()
+}
+
+function resetRunningMotion() {
+  resetRunningCadence()
+  lastNativeWindowX = undefined
+}
+
+function updateRunningMotion(deltaX: number, forceDirection = false) {
+  const result = advanceRunningDirection(runningMotion, deltaX, forceDirection)
+  runningMotion = result.state
+  if (result.changed && result.state.direction) {
+    animationState.value = result.state.direction
+  }
+}
+
+function handlePointerDown(event: PointerEvent) {
   if (event.button !== 0) return
+  if (revealFromInteraction()) {
+    event.preventDefault()
+    return
+  }
   if (isOverlayInteraction(event.target)) return
 
   event.preventDefault()
@@ -112,35 +223,47 @@ async function handlePointerDown(event: PointerEvent) {
   const startedOnAvatar =
     event.target instanceof Element && Boolean(event.target.closest('.mascot-avatar'))
 
-  try {
-    const appWindow = getCurrentWindow()
-    const [position, scaleFactor] = await Promise.all([appWindow.outerPosition(), appWindow.scaleFactor()])
-    const logicalPosition = position.toLogical(scaleFactor)
-    dragState = {
-      pointerId: event.pointerId,
-      startScreenX: event.screenX,
-      startScreenY: event.screenY,
-      startWindowX: logicalPosition.x,
-      startWindowY: logicalPosition.y,
-      startedOnAvatar,
-      dragging: false
-    }
-  } catch {
-    dragState = undefined
+  dragState = {
+    pointerId: event.pointerId,
+    startScreenX: event.screenX,
+    startScreenY: event.screenY,
+    startedOnAvatar,
+    dragging: false,
+    nativeDragStarted: false,
+    lastScreenX: event.screenX
   }
+  resetRunningMotion()
 }
 
-function schedulePosition(position: LogicalPosition) {
-  pendingPosition = position
-  if (pendingFrame) return
+function beginNativeDrag(target: HTMLElement) {
+  if (!dragState || dragState.nativeDragStarted) return
+  dragState.nativeDragStarted = true
+  lastNativeWindowX = undefined
 
-  pendingFrame = window.requestAnimationFrame(() => {
-    pendingFrame = 0
-    if (!pendingPosition) return
-    const nextPosition = pendingPosition
-    pendingPosition = undefined
-    void setMascotPosition(nextPosition.x, nextPosition.y)
+  if (target.hasPointerCapture(dragState.pointerId)) {
+    target.releasePointerCapture(dragState.pointerId)
+  }
+
+  // Let the operating system compositor move the transparent window. Sending
+  // one set-position IPC call per animation frame creates a command backlog on
+  // Windows and is the source of the visible stop-start drag motion.
+  void startMascotWindowDrag().catch(() => {
+    finishNativeDrag()
   })
+  window.clearTimeout(nativeDragIdleTimer)
+  nativeDragIdleTimer = window.setTimeout(finishNativeDrag, nativeDragSafetyTimeoutMs)
+}
+
+function finishNativeDrag() {
+  if (!isDragging.value) return
+  dragState = undefined
+  isDragging.value = false
+  animationState.value = undefined
+  resetRunningMotion()
+  window.clearTimeout(nativeDragIdleTimer)
+  nativeDragIdleTimer = undefined
+  void syncPanelWindow()
+  scheduleIdleHide()
 }
 
 function handlePointerMove(event: PointerEvent) {
@@ -150,11 +273,20 @@ function handlePointerMove(event: PointerEvent) {
   const deltaY = event.screenY - dragState.startScreenY
   if (!dragState.dragging && Math.hypot(deltaX, deltaY) < dragThreshold) return
 
+  const incrementalDeltaX = event.screenX - dragState.lastScreenX
+  dragState.lastScreenX = event.screenX
+
+  const startedDragging = !dragState.dragging
   dragState.dragging = true
   isDragging.value = true
-  animationState.value = deltaX < 0 ? 'running-left' : 'running-right'
+  updateRunningMotion(startedDragging ? deltaX : incrementalDeltaX, startedDragging)
   event.preventDefault()
-  schedulePosition(new LogicalPosition(dragState.startWindowX + deltaX, dragState.startWindowY + deltaY))
+  beginNativeDrag(event.currentTarget as HTMLElement)
+}
+
+function finishGlobalNativeDrag() {
+  if (!dragState?.nativeDragStarted) return
+  finishNativeDrag()
 }
 
 function finishPointer(event: PointerEvent) {
@@ -172,14 +304,14 @@ function finishPointer(event: PointerEvent) {
 
   const wasDragging = dragState.dragging
   const startedOnAvatar = dragState.startedOnAvatar
-  dragState = undefined
-  isDragging.value = false
 
   if (wasDragging) {
-    animationState.value = undefined
-    void syncPanelWindow()
+    finishNativeDrag()
     return
   }
+
+  dragState = undefined
+  isDragging.value = false
 
   if (startedOnAvatar) {
     scheduleAvatarSingleClick()
@@ -198,9 +330,12 @@ function cancelPointer(event: PointerEvent) {
   }
 
   const wasDragging = dragState.dragging
+  const nativeDragStarted = dragState.nativeDragStarted
+  if (nativeDragStarted) return
   dragState = undefined
   isDragging.value = false
   animationState.value = undefined
+  resetRunningMotion()
 
   if (wasDragging) {
     void syncPanelWindow()
@@ -212,14 +347,18 @@ function closeContextMenu() {
 }
 
 function clampMenuPosition(x: number, y: number, width: number, height: number) {
+  const maxX = Math.max(8, width - contextMenuSize.width - 8)
+  const maxY = Math.max(8, height - contextMenuSize.height - 8)
+
   return {
-    x: Math.min(Math.max(8, x), width - contextMenuSize.width - 8),
-    y: Math.min(Math.max(8, y), height - contextMenuSize.height - 8)
+    x: Math.min(Math.max(8, x), maxX),
+    y: Math.min(Math.max(8, y), maxY)
   }
 }
 
 function handleContextMenu(event: MouseEvent) {
   event.preventDefault()
+  revealFromInteraction()
   // 登录提示已经提供登录入口时，不再显示重复的右键菜单入口。
   if (props.needsAuth) return
   if (!props.showLogout) return
@@ -229,8 +368,16 @@ function handleContextMenu(event: MouseEvent) {
 
   const container = event.currentTarget as HTMLElement
   const rect = container.getBoundingClientRect()
-  const centeredX = (rect.width - contextMenuSize.width) / 2
-  contextMenu.value = clampMenuPosition(centeredX, 10, rect.width, rect.height)
+  // The native window expands after this state update. Calculate against the
+  // expanded width immediately so the menu never starts at a negative x.
+  const overlayWidth = Math.max(rect.width, compactOverlaySize.width)
+  const centeredX = (overlayWidth - contextMenuSize.width) / 2
+  contextMenu.value = clampMenuPosition(
+    centeredX,
+    20,
+    overlayWidth,
+    Math.max(rect.height, compactOverlaySize.height)
+  )
 }
 
 function handleOutsidePointerDown(event: PointerEvent) {
@@ -257,6 +404,8 @@ const hasBubbleMessage = computed(() => Boolean(mascotStore.message))
 const hasExpandedNotification = computed(() => Boolean(props.sysMessage || props.needsAuth))
 const isContextMenuOpen = computed(() => contextMenu.value !== null)
 const avatarAnimationState = computed<MascotAnimationState | undefined>(() => {
+  if (peekTransition.value === 'revealing') return 'revealing'
+  if (isPeeked.value) return 'peeking'
   return props.sysMessage ? 'waving' : animationState.value
 })
 const isNotifying = computed(
@@ -285,24 +434,51 @@ watch(
     compact: (hasBubbleMessage.value || isContextMenuOpen.value) && !hasExpandedNotification.value
   }),
   ({ visible, compact }) => {
+    clearIdleHideTimer()
+    if (visible) {
+      if (isPeeked.value) startPeekReveal(false)
+    } else {
+      scheduleIdleHide()
+    }
     void setMascotNotificationVisible(visible, compact)
   },
   { immediate: true }
 )
 
 onMounted(async () => {
+  window.addEventListener(MASCOT_REVEAL_EVENT, handleExternalReveal)
+  window.addEventListener('pointerup', finishGlobalNativeDrag, true)
+  window.addEventListener('mouseup', finishGlobalNativeDrag, true)
   removeCloseOverlaysListener = await listen('mascot-close-overlays', () => {
     dismissTransientOverlays()
   })
+  removeNativeDragEndedListener = await listen(MASCOT_NATIVE_DRAG_ENDED_EVENT, () => {
+    finishNativeDrag()
+  })
+  removeWindowMovedListener = await getCurrentWindow().onMoved(({ payload }) => {
+    if (!isDragging.value) return
+    if (lastNativeWindowX !== undefined) {
+      updateRunningMotion(payload.x - lastNativeWindowX)
+    }
+    lastNativeWindowX = payload.x
+  })
+  scheduleIdleHide()
 })
 
 onUnmounted(() => {
   window.clearTimeout(transientAnimationTimer)
+  window.clearTimeout(peekTransitionTimer)
+  window.clearTimeout(nativeDragIdleTimer)
   clearAvatarSingleClickTimer()
-  if (pendingFrame) window.cancelAnimationFrame(pendingFrame)
+  clearIdleHideTimer()
   window.removeEventListener('pointerdown', handleOutsidePointerDown, true)
   window.removeEventListener('keydown', handleContextMenuKeydown)
+  window.removeEventListener(MASCOT_REVEAL_EVENT, handleExternalReveal)
+  window.removeEventListener('pointerup', finishGlobalNativeDrag, true)
+  window.removeEventListener('mouseup', finishGlobalNativeDrag, true)
   removeCloseOverlaysListener?.()
+  removeWindowMovedListener?.()
+  removeNativeDragEndedListener?.()
   void setMascotNotificationVisible(false)
 })
 </script>
@@ -316,37 +492,48 @@ onUnmounted(() => {
       'has-expanded-notification': hasExpandedNotification
     }"
     @pointerdown="handlePointerDown"
+    @pointerenter="handlePointerEnter"
+    @pointerleave="handlePointerLeave"
     @pointermove="handlePointerMove"
     @pointerup="finishPointer"
     @pointercancel="cancelPointer"
     @contextmenu="handleContextMenu"
   >
-    <MascotContextMenu
-      v-if="contextMenu"
-      :x="contextMenu.x"
-      :y="contextMenu.y"
-      :show-login="needsAuth"
-      :show-logout="showLogout"
-      @login="emit('login')"
-      @logout="emit('logout')"
-      @close="closeContextMenu"
-    />
-    <AuthLoginTip
-      v-if="needsAuth"
-      :pending="authPending"
-      :message="authErrorMessage"
-      @login="emit('login')"
-    />
-    <SysMessageTip
-      v-else-if="sysMessage"
-      :key="sysMessage.dedupeKey"
-      :message="sysMessage"
-      :display-content="sysMessageContent"
-      :pending-count="pendingSysMessageCount || 0"
-      @read="emit('readSysMessage', $event)"
-      @view="emit('viewSysMessage', $event)"
-    />
-    <MascotBubble v-else-if="mascotStore.message" :message="mascotStore.message" />
+    <Transition name="mascot-overlay">
+      <MascotContextMenu
+        v-if="contextMenu"
+        :x="contextMenu.x"
+        :y="contextMenu.y"
+        :show-login="needsAuth"
+        :show-logout="showLogout"
+        @login="emit('login')"
+        @logout="emit('logout')"
+        @close="closeContextMenu"
+      />
+    </Transition>
+    <Transition name="mascot-overlay">
+      <AuthLoginTip
+        v-if="needsAuth"
+        key="auth-login"
+        :pending="authPending"
+        :message="authErrorMessage"
+        @login="emit('login')"
+      />
+      <SysMessageTip
+        v-else-if="sysMessage"
+        :key="sysMessage.dedupeKey"
+        :message="sysMessage"
+        :display-content="sysMessageContent"
+        :pending-count="pendingSysMessageCount || 0"
+        @read="emit('readSysMessage', $event)"
+        @view="emit('viewSysMessage', $event)"
+      />
+      <MascotBubble
+        v-else-if="mascotStore.message"
+        key="mascot-message"
+        :message="mascotStore.message"
+      />
+    </Transition>
     <MascotAvatar
       :status="mascotStore.status"
       :animation-state="avatarAnimationState"

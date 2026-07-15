@@ -17,3 +17,5 @@ export type MascotAnimationState =
   | 'remind'
   | 'success'
   | 'cooling-office'
+  | 'peeking'
+  | 'revealing'

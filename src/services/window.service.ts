@@ -1,9 +1,18 @@
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { invoke } from '@tauri-apps/api/core'
+import { emitTo } from '@tauri-apps/api/event'
 import { DESKTOP_AUTH_SCHEME } from './desktop-auth.service'
 import type { SysMessageNotification } from '../types/sys-message'
 import { env } from '../utils/env'
 import { storage } from '../utils/storage'
+
+export const MASCOT_REVEAL_EVENT = 'huali:mascot-reveal'
+export const MASCOT_NATIVE_DRAG_ENDED_EVENT = 'mascot-native-drag-ended'
+export const PANEL_REVEAL_EVENT = 'huali:panel-reveal'
+
+function announceMascotReveal() {
+  window.dispatchEvent(new Event(MASCOT_REVEAL_EVENT))
+}
 
 function getWebBaseUrl() {
   return env.webBaseUrl.replace(/\/$/, '')
@@ -45,7 +54,8 @@ async function openExternal(url: string) {
 
     if (reused) return
   } catch {
-    // Browser tab reuse is only available inside the macOS desktop shell.
+    // Browser tab reuse is implemented by the native desktop shell when the
+    // operating system exposes a supported browser window.
   }
 
   try {
@@ -109,6 +119,7 @@ export async function hideAssistant() {
 }
 
 export async function showAssistant() {
+  announceMascotReveal()
   try {
     await invoke('show_main_window')
   } catch {
@@ -116,17 +127,51 @@ export async function showAssistant() {
   }
 }
 
+export async function showNotificationWindow() {
+  announceMascotReveal()
+  try {
+    await invoke('show_notification_window')
+  } catch {
+    return
+  }
+}
+
+export async function peekMascotWindow(reducedMotion = false) {
+  try {
+    await invoke('peek_mascot_window', { reducedMotion })
+  } catch {
+    return
+  }
+}
+
+export async function revealMascotWindow(reducedMotion = false) {
+  announceMascotReveal()
+  try {
+    await invoke('reveal_mascot_window', { reducedMotion })
+  } catch {
+    return
+  }
+}
+
+export async function startMascotWindowDrag() {
+  await invoke('start_mascot_drag')
+}
+
 export async function togglePanelWindow() {
+  announceMascotReveal()
   try {
     await invoke('toggle_panel_window')
+    await emitTo('panel', PANEL_REVEAL_EVENT)
   } catch {
     return
   }
 }
 
 export async function showPanelWindow() {
+  announceMascotReveal()
   try {
     await invoke('show_panel_window')
+    await emitTo('panel', PANEL_REVEAL_EVENT)
   } catch {
     return
   }
@@ -135,14 +180,6 @@ export async function showPanelWindow() {
 export async function hidePanelWindow() {
   try {
     await invoke('hide_panel_window')
-  } catch {
-    return
-  }
-}
-
-export async function setMascotPosition(x: number, y: number) {
-  try {
-    await invoke('set_mascot_position', { x, y })
   } catch {
     return
   }

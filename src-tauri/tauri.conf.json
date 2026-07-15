@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "华力AI桌面助手",
-  "version": "1.0.4",
+  "mainBinaryName": "HualiAIDesktopAssistant",
+  "version": "1.0.15",
   "identifier": "com.huali.ai.mascot",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -17,7 +18,7 @@
         "title": "华力AI桌面助手",
         "url": "index.html?window=mascot",
         "width": 168,
-        "height": 168,
+        "height": 144,
         "decorations": false,
         "transparent": true,
         "backgroundColor": "#00000000",
@@ -34,8 +35,8 @@
         "label": "panel",
         "title": "华力AI桌面助手",
         "url": "index.html?window=panel",
-        "width": 390,
-        "height": 118,
+        "width": 380,
+        "height": 78,
         "decorations": false,
         "transparent": true,
         "backgroundColor": "#00000000",
@@ -56,13 +57,23 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "category": "Productivity",
     "shortDescription": "华力 AI 桌面助手",
-    "longDescription": "华力 AI 桌面助手试点版，支持一句话创建待办、任务推送和 Web 平台联动。",
+    "longDescription": "华力 AI 桌面助手，支持一句话创建待办、任务推送和 Web 平台联动。",
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["SimpChinese", "English"]
+        "languages": ["SimpChinese", "English"],
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "installerHooks": "windows/installer-hooks.nsh"
       },
       "webviewInstallMode": {
         "type": "embedBootstrapper"

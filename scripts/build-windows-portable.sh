@@ -4,7 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-export PATH="/opt/homebrew/opt/llvm/bin:${PATH:-}"
+if command -v brew >/dev/null 2>&1; then
+  LLVM_BIN="$(brew --prefix llvm 2>/dev/null || true)/bin"
+  RUSTUP_BIN="$(brew --prefix rustup 2>/dev/null || true)/bin"
+  export PATH="$HOME/.cargo/bin:$RUSTUP_BIN:$LLVM_BIN:${PATH:-}"
+else
+  export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/llvm/bin:/usr/local/opt/llvm/bin:${PATH:-}"
+fi
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -15,7 +21,7 @@ require_cmd() {
 }
 
 require_cmd lld "请执行: brew install llvm lld"
-require_cmd llvm-rc "请执行: brew install llvm，并确保 /opt/homebrew/opt/llvm/bin 在 PATH 中"
+require_cmd llvm-rc "请执行: brew install llvm，并确保 Homebrew 的 llvm/bin 在 PATH 中"
 require_cmd cargo-xwin "请执行: cargo install --locked cargo-xwin"
 require_cmd zip "请执行: brew install zip"
 
@@ -25,6 +31,7 @@ if ! rustup target list --installed | grep -q '^x86_64-pc-windows-msvc$'; then
 fi
 
 VERSION="$(node -p "require('./package.json').version")"
+MAIN_BINARY_NAME="$(node -p "require('./src-tauri/tauri.conf.json').mainBinaryName || require('./package.json').name")"
 MODE="${BUILD_MODE:-prod}"
 export BUILD_MODE="$MODE"
 export CARGO_TARGET_DIR="$ROOT/src-tauri/target"
@@ -43,10 +50,10 @@ EXE="$(sed -n 's/.*Built application at: //p' "$BUILD_LOG" | tail -1 | tr -d '\r
 rm -f "$BUILD_LOG"
 
 if [[ -z "$EXE" || ! -f "$EXE" ]]; then
-  EXE="$(find "$RELEASE_DIR" -maxdepth 1 -name '*.exe' -print -quit 2>/dev/null || true)"
+  EXE="$RELEASE_DIR/${MAIN_BINARY_NAME}.exe"
 fi
-if [[ -z "$EXE" ]]; then
-  echo "未在 $RELEASE_DIR 找到 .exe，编译可能失败"
+if [[ -z "$EXE" || ! -f "$EXE" ]]; then
+  echo "未在 $RELEASE_DIR 找到当前应用 ${MAIN_BINARY_NAME}.exe，编译可能失败"
   exit 1
 fi
 

@@ -5,10 +5,17 @@
   "windows": ["mascot", "panel"],
   "permissions": [
     "core:default",
-    "core:window:allow-set-position",
+    "core:window:allow-start-dragging",
     "deep-link:default",
     "deep-link:allow-register",
-    "opener:default",
-    "notification:default"
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "http://hlai.hlmc.cn:5900/**" },
+        { "url": "http://192.168.0.210:8066/**" },
+        { "url": "http://192.168.0.211:8066/**" }
+      ]
+    },
+    "opener:default"
   ]
 }

@@ -4,7 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-export PATH="/opt/homebrew/opt/llvm/bin:${PATH:-}"
+if command -v brew >/dev/null 2>&1; then
+  LLVM_BIN="$(brew --prefix llvm 2>/dev/null || true)/bin"
+  RUSTUP_BIN="$(brew --prefix rustup 2>/dev/null || true)/bin"
+  export PATH="$HOME/.cargo/bin:$RUSTUP_BIN:$LLVM_BIN:${PATH:-}"
+else
+  export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/llvm/bin:/usr/local/opt/llvm/bin:${PATH:-}"
+fi
 export CARGO_TARGET_DIR="$ROOT/src-tauri/target"
 
 require_cmd() {
@@ -26,6 +32,7 @@ export BUILD_MODE="$MODE"
 VERSION="$(node -p "require('./package.json').version")"
 STAGING_DIR="$ROOT/dist/windows-installer-${MODE}"
 ZIP_PATH="$ROOT/dist/huali-ai-mascot-${VERSION}-${MODE}-setup.zip"
+BUNDLE_DIR="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/bundle/nsis"
 
 if ! rustup target list --installed | grep -q '^x86_64-pc-windows-msvc$'; then
   echo "正在安装 Windows 编译目标..."
@@ -33,20 +40,22 @@ if ! rustup target list --installed | grep -q '^x86_64-pc-windows-msvc$'; then
 fi
 
 echo "开始交叉编译 Windows 安装包（环境: ${MODE}，当前用户模式，无需管理员权限）..."
+mkdir -p "$BUNDLE_DIR"
+rm -f "$BUNDLE_DIR"/*-setup.exe
 npm run tauri build -- --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
 
-BUNDLE_DIR="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/bundle/nsis"
-SETUP_EXE="$(find "$BUNDLE_DIR" -maxdepth 1 -name '*-setup.exe' -print -quit)"
+SETUP_EXE="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name "*_${VERSION}_*-setup.exe" -print -quit)"
 
 if [[ -z "$SETUP_EXE" ]]; then
-  echo "未在 $BUNDLE_DIR 找到 setup.exe"
+  echo "未在 $BUNDLE_DIR 找到当前版本 ${VERSION} 的 setup.exe"
   exit 1
 fi
 
+rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
-OUTPUT="$STAGING_DIR/$(basename "$SETUP_EXE")"
+OUTPUT="$STAGING_DIR/Huali-AI-Desktop-Assistant_${VERSION}_x64-setup.exe"
 cp "$SETUP_EXE" "$OUTPUT"
-cp "$ROOT/scripts/windows-installer/使用说明.txt" "$STAGING_DIR/"
+cp "$ROOT/scripts/windows-installer/使用说明.txt" "$STAGING_DIR/README.txt"
 
 rm -f "$ZIP_PATH"
 (
