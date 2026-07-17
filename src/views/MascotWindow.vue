@@ -36,6 +36,8 @@ const props = defineProps<{
   sysMessage: SysMessageNotification | null
   sysMessageContent: string
   pendingSysMessageCount?: number
+  sysMessageReadPending?: boolean
+  sysMessageActionError?: string
 }>()
 
 const emit = defineEmits<{
@@ -54,7 +56,7 @@ const animationState = ref<MascotAnimationState>()
 const dragThreshold = 5
 const avatarSingleClickDelayMs = 280
 const idleHideDelayMs = 60 * 1000
-const peekRevealDurationMs = 420
+const peekRevealDurationMs = 480
 const nativeDragSafetyTimeoutMs = 15 * 1000
 const isPeeked = ref(false)
 const isPointerInside = ref(false)
@@ -80,6 +82,8 @@ let runningMotion = createRunningDirectionState()
 let removeCloseOverlaysListener: UnlistenFn | undefined
 let removeWindowMovedListener: UnlistenFn | undefined
 let removeNativeDragEndedListener: UnlistenFn | undefined
+let nativeNotificationLayout = { visible: false, compact: false }
+let nativeNotificationLayoutGeneration = 0
 
 function clearIdleHideTimer() {
   window.clearTimeout(idleHideTimer)
@@ -88,6 +92,29 @@ function clearIdleHideTimer() {
 
 function prefersReducedMotion() {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+async function syncNativeNotificationLayout(
+  visible: boolean,
+  compact: boolean,
+  options: { reveal?: boolean; force?: boolean } = {}
+) {
+  const reveal = options.reveal ?? false
+  if (
+    !options.force
+    && !reveal
+    && nativeNotificationLayout.visible === visible
+    && nativeNotificationLayout.compact === compact
+  ) return
+
+  const generation = ++nativeNotificationLayoutGeneration
+  await setMascotNotificationVisible(visible, compact, {
+    reveal,
+    reducedMotion: prefersReducedMotion()
+  })
+  if (generation === nativeNotificationLayoutGeneration) {
+    nativeNotificationLayout = { visible, compact }
+  }
 }
 
 function scheduleIdleHide() {
@@ -177,7 +204,7 @@ function isOverlayInteraction(target: EventTarget | null) {
 
 function togglePanel() {
   // 登录提示或系统消息展开时，优先让用户处理当前提示，避免吉祥物点击打开输入框。
-  if (hasExpandedNotification.value) return
+  if (usesExpandedNotificationLayout.value) return
 
   dismissTransientOverlays()
   playTransientAnimation('waiting', 900)
@@ -359,6 +386,7 @@ function clampMenuPosition(x: number, y: number, width: number, height: number) 
 function handleContextMenu(event: MouseEvent) {
   event.preventDefault()
   revealFromInteraction()
+  if (usesExpandedNotificationLayout.value) return
   // 登录提示已经提供登录入口时，不再显示重复的右键菜单入口。
   if (props.needsAuth) return
   if (!props.showLogout) return
@@ -402,15 +430,112 @@ function handleContextMenuKeydown(event: KeyboardEvent) {
 
 const hasBubbleMessage = computed(() => Boolean(mascotStore.message))
 const hasExpandedNotification = computed(() => Boolean(props.sysMessage || props.needsAuth))
+const isExpandedNotificationDismissing = ref(false)
+const isBubbleMessageDismissing = ref(false)
+const isContextMenuDismissing = ref(false)
+const usesExpandedNotificationLayout = computed(
+  () => hasExpandedNotification.value || isExpandedNotificationDismissing.value
+)
 const isContextMenuOpen = computed(() => contextMenu.value !== null)
+const usesCompactNotificationLayout = computed(
+  () => hasBubbleMessage.value
+    || isBubbleMessageDismissing.value
+    || isContextMenuOpen.value
+    || isContextMenuDismissing.value
+)
 const avatarAnimationState = computed<MascotAnimationState | undefined>(() => {
   if (peekTransition.value === 'revealing') return 'revealing'
   if (isPeeked.value) return 'peeking'
   return props.sysMessage ? 'waving' : animationState.value
 })
 const isNotifying = computed(
-  () => hasExpandedNotification.value || hasBubbleMessage.value || isContextMenuOpen.value
+  () => usesExpandedNotificationLayout.value || usesCompactNotificationLayout.value
 )
+
+watch(
+  hasExpandedNotification,
+  (visible, wasVisible) => {
+    if (visible) {
+      isExpandedNotificationDismissing.value = false
+    } else if (wasVisible) {
+      // Keep the large native window and flex layout until Vue has removed the
+      // fading card. Shrinking earlier clips its top-left corner over Xiaoli.
+      isExpandedNotificationDismissing.value = true
+    }
+  },
+  { flush: 'sync' }
+)
+
+function hasVisibleOverlay() {
+  return hasExpandedNotification.value || hasBubbleMessage.value || isContextMenuOpen.value
+}
+
+async function releaseDismissedNotificationLayout() {
+  const releaseExpanded = !hasExpandedNotification.value && isExpandedNotificationDismissing.value
+  const releaseBubble = !hasBubbleMessage.value && isBubbleMessageDismissing.value
+  const releaseContextMenu = !isContextMenuOpen.value && isContextMenuDismissing.value
+  if (!releaseExpanded && !releaseBubble && !releaseContextMenu) return
+
+  // Preserve the current flex layout until the native window has already been
+  // resized around the avatar. Releasing the class first lets one expanded
+  // WebView frame recenter Xiaoli and is perceived as a position jump.
+  if (!hasVisibleOverlay()) {
+    await syncNativeNotificationLayout(false, false, { force: true })
+  }
+
+  if (releaseExpanded && !hasExpandedNotification.value) {
+    isExpandedNotificationDismissing.value = false
+  }
+  if (releaseBubble && !hasBubbleMessage.value) {
+    isBubbleMessageDismissing.value = false
+  }
+  if (releaseContextMenu && !isContextMenuOpen.value) {
+    isContextMenuDismissing.value = false
+  }
+
+  // A new item can arrive while the native command is in flight. In that case
+  // explicitly restore its requested layout because isNotifying may have stayed
+  // true throughout and therefore not retriggered the watcher below.
+  if (hasVisibleOverlay()) {
+    await syncNativeNotificationLayout(
+      true,
+      !hasExpandedNotification.value,
+      { force: true }
+    )
+  }
+}
+
+function handleExpandedOverlayAfterLeave() {
+  void releaseDismissedNotificationLayout()
+}
+
+watch(
+  hasBubbleMessage,
+  (visible, wasVisible) => {
+    if (visible) {
+      isBubbleMessageDismissing.value = false
+    } else if (wasVisible) {
+      isBubbleMessageDismissing.value = true
+    }
+  },
+  { flush: 'sync' }
+)
+
+watch(
+  isContextMenuOpen,
+  (visible, wasVisible) => {
+    if (visible) {
+      isContextMenuDismissing.value = false
+    } else if (wasVisible) {
+      isContextMenuDismissing.value = true
+    }
+  },
+  { flush: 'sync' }
+)
+
+function handleContextMenuAfterLeave() {
+  void releaseDismissedNotificationLayout()
+}
 
 watch(
   () => props.sysMessage,
@@ -431,16 +556,17 @@ watch(hasBubbleMessage, (visible) => {
 watch(
   () => ({
     visible: isNotifying.value,
-    compact: (hasBubbleMessage.value || isContextMenuOpen.value) && !hasExpandedNotification.value
+    compact: usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value
   }),
   ({ visible, compact }) => {
     clearIdleHideTimer()
+    let reveal = false
     if (visible) {
-      if (isPeeked.value) startPeekReveal(false)
+      if (isPeeked.value) reveal = startPeekReveal(false)
     } else {
       scheduleIdleHide()
     }
-    void setMascotNotificationVisible(visible, compact)
+    void syncNativeNotificationLayout(visible, compact, { reveal })
   },
   { immediate: true }
 )
@@ -479,7 +605,7 @@ onUnmounted(() => {
   removeCloseOverlaysListener?.()
   removeWindowMovedListener?.()
   removeNativeDragEndedListener?.()
-  void setMascotNotificationVisible(false)
+  void syncNativeNotificationLayout(false, false, { force: true })
 })
 </script>
 
@@ -489,7 +615,7 @@ onUnmounted(() => {
     :class="{
       'is-dragging': isDragging,
       'is-notifying': isNotifying,
-      'has-expanded-notification': hasExpandedNotification
+      'has-expanded-notification': usesExpandedNotificationLayout
     }"
     @pointerdown="handlePointerDown"
     @pointerenter="handlePointerEnter"
@@ -499,7 +625,7 @@ onUnmounted(() => {
     @pointercancel="cancelPointer"
     @contextmenu="handleContextMenu"
   >
-    <Transition name="mascot-overlay">
+    <Transition name="mascot-overlay" @after-leave="handleContextMenuAfterLeave">
       <MascotContextMenu
         v-if="contextMenu"
         :x="contextMenu.x"
@@ -511,7 +637,11 @@ onUnmounted(() => {
         @close="closeContextMenu"
       />
     </Transition>
-    <Transition name="mascot-overlay">
+    <Transition
+      name="mascot-overlay"
+      mode="out-in"
+      @after-leave="handleExpandedOverlayAfterLeave"
+    >
       <AuthLoginTip
         v-if="needsAuth"
         key="auth-login"
@@ -525,6 +655,8 @@ onUnmounted(() => {
         :message="sysMessage"
         :display-content="sysMessageContent"
         :pending-count="pendingSysMessageCount || 0"
+        :read-pending="sysMessageReadPending"
+        :action-error="sysMessageActionError"
         @read="emit('readSysMessage', $event)"
         @view="emit('viewSysMessage', $event)"
       />

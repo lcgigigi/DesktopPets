@@ -128,7 +128,6 @@ export async function showAssistant() {
 }
 
 export async function showNotificationWindow() {
-  announceMascotReveal()
   try {
     await invoke('show_notification_window')
   } catch {
@@ -193,9 +192,18 @@ export async function syncPanelWindow() {
   }
 }
 
-export async function setMascotNotificationVisible(visible: boolean, compact = false) {
+export async function setMascotNotificationVisible(
+  visible: boolean,
+  compact = false,
+  options: { reveal?: boolean; reducedMotion?: boolean } = {}
+) {
   try {
-    await invoke('set_mascot_notification_visible', { visible, compact })
+    await invoke('set_mascot_notification_visible', {
+      visible,
+      compact,
+      reveal: options.reveal ?? false,
+      reducedMotion: options.reducedMotion ?? false
+    })
   } catch {
     return
   }

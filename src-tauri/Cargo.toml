@@ -1,6 +1,6 @@
 [package]
 name = "huali-ai-mascot"
-version = "1.0.15"
+version = "1.0.20"
 description = "华力 AI 桌面助手"
 authors = ["Huali"]
 edition = "2021"
@@ -20,4 +20,4 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }

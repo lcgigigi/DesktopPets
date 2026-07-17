@@ -31,12 +31,18 @@ type ResolvedSysMessage = SysMessageNotification & {
 const taskStore = useTaskStore()
 const mascotStore = useMascotStore()
 const userStore = useUserStore()
-const windowMode = new URLSearchParams(window.location.search).get('window') || 'mascot'
+const searchParams = new URLSearchParams(window.location.search)
+const windowMode = searchParams.get('window') || 'mascot'
+const isSysMessagePreview = import.meta.env.DEV && searchParams.get('preview') === 'sys-message'
+const hasSysMessagePreviewQueue = isSysMessagePreview && searchParams.get('previewQueue') === '1'
+const hasSysMessagePreviewError = isSysMessagePreview && searchParams.get('previewError') === '1'
 const socketStatus = ref(env.enableMock ? 'mock' : 'closed')
 const currentSysMessage = ref<ResolvedSysMessage | null>(null)
 const sysMessageQueue = ref<ResolvedSysMessage[]>([])
 const sysMessageResolutionQueue = ref<SysMessageNotification[]>([])
 const isResolvingSysMessage = ref(false)
+const sysMessageReadPendingKey = ref('')
+const sysMessageActionError = ref('')
 const recentSysMessageKeys = new Set<string>()
 const authPending = ref(false)
 const authErrorMessage = ref('')
@@ -55,12 +61,49 @@ let sysMessageResolutionGeneration = 0
 
 const currentTask = computed(() => taskStore.currentTask)
 const sysMessageUserId = computed(() => userStore.userInfo?.userId || env.desktopUserId || env.mockUserId)
-const needsAuth = computed(() => !env.enableMock && !userStore.isAuthenticated)
+const needsAuth = computed(() => !isSysMessagePreview && !env.enableMock && !userStore.isAuthenticated)
 const showLogout = computed(() => !env.enableMock && userStore.isAuthenticated)
 const currentSysMessageContent = computed(() => currentSysMessage.value?.displayContent || '')
+const isCurrentSysMessageReadPending = computed(
+  () => currentSysMessage.value?.dedupeKey === sysMessageReadPendingKey.value
+)
 const pendingSysMessageCount = computed(
   () => sysMessageQueue.value.length + sysMessageResolutionQueue.value.length + Number(isResolvingSysMessage.value)
 )
+
+if (isSysMessagePreview) {
+  currentSysMessage.value = {
+    id: 'design-preview-meeting',
+    rawId: 'design-preview-meeting',
+    dedupeKey: 'design-preview-meeting',
+    msgSubject: '会议即将开始',
+    msgContent: '您的项目评审会议将在 15 分钟后开始，请提前准备相关材料。',
+    displayContent: '您的项目评审会议将在 15 分钟后开始，请提前准备相关材料。',
+    msgStatus: 0,
+    msgType: 1,
+    bizType: 2,
+    bizId: 'design-preview-meeting',
+    createTime: '2026-07-16 18:15'
+  }
+  if (hasSysMessagePreviewQueue) {
+    sysMessageQueue.value.push({
+      id: 'design-preview-todo',
+      rawId: 'design-preview-todo',
+      dedupeKey: 'design-preview-todo',
+      msgSubject: '研发项目月度评审任务即将开始',
+      msgContent: '请携带项目进度、风险清单和本月交付结果参加评审，并提前确认会议室与参会人员。',
+      displayContent: '请携带项目进度、风险清单和本月交付结果参加评审，并提前确认会议室与参会人员。',
+      msgStatus: 0,
+      msgType: 1,
+      bizType: 1,
+      bizId: 'design-preview-todo',
+      createTime: '2026-07-16 18:55'
+    })
+  }
+  if (hasSysMessagePreviewError) {
+    sysMessageActionError.value = '未能标记已读，请检查网络后重试'
+  }
+}
 
 document.documentElement.dataset.window = windowMode
 document.body.dataset.window = windowMode
@@ -71,6 +114,7 @@ function rememberSysMessageKey(key: string) {
 }
 
 function showNextSysMessage() {
+  sysMessageActionError.value = ''
   currentSysMessage.value = sysMessageQueue.value.shift() ?? null
   if (currentSysMessage.value) {
     void emitTo('mascot', 'mascot-close-overlays', {})
@@ -84,6 +128,7 @@ function showResolvedSysMessage(message: ResolvedSysMessage) {
   if (currentSysMessage.value) {
     sysMessageQueue.value.push(message)
   } else {
+    sysMessageActionError.value = ''
     currentSysMessage.value = message
   }
   void showNotificationWindow()
@@ -134,16 +179,32 @@ function hideCurrentSysMessage(message: SysMessageNotification) {
 }
 
 async function handleSysMessageRead(message: SysMessageNotification) {
+  if (sysMessageReadPendingKey.value) return
+
+  if (isSysMessagePreview) {
+    hideCurrentSysMessage(message)
+    return
+  }
+
+  sysMessageActionError.value = ''
+  sysMessageReadPendingKey.value = message.dedupeKey
   try {
     await sysMessageService.markRead(message)
     hideCurrentSysMessage(message)
   } catch (error) {
     console.warn('Failed to mark sys_message as read', error)
-    mascotStore.showMessage('标记已读失败，请检查网络后重试', 'error', true)
+    sysMessageActionError.value = '未能标记已读，请检查网络后重试'
+  } finally {
+    if (sysMessageReadPendingKey.value === message.dedupeKey) {
+      sysMessageReadPendingKey.value = ''
+    }
   }
 }
 
 function handleSysMessageView(message: SysMessageNotification) {
+  if (sysMessageReadPendingKey.value) return
+
+  sysMessageActionError.value = ''
   const detailId = message.bizId || message.id
   storage.setLastSysMessageDetail({
     messageId: message.id,
@@ -179,6 +240,8 @@ function clearDesktopSession(message: string, status: MascotStatus = 'remind') {
   sysMessageQueue.value = []
   sysMessageResolutionQueue.value = []
   isResolvingSysMessage.value = false
+  sysMessageReadPendingKey.value = ''
+  sysMessageActionError.value = ''
   recentSysMessageKeys.clear()
   socketStatus.value = env.enableMock ? 'mock' : 'closed'
   stopSessionValidation()
@@ -351,6 +414,8 @@ onUnmounted(() => {
       :sys-message="currentSysMessage"
       :sys-message-content="currentSysMessageContent"
       :pending-sys-message-count="pendingSysMessageCount"
+      :sys-message-read-pending="isCurrentSysMessageReadPending"
+      :sys-message-action-error="sysMessageActionError"
       @login="startDesktopLogin"
       @logout="handleLogout"
       @read-sys-message="handleSysMessageRead"

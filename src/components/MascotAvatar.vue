@@ -47,7 +47,7 @@ const spriteStates: Record<string, SpriteState> = {
     animation: 'mascot-sprite-active', iterations: '1'
   },
   revealing: {
-    sheet: 'motion', row: 2, frames: 12, duration: 400,
+    sheet: 'motion', row: 2, frames: 12, duration: 480,
     animation: 'mascot-sprite-active', iterations: '1', direction: 'reverse'
   },
   'cooling-office': { sheet: 'main', row: 9, frames: 6, duration: 1400, animation: 'mascot-sprite-active' }

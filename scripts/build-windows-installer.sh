@@ -30,8 +30,9 @@ require_cmd zip "请执行: brew install zip"
 MODE="${BUILD_MODE:-prod}"
 export BUILD_MODE="$MODE"
 VERSION="$(node -p "require('./package.json').version")"
-STAGING_DIR="$ROOT/dist/windows-installer-${MODE}"
-ZIP_PATH="$ROOT/dist/huali-ai-mascot-${VERSION}-${MODE}-setup.zip"
+ARTIFACTS_DIR="$ROOT/artifacts"
+STAGING_DIR="$ARTIFACTS_DIR/windows-installer-${MODE}"
+ZIP_PATH="$ARTIFACTS_DIR/huali-ai-mascot-${VERSION}-${MODE}-setup.zip"
 BUNDLE_DIR="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/bundle/nsis"
 
 if ! rustup target list --installed | grep -q '^x86_64-pc-windows-msvc$'; then

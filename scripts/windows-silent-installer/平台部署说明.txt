@@ -1,0 +1,29 @@
+华力 AI 桌面助手 - Windows x64 企业静默部署包
+
+安装方式
+- 管理平台以管理员或 SYSTEM 身份直接运行 *_x64-enterprise-silent-setup.exe
+- 不需要命令行参数
+- 整个安装过程不显示安装向导，也不会在安装完成后以 SYSTEM 身份启动应用
+- 返回码 0 表示成功，非 0 表示失败
+
+安装范围
+- 安装类型：整台电脑（per-machine）
+- 默认目录：%ProgramFiles%\华力AI桌面助手
+- 开始菜单和桌面快捷方式：对该电脑的所有用户可见
+
+平台检测规则
+- 注册表路径：HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\华力AI桌面助手
+- 版本字段：DisplayVersion
+- 主程序：%ProgramFiles%\华力AI桌面助手\HualiAIDesktopAssistant.exe
+
+静默卸载命令
+"%ProgramFiles%\华力AI桌面助手\uninstall.exe" /S
+
+升级说明
+- 直接下发更高版本的静默包即可原地升级
+- 如果应用正在运行，静默安装会关闭旧进程后继续
+
+其他
+- SHA256.txt 用于下发前后的文件完整性校验
+- 安装包内含 WebView2 引导程序；如电脑未安装 WebView2，需允许其完成运行时安装
+- 当前产物未使用 Windows 代码签名证书；全员下发前请由管理平台按 SHA256 加白，或使用公司证书签名

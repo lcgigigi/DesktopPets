@@ -122,4 +122,48 @@ describe('sysMessageService', () => {
     expect(mocks.put).toHaveBeenCalledWith('/sys-message/read', { ids: [101] })
     expect(message.msgStatus).toBe(1)
   })
+
+  it('忽略退出或切换用户后才返回的旧轮询结果', async () => {
+    let resolveOldRequest: ((value: unknown) => void) | undefined
+    mocks.get
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveOldRequest = resolve
+      }))
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 202,
+          msgSubject: '新用户的会议提醒',
+          msgContent: '会议将于 15 分钟后开始',
+          msgStatus: 0,
+          msgType: 1,
+          bizType: 2,
+        }],
+      })
+    const listener = vi.fn()
+    const removeListener = sysMessageService.onMessage(listener)
+
+    sysMessageService.connect('old-user')
+    sysMessageService.disconnect()
+    sysMessageService.connect('new-user')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    resolveOldRequest?.({
+      rows: [{
+        id: 101,
+        msgSubject: '旧用户的待办提醒',
+        msgContent: '这条消息不应出现',
+        msgStatus: 0,
+        msgType: 1,
+        bizType: 1,
+      }],
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ id: '202' }))
+
+    removeListener()
+  })
 })
