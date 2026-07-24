@@ -1,0 +1,109 @@
+name: Build signed Windows enterprise MSI
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build environment
+        required: true
+        default: intranet
+        type: choice
+        options:
+          - intranet
+          - prod
+          - main
+      allow_unsigned:
+        description: Allow an unsigned lab-only artifact
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-enterprise-msi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-msi:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up stable Rust MSVC
+        shell: pwsh
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal
+          rustup default stable-x86_64-pc-windows-msvc
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Import Windows code-signing certificate
+        if: ${{ inputs.allow_unsigned == false }}
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE_PFX_BASE64) {
+            throw 'Missing repository secret WINDOWS_CERTIFICATE_PFX_BASE64.'
+          }
+          if (-not $env:WINDOWS_CERTIFICATE_PASSWORD) {
+            throw 'Missing repository secret WINDOWS_CERTIFICATE_PASSWORD.'
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'huali-windows-code-signing.pfx'
+          $pfxBytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64)
+          [IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
+          try {
+            $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $importedCertificates = @(Import-PfxCertificate `
+                -FilePath $pfxPath `
+                -CertStoreLocation 'Cert:\CurrentUser\My' `
+                -Password $password `
+                -Exportable:$false)
+            $certificate = $importedCertificates |
+              Where-Object { $_.HasPrivateKey } |
+              Select-Object -First 1
+            if (-not $certificate) {
+              throw 'The code-signing certificate could not be imported.'
+            }
+            "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+          } finally {
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Build and validate enterprise MSI
+        shell: pwsh
+        env:
+          WINDOWS_TIMESTAMP_URL: http://timestamp.digicert.com
+        run: |
+          $arguments = @('-Mode', '${{ inputs.mode }}', '-SkipNpmCi')
+          if ('${{ inputs.allow_unsigned }}' -eq 'true') {
+            $arguments += '-AllowUnsigned'
+          }
+          & .\scripts\build-windows-msi.ps1 @arguments
+
+      - name: Upload administrator distribution package
+        uses: actions/upload-artifact@v6
+        with:
+          name: huali-windows-enterprise-msi-${{ inputs.mode }}-${{ github.run_number }}
+          path: |
+            artifacts/windows-msi-${{ inputs.mode }}/
+            artifacts/*-${{ inputs.mode }}-windows-enterprise-msi-x64.zip
+          if-no-files-found: error
+          retention-days: 30

@@ -25,9 +25,8 @@ const SPRITE_DISPLAY_WIDTH = 132
 const SPRITE_DISPLAY_HEIGHT = 110
 const spriteSheets = {
   main: { url: spriteSheetUrl, columns: 12, rows: 10 },
-  motion: { url: motionSpriteSheetUrl, columns: 24, rows: 3 }
+  motion: { url: motionSpriteSheetUrl, columns: 24, rows: 4 }
 } as const
-const isHovered = ref(false)
 const showRunLayer = ref(false)
 const isReturningFromRun = ref(false)
 const lastRunningDirection = ref<RunningDirection>('running-right')
@@ -46,8 +45,16 @@ const spriteStates: Record<string, SpriteState> = {
     sheet: 'motion', row: 2, frames: 12, duration: 560,
     animation: 'mascot-sprite-active', iterations: '1'
   },
+  'peeking-left': {
+    sheet: 'motion', row: 3, frames: 12, duration: 560,
+    animation: 'mascot-sprite-active', iterations: '1'
+  },
   revealing: {
     sheet: 'motion', row: 2, frames: 12, duration: 480,
+    animation: 'mascot-sprite-active', iterations: '1', direction: 'reverse'
+  },
+  'revealing-left': {
+    sheet: 'motion', row: 3, frames: 12, duration: 480,
     animation: 'mascot-sprite-active', iterations: '1', direction: 'reverse'
   },
   'cooling-office': { sheet: 'main', row: 9, frames: 6, duration: 1400, animation: 'mascot-sprite-active' }
@@ -57,7 +64,9 @@ const resolvedState = computed<string>(() => {
   if (props.animationState === 'jumping') return 'success'
   if (props.animationState === 'failed') return 'error'
   if (props.animationState) return props.animationState
-  if (props.status === 'hover' || (props.status === 'idle' && isHovered.value)) return 'hover'
+  // Do not swap sprite rows on mouse hover. Cross-fading two transparent
+  // atlases makes the mascot appear to blink or turn translucent in WebView2.
+  if (props.status === 'hover') return 'idle'
   return props.status
 })
 
@@ -137,8 +146,6 @@ onBeforeUnmount(() => {
     ]"
     type="button"
     aria-label="单击打开输入框，双击打开工作台"
-    @mouseenter="isHovered = true"
-    @mouseleave="isHovered = false"
   >
     <span class="status-orbit" />
     <span
@@ -150,12 +157,14 @@ onBeforeUnmount(() => {
         'is-returning-left': isReturningFromRun && lastRunningDirection === 'running-left'
       }"
     >
-      <span
-        :key="runningDirection ? 'run-base' : resolvedState"
-        class="mascot-sprite mascot-sprite--base"
-        :style="spriteStyle"
-        aria-hidden="true"
-      />
+      <Transition name="mascot-sprite-state">
+        <span
+          :key="runningDirection ? 'run-base' : resolvedState"
+          class="mascot-sprite mascot-sprite--base"
+          :style="spriteStyle"
+          aria-hidden="true"
+        />
+      </Transition>
       <MascotRunSprite
         v-if="showRunLayer"
         :direction="lastRunningDirection"

@@ -1,0 +1,120 @@
+华力AI桌面助手 Windows x64 企业 MSI 部署说明
+====================================================
+
+一、交付包的预期行为
+
+1. 按计算机安装到 Program Files，一台电脑只有一份程序。
+2. 支持用更高版本的 MSI 直接覆盖之前的企业版安装包。
+3. 全程静默，不出现“下一步”或完成页，不主动重启 Windows。
+4. 安装成功后，立即在当前已登录的 Windows 用户桌面启动。
+5. 以后每次用户登录 Windows，都会通过 HKLM Run 自动启动。
+6. 如果推送时无人登录，安装仍会成功；当时无法显示界面，用户下次登录时自动启动。
+7. 安装前会先尝试正常关闭旧进程；5 秒仍未退出时终止，避免覆盖时卡死。
+8. 首次切换到 MSI 时，会识别并静默移除原有的按计算机 NSIS/EXE 包，然后安装 MSI。
+9. 内置离线 WebView2 Runtime，终端安装时不依赖访问外网。
+10. 不删除用户的应用数据、登录状态和本地配置。
+
+二、管理平台安装命令（推荐）
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-HualiAI.ps1 -MsiPath ".\Huali-AI-Desktop-Assistant_xxx_x64-enterprise.msi"
+
+该脚本会等待安装完成、传回 Windows Installer 返回码，并将详细日志写入：
+C:\ProgramData\HualiAI\Logs\install-YYYYMMDD-HHMMSS.log
+
+安装后启动日志：
+C:\ProgramData\HualiAI\Logs\launch-after-install.log
+
+如管理平台只接受 msiexec，可直接使用：
+
+msiexec.exe /i "Huali-AI-Desktop-Assistant_xxx_x64-enterprise.msi" /qn /norestart REBOOT=ReallySuppress /L*v "C:\Windows\Temp\HualiAI-install.log"
+
+默认会“安装后立即启动”。仅故障排查时可禁止本次立即启动：
+
+msiexec.exe /i "xxx.msi" /qn /norestart HUALI_START_AFTER_INSTALL=0
+
+这个参数只禁止本次安装完成后的立即启动，不会删除以后登录 Windows 时的自动启动。
+
+三、返回码
+
+0    安装成功。
+3010 安装成功，Windows 建议后续重启；本包不会自动重启。
+1641 安装成功，Windows Installer 报告已发起重启（正常配置下不应出现）。
+其他 失败，请收集 install 日志。常见的 1618 表示另一个安装正在进行。
+
+四、安装检测规则
+
+推荐使用 64 位注册表检测：
+HKLM\SOFTWARE\Huali\HualiAIDesktopAssistant
+
+InstallerType 应等于 MSI。
+Version 应等于本次发布的版本号。
+
+登录自启动项：
+HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+值名：华力AI桌面助手
+
+五、静默卸载
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-HualiAI.ps1
+
+卸载会删除程序文件、安装记录和登录自启动项，但不会主动删除用户数据。
+
+六、版本与覆盖发布规则
+
+1. 每次发布前，package.json、src-tauri\tauri.conf.json、src-tauri\Cargo.toml 的版本必须完全一致。
+2. 版本必须是三段数字，例如 1.0.32。新包必须高于已部署版本。
+3. 永远不要修改 UpgradeCode：07C9B303-2B8E-48E4-AB16-6EB2FB87DF13。
+4. MSI ProductCode 由构建流程自动生成，每个版本不同，这是正常现象。
+5. 禁止直接下降安装。需要回滚代码时，应使用更高的新版本号重新构建。
+6. 无需先卸载旧 MSI；直接推送更高版本。
+
+七、代码签名
+
+生产包强制需要有私钥的 Windows 代码签名证书，否则构建脚本会终止。
+先将证书安装到 CurrentUser\My 或 LocalMachine\My，然后设置：
+
+$env:WINDOWS_CERTIFICATE_THUMBPRINT = "证书指纹"
+$env:WINDOWS_TIMESTAMP_URL = "http://timestamp.digicert.com"
+
+仅开发测试可以生成未签名包：
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-msi.ps1 -Mode intranet -AllowUnsigned
+
+未签名包不能用于公司正式推送，可能被 SmartScreen、终端安全策略或管理平台拒绝。
+
+八、在 Windows x64 构建
+
+构建机需要：Node.js/npm、Rust stable MSVC toolchain、Visual Studio C++ Build Tools，以及 Windows 的 VBSCRIPT 可选功能。
+WiX 依赖由 Tauri 构建流程处理。如遇到 failed to run light.exe，请在“设置 → 应用 → 可选功能 → 更多 Windows 功能”中启用 VBSCRIPT。
+开发构建机首次下载离线 WebView2 安装程序时需要联网，终端部署时不需要联网。
+
+构建 intranet 包：
+npm run build:windows-msi:intranet
+
+构建 prod 包：
+npm run build:windows-msi:prod
+
+产物位于：
+artifacts\windows-msi-<mode>\
+artifacts\huali-ai-mascot-<version>-<mode>-windows-enterprise-msi-x64.zip
+
+构建脚本会自动检查：版本号、UpgradeCode、覆盖升级表、主程序、离线包大小、安装后立即启动、登录自启动和数字签名。
+
+如果使用 GitHub，也可在 Actions 页手动运行“Build signed Windows enterprise MSI”。
+需要先在仓库 Actions secrets 中配置：
+
+WINDOWS_CERTIFICATE_PFX_BASE64  代码签名 PFX 文件的 Base64 内容
+WINDOWS_CERTIFICATE_PASSWORD    PFX 密码
+
+工作流仅构建并上传产物，不会自动发布，也不会推送到用户电脑。
+
+九、首次公司推送的验收顺序
+
+1. 先在 1 台安装了旧静默 EXE 的测试机推送，确认旧包被替换。
+2. 确认安装无弹窗、无“下一步”，管理平台收到 0 或 3010。
+3. 在用户已登录的情况下推送，确认安装后立即出现应用。
+4. 注销并重新登录，确认应用再次自动启动。
+5. 再推送一个更高版本，确认控制面板中只有一条安装记录且版本正确。
+6. 断网重复上述安装，确认 WebView2 不需要下载。
+7. 采用 5–20 台小范围灰度后，再推向全部电脑。
+
+注意：公司组策略或终端安全软件可以禁止 HKLM Run，这种情况安装包仍会正确写入自启动项，但组策略优先级更高，需由桌面管理员放行。

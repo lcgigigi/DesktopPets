@@ -13,7 +13,9 @@ const props = defineProps<{
 }>()
 
 const SPRITE_WIDTH = 132
-const SPRITE_HEIGHT = 110
+// Running feet dip lower than the other poses. Each atlas cell includes a
+// dedicated 12px transparent floor so DPI resampling never clips a shoe.
+const SPRITE_HEIGHT = 122
 const SPRITE_SHEET_WIDTH = SPRITE_WIDTH * mascotRunFrameCount
 const SPRITE_SHEET_HEIGHT = SPRITE_HEIGHT * 2
 

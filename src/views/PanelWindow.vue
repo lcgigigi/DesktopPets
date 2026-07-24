@@ -4,10 +4,12 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import { onMounted, onUnmounted, ref } from 'vue'
 import TodoInputBox from '../components/TodoInputBox.vue'
 import {
+  PANEL_ACTIVITY_EVENT,
   PANEL_REVEAL_EVENT,
   hidePanelWindow,
   openWorkbench,
-  setPanelExpanded
+  setPanelActivity,
+  setPanelHeight
 } from '../services/window.service'
 import { useMascotStore } from '../stores/mascot'
 import type { MascotStatus } from '../types/mascot'
@@ -22,9 +24,12 @@ const mascotStore = useMascotStore()
 const inputBoxRef = ref<InstanceType<typeof TodoInputBox> | null>(null)
 const loading = ref(false)
 const isRevealing = ref(false)
+const panelHasText = ref(false)
+const panelFocused = ref(false)
 let revealTimer: number | undefined
 let revealFrame: number | undefined
 let removeRevealListener: UnlistenFn | undefined
+let panelActivityInitialized = false
 
 function playPanelReveal() {
   window.clearTimeout(revealTimer)
@@ -36,11 +41,12 @@ function playPanelReveal() {
       isRevealing.value = false
     }, 220)
   })
+  inputBoxRef.value?.syncHeight()
+  publishPanelActivity()
   window.setTimeout(() => inputBoxRef.value?.focus(), 80)
 }
 
 onMounted(async () => {
-  void setPanelExpanded(false)
   playPanelReveal()
   removeRevealListener = await listen(PANEL_REVEAL_EVENT, playPanelReveal)
 })
@@ -56,11 +62,39 @@ function showMascotMessage(message: string, status?: MascotStatus, autoReset = f
   void emitTo('mascot', 'mascot-message', { message, status, autoReset })
 }
 
+function publishPanelActivity() {
+  panelActivityInitialized = true
+  const activity = {
+    hasText: panelHasText.value,
+    focused: panelFocused.value
+  }
+  void setPanelActivity(activity)
+  void emitTo('mascot', PANEL_ACTIVITY_EVENT, activity)
+}
+
+function handleDraftChange(text: string) {
+  const hasText = text.trim().length > 0
+  if (panelActivityInitialized && panelHasText.value === hasText) return
+  panelHasText.value = hasText
+  publishPanelActivity()
+}
+
+function handleFocusChange(focused: boolean) {
+  if (panelActivityInitialized && panelFocused.value === focused) return
+  panelFocused.value = focused
+  publishPanelActivity()
+}
+
+function handleHeightChange(height: number) {
+  void setPanelHeight(height)
+}
+
 async function submitTodo(text: string) {
   loading.value = true
   showMascotMessage('正在打开工作台...', 'thinking')
   try {
     await openWorkbench({ todoText: text })
+    inputBoxRef.value?.clear()
     showMascotMessage('已打开工作台', 'success', true)
     void hidePanelWindow()
   } catch {
@@ -77,7 +111,14 @@ async function submitTodo(text: string) {
     :class="{ 'is-revealing': isRevealing }"
     aria-label="一句话创建"
   >
-    <TodoInputBox ref="inputBoxRef" :loading="loading" @submit="submitTodo" />
+    <TodoInputBox
+      ref="inputBoxRef"
+      :loading="loading"
+      @submit="submitTodo"
+      @draft-change="handleDraftChange"
+      @focus-change="handleFocusChange"
+      @height-change="handleHeightChange"
+    />
     <span class="pet-prompt__tail" aria-hidden="true" />
   </section>
 </template>

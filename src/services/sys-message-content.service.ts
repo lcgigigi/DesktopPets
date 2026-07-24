@@ -17,6 +17,20 @@ const TITLE_LABELS = new Set(['标题', '待办', '任务名称', '事项'])
 const CONTENT_LABELS = new Set(['内容', '待办内容', '任务内容'])
 const START_TIME_LABELS = new Set(['开始时间', '开始'])
 const END_TIME_LABELS = new Set(['结束时间', '截止时间', '截止', '到期时间'])
+const DEFAULT_MESSAGE_CONTENT = '你收到一条新的系统消息'
+const JSON_DISPLAY_KEYS = [
+  'content',
+  'todoContent',
+  'taskContent',
+  'title',
+  'name',
+  'msgContent',
+  'message',
+  'remark',
+  'description',
+  'text',
+] as const
+const JSON_CONTAINER_KEYS = ['data', 'mainTodo', 'todo', 'detail', 'list', 'records'] as const
 
 function toText(value: unknown) {
   return value === null || value === undefined ? '' : String(value).trim()
@@ -35,6 +49,43 @@ function createFields(): MessageFields {
 
 function firstText(...values: unknown[]) {
   return values.map(toText).find(Boolean) || ''
+}
+
+function parseJsonValue(content: string): unknown | undefined {
+  const trimmed = content.trim()
+  const isJsonObject = trimmed.startsWith('{') && trimmed.endsWith('}')
+  const isJsonArray = trimmed.startsWith('[') && trimmed.endsWith(']')
+  if (!isJsonObject && !isJsonArray) return undefined
+
+  try {
+    return JSON.parse(trimmed) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+function getJsonDisplayText(value: unknown, depth = 0): string {
+  if (depth > 4 || value === null || value === undefined) return ''
+  if (typeof value === 'string') {
+    const nestedJson = parseJsonValue(value)
+    return nestedJson === undefined ? value.trim() : getJsonDisplayText(nestedJson, depth + 1)
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) {
+    return value.map((item) => getJsonDisplayText(item, depth + 1)).find(Boolean) || ''
+  }
+  if (typeof value !== 'object') return ''
+
+  const payload = value as Record<string, unknown>
+  for (const key of JSON_DISPLAY_KEYS) {
+    const text = getJsonDisplayText(payload[key], depth + 1)
+    if (text) return text
+  }
+  for (const key of JSON_CONTAINER_KEYS) {
+    const text = getJsonDisplayText(payload[key], depth + 1)
+    if (text) return text
+  }
+  return ''
 }
 
 function parseJsonFields(content: string): MessageFields | null {
@@ -168,7 +219,14 @@ function resolvePerson(value: string, names: Map<string, string>) {
 }
 
 export function getSysMessageFallback(message: SysMessageNotification) {
-  return message.msgContent.trim() || '你收到一条新的系统消息'
+  const content = message.msgContent.trim()
+  if (!content) return DEFAULT_MESSAGE_CONTENT
+
+  const jsonValue = parseJsonValue(content)
+  if (jsonValue === undefined) return content
+
+  // 结构化消息只能展示提取后的可读字段，避免把 JSON 原始报文暴露到通知卡片。
+  return getJsonDisplayText(jsonValue) || DEFAULT_MESSAGE_CONTENT
 }
 
 export async function resolveSysMessageContent(message: SysMessageNotification) {

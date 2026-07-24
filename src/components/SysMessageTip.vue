@@ -77,7 +77,7 @@ const announcement = computed(() => {
       <header class="sys-message-tip__header">
         <span class="sys-message-tip__badge">
           <span class="sys-message-tip__badge-indicator" aria-hidden="true" />
-          {{ badgeLabel }}
+          <span class="sys-message-tip__badge-label">{{ badgeLabel }}</span>
         </span>
         <span class="sys-message-tip__meta">
           <span v-if="pendingLabel" class="sys-message-tip__queue-count">{{ pendingLabel }}</span>
@@ -87,7 +87,15 @@ const announcement = computed(() => {
 
       <div class="sys-message-tip__body">
         <h2 :id="titleId">{{ title }}</h2>
-        <p :id="summaryId" class="sys-message-tip__summary">{{ displayContent }}</p>
+        <div class="sys-message-tip__summary-shell">
+          <p
+            :id="summaryId"
+            class="sys-message-tip__summary"
+            tabindex="0"
+          >
+            {{ displayContent }}
+          </p>
+        </div>
       </div>
 
       <p v-if="actionError" class="sys-message-tip__error" role="alert">

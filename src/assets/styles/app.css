@@ -48,6 +48,7 @@
   position: relative;
   top: auto;
   left: auto;
+  max-height: calc(100vh - 168px);
   transform: none;
   flex-shrink: 0;
 }
@@ -100,6 +101,7 @@
   max-width: 100%;
   margin: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
   color: #1b2f52;
   font-size: 12px;
   font-weight: 700;
@@ -195,6 +197,10 @@
 
 .sys-message-tip__card {
   position: relative;
+  display: flex;
+  max-height: inherit;
+  flex-direction: column;
+  box-sizing: border-box;
   padding: 16px;
   border: 1px solid var(--tip-card-border);
   border-radius: 16px;
@@ -207,6 +213,8 @@
   position: relative;
   z-index: 1;
   display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -215,6 +223,8 @@
 
 .sys-message-tip__badge {
   display: inline-flex;
+  min-width: 0;
+  flex: 0 1 auto;
   align-items: center;
   gap: 7px;
   min-height: 24px;
@@ -229,6 +239,13 @@
   letter-spacing: 0.02em;
 }
 
+.sys-message-tip__badge-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sys-message-tip__badge-indicator {
   width: 5px;
   height: 5px;
@@ -239,6 +256,7 @@
 .sys-message-tip__meta {
   display: inline-flex;
   min-width: 0;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: flex-end;
   gap: 7px;
@@ -264,7 +282,10 @@
   position: relative;
   z-index: 1;
   display: grid;
+  flex: 0 0 auto;
+  overflow: visible;
   gap: 10px;
+  grid-template-rows: auto auto;
 }
 
 .sys-message-tip__body h2 {
@@ -276,40 +297,80 @@
   font-weight: 720;
   line-height: 25px;
   letter-spacing: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 
-.sys-message-tip__body p {
-  display: -webkit-box;
-  min-height: 0;
-  margin: 0;
-  overflow: hidden;
+.sys-message-tip__summary-shell {
+  box-sizing: border-box;
   padding: 10px 12px;
   border: 0;
   border-radius: 10px;
   background: rgba(218, 235, 251, 0.055);
+}
+
+.sys-message-tip__body p {
+  display: block;
+  max-height: 80px;
+  min-height: 20px;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0;
   color: var(--tip-text-body);
   font-size: 13px;
   font-weight: 500;
   line-height: 20px;
   letter-spacing: 0.01em;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(159, 180, 200, 0.62) transparent;
+  scrollbar-width: thin;
+  word-break: break-word;
 }
 
 .sys-message-tip.has-action-error .sys-message-tip__summary {
-  -webkit-line-clamp: 3;
+  max-height: 40px;
+}
+
+.sys-message-tip__summary::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sys-message-tip__summary::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sys-message-tip__summary::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(159, 180, 200, 0.62);
+}
+
+.sys-message-tip__summary:focus-visible {
+  outline: none;
+}
+
+.sys-message-tip__summary-shell:focus-within {
+  box-shadow: inset 0 0 0 2px var(--tip-glow);
 }
 
 .sys-message-tip__error {
   position: relative;
   z-index: 1;
+  display: -webkit-box;
+  flex: 0 0 auto;
   margin: 10px 0 0;
+  overflow: hidden;
   color: #ffc5cc;
   font-size: 11px;
   font-weight: 600;
   line-height: 16px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .sys-message-tip.has-action-error .sys-message-tip__actions {
@@ -320,6 +381,7 @@
   position: relative;
   z-index: 1;
   display: flex;
+  flex: 0 0 auto;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 15px;
@@ -339,6 +401,9 @@
   font-size: 13px;
   font-weight: 700;
   line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
   transition:
     transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -402,6 +467,55 @@
   inset: 0;
   clip-path: polygon(50% 100%, 7% 8%, 93% 8%);
   border-bottom: 1px solid var(--tip-card-border);
+}
+
+@media (max-height: 440px) {
+  .sys-message-tip__card {
+    padding: 10px;
+  }
+
+  .sys-message-tip__header {
+    margin-bottom: 8px;
+  }
+
+  .sys-message-tip__body {
+    gap: 5px;
+  }
+
+  .sys-message-tip__body h2 {
+    -webkit-line-clamp: 1;
+  }
+
+  .sys-message-tip__summary,
+  .sys-message-tip.has-action-error .sys-message-tip__summary {
+    max-height: 40px;
+  }
+
+  .sys-message-tip__error {
+    margin-top: 6px;
+    -webkit-line-clamp: 1;
+  }
+
+  .sys-message-tip__actions,
+  .sys-message-tip.has-action-error .sys-message-tip__actions {
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+
+  .sys-message-tip__button {
+    min-height: 38px;
+  }
+}
+
+@media (max-height: 390px) {
+  .sys-message-tip__summary,
+  .sys-message-tip.has-action-error .sys-message-tip__summary {
+    max-height: 40px;
+  }
+
+  .sys-message-tip__summary-shell {
+    padding-block: 0;
+  }
 }
 
 @keyframes sys-message-tip-in {
@@ -586,6 +700,9 @@
   left: 50%;
   z-index: 4;
   width: min(292px, calc(100% - 20px));
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
   padding: 12px;
   transform: translateX(-50%);
   border: 1px solid rgba(94, 116, 158, 0.2);
@@ -593,6 +710,7 @@
   background: #ffffff;
   color: #1f2a44;
   cursor: grab;
+  overflow: hidden;
   transform-origin: 50% 100%;
   animation: auth-login-tip-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
@@ -627,6 +745,8 @@
 
 .auth-login-tip__body {
   display: grid;
+  min-height: 0;
+  overflow: hidden;
   gap: 5px;
 }
 
@@ -639,15 +759,22 @@
 }
 
 .auth-login-tip__body p {
+  display: -webkit-box;
   min-height: 34px;
   margin: 0;
+  overflow: hidden;
   color: #46546f;
   font-size: 12px;
   line-height: 17px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
 }
 
 .auth-login-tip__button {
   width: 100%;
+  flex: 0 0 34px;
   min-height: 34px;
   margin-top: 10px;
   padding: 0 14px;
@@ -713,6 +840,11 @@
   animation: mascot-reveal-settle 480ms cubic-bezier(0.2, 0.82, 0.24, 1) both;
 }
 
+.mascot-avatar.is-visual-revealing-left {
+  transform-origin: 32% 82%;
+  animation: mascot-reveal-settle-left 480ms cubic-bezier(0.2, 0.82, 0.24, 1) both;
+}
+
 .mascot-avatar.is-returning-from-run.is-returning-right {
   animation: mascot-run-return-right 280ms cubic-bezier(0.22, 0.82, 0.24, 1) both;
 }
@@ -730,7 +862,9 @@
   position: relative;
   z-index: 1;
   width: 132px;
-  height: 110px;
+  /* Keep a shared 12px transparent floor below every pose. The base sprites
+     remain 110px tall; running cells carry the same gutter in their atlas. */
+  height: 122px;
   display: block;
   overflow: visible;
   pointer-events: none;
@@ -773,7 +907,7 @@
   inset: 0;
   display: block;
   width: 132px;
-  height: 110px;
+  height: 122px;
   overflow: visible;
   opacity: 1;
   pointer-events: none;
@@ -789,7 +923,7 @@
   inset: 0;
   display: block;
   width: 132px;
-  height: 110px;
+  height: 122px;
   overflow: visible;
   background-position: 0 var(--run-row-offset);
   background-repeat: no-repeat;
@@ -799,6 +933,16 @@
   transform: translateZ(0);
   backface-visibility: hidden;
   will-change: background-position;
+}
+
+.mascot-sprite-state-enter-active,
+.mascot-sprite-state-leave-active {
+  transition: opacity 140ms ease;
+}
+
+.mascot-sprite-state-enter-from,
+.mascot-sprite-state-leave-to {
+  opacity: 0;
 }
 
 .mascot-sprite-stage.is-returning .mascot-run-sprite {
@@ -845,6 +989,20 @@
 
   72% {
     transform: translate3d(-1px, 0, 0) rotate(-0.35deg) scale(1.012);
+  }
+
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0) scale(1);
+  }
+}
+
+@keyframes mascot-reveal-settle-left {
+  0% {
+    transform: translate3d(-3px, 1px, 0) rotate(-1deg) scale(0.985);
+  }
+
+  72% {
+    transform: translate3d(1px, 0, 0) rotate(0.35deg) scale(1.012);
   }
 
   100% {
@@ -957,8 +1115,8 @@
   box-shadow: 0 0 0 3px rgba(120, 168, 255, 0.16);
 }
 
-.todo-input input:focus,
-.todo-input input:focus-visible {
+.todo-input textarea:focus,
+.todo-input textarea:focus-visible {
   outline: none;
   box-shadow: none;
 }
@@ -1222,7 +1380,7 @@
 
 .todo-input {
   width: 100%;
-  height: 48px;
+  min-height: 48px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 40px;
   align-items: center;
@@ -1240,9 +1398,10 @@
   border-radius: 999px;
 }
 
-.todo-input input {
+.todo-input textarea {
   min-width: 0;
-  height: 36px;
+  min-height: 36px;
+  max-height: 138px;
   padding: 0 4px;
   border: 0;
   outline: none;
@@ -1250,9 +1409,14 @@
   color: #1f2b48;
   font-size: 14px;
   font-weight: 650;
+  line-height: 19px;
+  resize: none;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
-.todo-input input::placeholder {
+.todo-input textarea::placeholder {
   color: #a7b0c2;
   opacity: 1;
 }
@@ -1632,7 +1796,7 @@
     0 8px 22px rgba(31, 43, 72, 0.06);
 }
 
-.panel-window--compact .todo-input input {
+.panel-window--compact .todo-input textarea {
   height: 44px;
   padding: 0 2px;
   color: #18243f;
@@ -1640,12 +1804,12 @@
   font-weight: 760;
 }
 
-.panel-window--compact .todo-input input::placeholder {
+.panel-window--compact .todo-input textarea::placeholder {
   color: #9ca8bb;
 }
 
-.panel-window--compact .todo-input input:focus,
-.panel-window--compact .todo-input input:focus-visible {
+.panel-window--compact .todo-input textarea:focus,
+.panel-window--compact .todo-input textarea:focus-visible {
   outline: none;
   box-shadow: none;
 }
@@ -1840,39 +2004,51 @@
   position: relative;
   z-index: 1;
   width: 100%;
-  height: 54px;
+  min-height: 54px;
   grid-template-columns: minmax(0, 1fr) 38px;
   gap: 10px;
   padding: 8px 8px 8px 15px;
   border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 999px;
+  border-radius: 27px;
   background: rgba(255, 255, 255, 0.95);
-  box-shadow:
-    0 16px 32px rgba(0, 0, 0, 0.06),
-    0 4px 12px rgba(0, 0, 0, 0.03);
+  box-shadow: none;
   backdrop-filter: blur(24px) saturate(1.2);
+  transition: border-radius 160ms ease;
+}
+
+.pet-prompt .todo-input.is-multiline {
+  align-items: end;
+  border-radius: 20px;
 }
 
 .pet-prompt .todo-input::before {
   display: none;
 }
 
-.pet-prompt .todo-input input {
-  height: 38px;
-  padding: 0;
+.pet-prompt .todo-input textarea {
+  min-height: 38px;
+  max-height: 138px;
+  /* One 20px line plus 9px safe space on both sides. At the 138px cap this
+     leaves room for exactly six complete lines, so the last line is never
+     exposed as a clipped half-line when the textarea starts scrolling. */
+  padding: 9px 0;
   color: #111827;
   font-size: 13px;
   font-weight: 500;
+  line-height: 20px;
   letter-spacing: 0;
+  scroll-padding-block: 9px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(156, 163, 175, 0.5) transparent;
 }
 
-.pet-prompt .todo-input input::placeholder {
+.pet-prompt .todo-input textarea::placeholder {
   color: #9ca3af;
   font-weight: 400;
 }
 
-.pet-prompt .todo-input input:focus,
-.pet-prompt .todo-input input:focus-visible {
+.pet-prompt .todo-input textarea:focus,
+.pet-prompt .todo-input textarea:focus-visible {
   outline: none;
   box-shadow: none;
 }
@@ -1891,6 +2067,11 @@
     background-color 200ms ease,
     color 200ms ease,
     box-shadow 200ms ease;
+}
+
+.pet-prompt .todo-input.is-multiline .todo-input__send {
+  align-self: end;
+  margin-bottom: 14px;
 }
 
 .pet-prompt .todo-input__send svg {
@@ -1927,7 +2108,7 @@
   border-bottom: 1px solid rgba(0, 0, 0, 0.04);
   border-bottom-right-radius: 4px;
   background: rgba(255, 255, 255, 0.95);
-  box-shadow: 6px 6px 12px rgba(0, 0, 0, 0.03);
+  box-shadow: none;
   margin-left: -7px;
   transform: rotate(45deg);
   transform-origin: center;
@@ -1955,6 +2136,8 @@
   }
 
   .mascot-overlay-leave-active,
+  .mascot-sprite-state-enter-active,
+  .mascot-sprite-state-leave-active,
   .mascot-context-menu__item,
   .auth-login-tip__button,
   .sys-message-tip__button,
@@ -1965,5 +2148,10 @@
 
   .sys-message-tip {
     filter: none !important;
+  }
+
+  .mascot-avatar.is-visual-peeking .mascot-sprite--base,
+  .mascot-avatar.is-visual-peeking-left .mascot-sprite--base {
+    background-position: var(--sprite-end-offset) var(--sprite-row-offset) !important;
   }
 }

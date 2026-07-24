@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["msi"],
+    "resources": {
+      "windows/launch-after-install.ps1": "enterprise/launch-after-install.ps1"
+    },
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
+      "wix": {
+        "upgradeCode": "07c9b303-2b8e-48e4-ab16-6eb2fb87df13",
+        "language": "zh-CN",
+        "fragmentPaths": ["windows/enterprise.wxs"],
+        "componentGroupRefs": ["HualiEnterpriseComponents"]
+      }
+    }
+  }
+}

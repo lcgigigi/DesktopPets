@@ -40,8 +40,13 @@ body[data-window='panel'] #app {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
+}
+
+textarea {
+  user-select: text;
 }
 
 button {

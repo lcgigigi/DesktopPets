@@ -9,12 +9,21 @@ import {
   listenDesktopAuthCallbacks,
   type DesktopAuthCallbackError,
 } from './services/desktop-auth.service'
-import { onDesktopUnauthorized } from './services/request'
+import { onDesktopUnauthorized, type DesktopUnauthorizedContext } from './services/request'
 import { validateDesktopSession } from './services/session.service'
 import { getSysMessageFallback, resolveSysMessageContent } from './services/sys-message-content.service'
 import { sysMessageService } from './services/sys-message.service'
 import { websocketService } from './services/websocket.service'
-import { openDesktopLogin, openSysMessageDetail, openWorkbench, showAssistant, showNotificationWindow, showPanelWindow, hidePanelWindow } from './services/window.service'
+import {
+  hidePanelWindow,
+  openDesktopLogin,
+  openSysMessageDetail,
+  openWorkbench,
+  setMascotNotificationVisible,
+  showAssistant,
+  showNotificationWindow,
+  showPanelWindow,
+} from './services/window.service'
 import { useMascotStore } from './stores/mascot'
 import { useTaskStore } from './stores/task'
 import { useUserStore } from './stores/user'
@@ -34,8 +43,10 @@ const userStore = useUserStore()
 const searchParams = new URLSearchParams(window.location.search)
 const windowMode = searchParams.get('window') || 'mascot'
 const isSysMessagePreview = import.meta.env.DEV && searchParams.get('preview') === 'sys-message'
+const isMascotAnimationPreview = import.meta.env.DEV && searchParams.has('previewAnimation')
 const hasSysMessagePreviewQueue = isSysMessagePreview && searchParams.get('previewQueue') === '1'
 const hasSysMessagePreviewError = isSysMessagePreview && searchParams.get('previewError') === '1'
+const hasSysMessagePreviewLongContent = isSysMessagePreview && searchParams.get('previewLong') === '1'
 const socketStatus = ref(env.enableMock ? 'mock' : 'closed')
 const currentSysMessage = ref<ResolvedSysMessage | null>(null)
 const sysMessageQueue = ref<ResolvedSysMessage[]>([])
@@ -61,7 +72,12 @@ let sysMessageResolutionGeneration = 0
 
 const currentTask = computed(() => taskStore.currentTask)
 const sysMessageUserId = computed(() => userStore.userInfo?.userId || env.desktopUserId || env.mockUserId)
-const needsAuth = computed(() => !isSysMessagePreview && !env.enableMock && !userStore.isAuthenticated)
+const needsAuth = computed(
+  () => !isSysMessagePreview
+    && !isMascotAnimationPreview
+    && !env.enableMock
+    && !userStore.isAuthenticated
+)
 const showLogout = computed(() => !env.enableMock && userStore.isAuthenticated)
 const currentSysMessageContent = computed(() => currentSysMessage.value?.displayContent || '')
 const isCurrentSysMessageReadPending = computed(
@@ -72,13 +88,19 @@ const pendingSysMessageCount = computed(
 )
 
 if (isSysMessagePreview) {
+  const previewSubject = hasSysMessagePreviewLongContent
+    ? '研发项目月度评审任务即将开始请所有相关负责人提前完成材料准备与风险确认'
+    : '会议即将开始'
+  const previewContent = hasSysMessagePreviewLongContent
+    ? '请携带项目进度、风险清单、本月交付结果、资源缺口和下阶段计划参加评审，并提前确认会议室、参会人员、演示设备以及需要管理层决策的事项。这是一段用于验证极端长消息边界的预览内容。'
+    : '您的项目评审会议将在 15 分钟后开始，请提前准备相关材料。'
   currentSysMessage.value = {
     id: 'design-preview-meeting',
     rawId: 'design-preview-meeting',
     dedupeKey: 'design-preview-meeting',
-    msgSubject: '会议即将开始',
-    msgContent: '您的项目评审会议将在 15 分钟后开始，请提前准备相关材料。',
-    displayContent: '您的项目评审会议将在 15 分钟后开始，请提前准备相关材料。',
+    msgSubject: previewSubject,
+    msgContent: previewContent,
+    displayContent: previewContent,
     msgStatus: 0,
     msgType: 1,
     bizType: 2,
@@ -248,16 +270,25 @@ function clearDesktopSession(message: string, status: MascotStatus = 'remind') {
   mascotStore.showMessage(message, status, true)
 }
 
-function handleSessionExpired() {
+function handleSessionExpired(context?: DesktopUnauthorizedContext) {
   if (!userStore.isAuthenticated || env.enableMock) return
+  if (context && context.token !== userStore.token) return
   clearDesktopSession('登录状态已过期，请重新登录', 'remind')
 }
 
 async function validateAndRestoreSession(options: { forceReconnect?: boolean } = {}) {
   if (env.enableMock || !userStore.isAuthenticated) return
 
+  const validatedToken = userStore.token
   const currentUserId = userStore.userInfo?.userId || ''
   const result = await validateDesktopSession(currentUserId)
+  // A validation started for an older session must never clear or overwrite a
+  // login callback that completed while the request was in flight.
+  if (
+    userStore.token !== validatedToken
+    || (userStore.userInfo?.userId || '') !== currentUserId
+  ) return
+
   if (result.status === 'unauthorized') {
     handleSessionExpired()
     return
@@ -347,7 +378,9 @@ onMounted(async () => {
         authErrorMessage.value = ''
         connectDesktopSockets({ force: true })
         startSessionValidation()
-        void validateAndRestoreSession()
+        // The state-checked callback is the login completion signal. Socket and
+        // message channels connect above; periodic validation continues later.
+        mascotStore.showMessage('登录成功，消息提醒已开启', 'success', true)
       },
       handleDesktopAuthCallbackError,
     )
@@ -357,7 +390,11 @@ onMounted(async () => {
       void validateAndRestoreSession({ forceReconnect: true })
       startSessionValidation()
     }
-    void showAssistant()
+    // Keep the native window hidden until its first collapsed/login-card bounds
+    // have been applied. This prevents an MSI first launch from exposing the
+    // 168x144 startup frame with only a clipped strip of the login prompt.
+    await setMascotNotificationVisible(needsAuth.value, false)
+    await showAssistant()
   }
 
   if (windowMode === 'panel') {

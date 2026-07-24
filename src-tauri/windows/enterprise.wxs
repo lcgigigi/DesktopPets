@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <Fragment>
+    <!--
+      The first MSI release replaces the legacy per-machine NSIS package.
+      Future MSI releases use the fixed UpgradeCode in tauri.enterprise-msi.conf.json.
+    -->
+    <Property Id="LEGACY_NSIS_UNINSTALLER">
+      <RegistrySearch
+        Id="FindLegacyNsisUninstaller"
+        Root="HKLM"
+        Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\华力AI桌面助手"
+        Name="UninstallString"
+        Type="raw"
+        Win64="yes" />
+    </Property>
+
+    <!-- Enabled by default for both interactive and fully silent installs. -->
+    <Property Id="HUALI_START_AFTER_INSTALL" Value="1" Secure="yes" />
+
+    <!--
+      Close the resident desktop process before NSIS migration, MSI upgrade,
+      repair, or uninstall. Try a normal close first, then terminate after the
+      timeout so an unattended deployment never waits for user interaction.
+    -->
+    <util:CloseApplication
+      Id="CloseHualiAIDesktopAssistant"
+      Target="HualiAIDesktopAssistant.exe"
+      CloseMessage="yes"
+      ElevatedCloseMessage="yes"
+      Timeout="5"
+      TerminateProcess="0"
+      RebootPrompt="no">
+      LEGACY_NSIS_UNINSTALLER OR Installed OR WIX_UPGRADE_DETECTED
+    </util:CloseApplication>
+
+    <!--
+      Run the legacy uninstaller synchronously and wait for its self-cleanup.
+      Its silent default preserves user application data and login state.
+    -->
+    <CustomAction
+      Id="SetRemoveLegacyNsisPackageCommand"
+      Property="RemoveLegacyNsisPackage"
+      Value="[LEGACY_NSIS_UNINSTALLER] /S"
+      Execute="immediate" />
+    <CustomAction
+      Id="RemoveLegacyNsisPackage"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <!--
+      Give the NSIS self-deleting uninstaller time to remove its last files.
+      Use WixQuietExec so ping.exe never creates a visible console window.
+    -->
+    <CustomAction
+      Id="SetWaitForLegacyNsisCleanupCommand"
+      Property="WaitForLegacyNsisCleanup"
+      Value="&quot;[SystemFolder]ping.exe&quot; -n 2 127.0.0.1"
+      Execute="immediate" />
+    <CustomAction
+      Id="WaitForLegacyNsisCleanup"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="SetRemoveLegacyNsisPackageCommand" Before="RemoveLegacyNsisPackage">
+        LEGACY_NSIS_UNINSTALLER AND NOT Installed
+      </Custom>
+      <Custom Action="RemoveLegacyNsisPackage" Before="SetWaitForLegacyNsisCleanupCommand">
+        LEGACY_NSIS_UNINSTALLER AND NOT Installed
+      </Custom>
+      <Custom Action="SetWaitForLegacyNsisCleanupCommand" Before="WaitForLegacyNsisCleanup">
+        LEGACY_NSIS_UNINSTALLER AND NOT Installed
+      </Custom>
+      <Custom Action="WaitForLegacyNsisCleanup" Before="InstallFiles">
+        LEGACY_NSIS_UNINSTALLER AND NOT Installed
+      </Custom>
+      <!--
+        This runs only after Windows Installer commits successfully. The helper
+        starts the app in every desktop session that is already logged on; it
+        does not create a logon/startup entry.
+      -->
+      <Custom Action="SetLaunchHualiAfterInstallCommand" After="InstallFinalize">
+        (NOT REMOVE~="ALL") AND HUALI_START_AFTER_INSTALL="1"
+      </Custom>
+      <Custom Action="LaunchHualiAfterInstall" After="SetLaunchHualiAfterInstallCommand">
+        (NOT REMOVE~="ALL") AND HUALI_START_AFTER_INSTALL="1"
+      </Custom>
+    </InstallExecuteSequence>
+
+    <CustomAction
+      Id="SetLaunchHualiAfterInstallCommand"
+      Property="WixQuietExec64CmdLine"
+      Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]enterprise\launch-after-install.ps1&quot; -ExecutablePath &quot;[INSTALLDIR]HualiAIDesktopAssistant.exe&quot;"
+      Execute="immediate" />
+    <CustomAction
+      Id="LaunchHualiAfterInstall"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
+      Execute="immediate"
+      Return="ignore" />
+
+    <DirectoryRef Id="INSTALLDIR">
+      <!--
+        HKLM Run applies to every Windows user on this computer. The same
+        component also writes a stable machine-level deployment marker.
+      -->
+      <Component
+        Id="EnterpriseStartupAndMarker"
+        Guid="{AEF3BE4B-A0E9-4E54-B69F-5228A47AF1CA}"
+        Win64="yes">
+        <RegistryValue
+          Root="HKLM"
+          Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+          Name="华力AI桌面助手"
+          Type="string"
+          Value="&quot;[INSTALLDIR]HualiAIDesktopAssistant.exe&quot;"
+          KeyPath="yes" />
+        <RegistryValue
+          Root="HKLM"
+          Key="SOFTWARE\Huali\HualiAIDesktopAssistant"
+          Name="InstallerType"
+          Type="string"
+          Value="MSI" />
+        <RegistryValue
+          Root="HKLM"
+          Key="SOFTWARE\Huali\HualiAIDesktopAssistant"
+          Name="Version"
+          Type="string"
+          Value="[ProductVersion]" />
+      </Component>
+    </DirectoryRef>
+
+    <ComponentGroup Id="HualiEnterpriseComponents">
+      <ComponentRef Id="EnterpriseStartupAndMarker" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>

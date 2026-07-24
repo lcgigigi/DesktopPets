@@ -97,4 +97,31 @@ describe('sys-message-content.service', () => {
     ).resolves.toBe('待办 #147')
     expect(getSysMessageFallback(message({ msgContent: '' }))).toBe('你收到一条新的系统消息')
   })
+
+  it('never exposes the raw JSON for an updated todo notification', async () => {
+    const updatedTodo = message({
+      msgSubject: '您有一条待办已更新',
+      msgContent: JSON.stringify({
+        id: 2,
+        title: '测试50',
+        content: '测试50',
+        creatorNickName: '田坤坤',
+        handlerNickName: '徐逸臣',
+        status: 3,
+      }),
+      bizType: 1,
+      bizId: '2',
+    })
+
+    expect(getSysMessageFallback(updatedTodo)).toBe('测试50')
+    await expect(resolveSysMessageContent(updatedTodo)).resolves.toBe('测试50')
+  })
+
+  it('extracts readable content from a JSON list envelope', () => {
+    const listMessage = message({
+      msgContent: JSON.stringify({ list: [{ title: '待办标题', content: '待办正文' }] }),
+    })
+
+    expect(getSysMessageFallback(listMessage)).toBe('待办正文')
+  })
 })

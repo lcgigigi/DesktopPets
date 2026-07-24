@@ -1,6 +1,6 @@
 {
   "name": "huali-ai-mascot",
-  "version": "1.0.20",
+  "version": "1.0.34",
   "private": true,
   "type": "module",
   "scripts": {
@@ -24,6 +24,9 @@
     "build:windows-silent-installer:prod": "BUILD_MODE=prod bash scripts/build-windows-silent-installer.sh",
     "build:windows-silent-installer:main": "BUILD_MODE=main bash scripts/build-windows-silent-installer.sh",
     "build:windows-silent-installer:intranet": "BUILD_MODE=intranet bash scripts/build-windows-silent-installer.sh",
+    "build:windows-msi:prod": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1 -Mode prod",
+    "build:windows-msi:main": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1 -Mode main",
+    "build:windows-msi:intranet": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1 -Mode intranet",
     "build:windows-portable:prod": "BUILD_MODE=prod bash scripts/build-windows-portable.sh",
     "build:windows-portable:main": "BUILD_MODE=main bash scripts/build-windows-portable.sh",
     "build:windows-portable:intranet": "BUILD_MODE=intranet bash scripts/build-windows-portable.sh"

@@ -11,6 +11,10 @@ import SysMessageTip from '../components/SysMessageTip.vue'
 import {
   MASCOT_NATIVE_DRAG_ENDED_EVENT,
   MASCOT_REVEAL_EVENT,
+  PANEL_ACTIVITY_EVENT,
+  PANEL_VISIBILITY_EVENT,
+  type MascotDockSide,
+  type PanelActivityPayload,
   hidePanelWindow,
   openWorkbench,
   peekMascotWindow,
@@ -27,6 +31,8 @@ import {
   advanceRunningDirection,
   createRunningDirectionState
 } from '../utils/mascot-drag-motion'
+import { canOpenMascotTodoPanel } from '../utils/mascot-panel-access'
+import { shouldPauseMascotIdleHide } from '../utils/mascot-idle-policy'
 
 const props = defineProps<{
   needsAuth: boolean
@@ -48,18 +54,45 @@ const emit = defineEmits<{
 }>()
 
 const mascotStore = useMascotStore()
+const previewAnimationStates: readonly MascotAnimationState[] = [
+  'idle',
+  'running-left',
+  'running-right',
+  'waving',
+  'jumping',
+  'failed',
+  'waiting',
+  'remind',
+  'success',
+  'cooling-office',
+  'peeking',
+  'peeking-left',
+  'revealing',
+  'revealing-left'
+]
+const requestedPreviewAnimation = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get('previewAnimation')
+  : null
+const previewAnimationState = requestedPreviewAnimation
+  && previewAnimationStates.includes(requestedPreviewAnimation as MascotAnimationState)
+  ? requestedPreviewAnimation as MascotAnimationState
+  : undefined
 const contextMenu = ref<{ x: number; y: number } | null>(null)
 const isDragging = ref(false)
 const contextMenuSize = { width: 124, height: 40 }
 const compactOverlaySize = { width: 220, height: 176 }
 const animationState = ref<MascotAnimationState>()
-const dragThreshold = 5
+const dragThreshold = 8
 const avatarSingleClickDelayMs = 280
 const idleHideDelayMs = 60 * 1000
 const peekRevealDurationMs = 480
 const nativeDragSafetyTimeoutMs = 15 * 1000
 const isPeeked = ref(false)
+const peekSide = ref<MascotDockSide>('right')
 const isPointerInside = ref(false)
+const panelVisible = ref(false)
+const panelHasText = ref(false)
+const panelFocused = ref(false)
 const peekTransition = ref<'revealing'>()
 let dragState:
   | {
@@ -80,6 +113,8 @@ let nativeDragIdleTimer: number | undefined
 let lastNativeWindowX: number | undefined
 let runningMotion = createRunningDirectionState()
 let removeCloseOverlaysListener: UnlistenFn | undefined
+let removePanelActivityListener: UnlistenFn | undefined
+let removePanelVisibilityListener: UnlistenFn | undefined
 let removeWindowMovedListener: UnlistenFn | undefined
 let removeNativeDragEndedListener: UnlistenFn | undefined
 let nativeNotificationLayout = { visible: false, compact: false }
@@ -119,18 +154,44 @@ async function syncNativeNotificationLayout(
 
 function scheduleIdleHide() {
   clearIdleHideTimer()
-  if (isNotifying.value || isDragging.value || isPeeked.value || isPointerInside.value) return
+  if (shouldPauseIdleHide()) return
 
   idleHideTimer = window.setTimeout(() => {
     idleHideTimer = undefined
-    if (isNotifying.value || isDragging.value || isPointerInside.value) {
+    if (shouldPauseIdleHide()) {
       scheduleIdleHide()
       return
     }
-    isPeeked.value = true
-    peekTransition.value = undefined
-    void peekMascotWindow(prefersReducedMotion())
+    void peekMascotWindow(prefersReducedMotion()).then((side) => {
+      if (!side) {
+        refreshIdleHideSchedule()
+        return
+      }
+      peekSide.value = side
+      isPeeked.value = true
+      peekTransition.value = undefined
+    })
   }, idleHideDelayMs)
+}
+
+function shouldPauseIdleHide() {
+  return shouldPauseMascotIdleHide({
+    isNotifying: isNotifying.value,
+    isDragging: isDragging.value,
+    isPeeked: isPeeked.value,
+    isPointerInside: isPointerInside.value,
+    panelVisible: panelVisible.value,
+    panelHasText: panelHasText.value,
+    panelFocused: panelFocused.value
+  })
+}
+
+function refreshIdleHideSchedule() {
+  if (shouldPauseIdleHide()) {
+    clearIdleHideTimer()
+  } else {
+    scheduleIdleHide()
+  }
 }
 
 function handlePointerEnter() {
@@ -203,8 +264,7 @@ function isOverlayInteraction(target: EventTarget | null) {
 }
 
 function togglePanel() {
-  // 登录提示或系统消息展开时，优先让用户处理当前提示，避免吉祥物点击打开输入框。
-  if (usesExpandedNotificationLayout.value) return
+  if (!canOpenMascotTodoPanel(props.needsAuth, Boolean(props.sysMessage))) return
 
   dismissTransientOverlays()
   playTransientAnimation('waiting', 900)
@@ -429,7 +489,9 @@ function handleContextMenuKeydown(event: KeyboardEvent) {
 }
 
 const hasBubbleMessage = computed(() => Boolean(mascotStore.message))
-const hasExpandedNotification = computed(() => Boolean(props.sysMessage || props.needsAuth))
+const hasExpandedNotification = computed(
+  () => Boolean(props.sysMessage || props.needsAuth)
+)
 const isExpandedNotificationDismissing = ref(false)
 const isBubbleMessageDismissing = ref(false)
 const isContextMenuDismissing = ref(false)
@@ -444,8 +506,11 @@ const usesCompactNotificationLayout = computed(
     || isContextMenuDismissing.value
 )
 const avatarAnimationState = computed<MascotAnimationState | undefined>(() => {
-  if (peekTransition.value === 'revealing') return 'revealing'
-  if (isPeeked.value) return 'peeking'
+  if (previewAnimationState) return previewAnimationState
+  if (peekTransition.value === 'revealing') {
+    return peekSide.value === 'left' ? 'revealing-left' : 'revealing'
+  }
+  if (isPeeked.value) return peekSide.value === 'left' ? 'peeking-left' : 'peeking'
   return props.sysMessage ? 'waving' : animationState.value
 })
 const isNotifying = computed(
@@ -547,6 +612,13 @@ watch(
   }
 )
 
+watch(
+  () => props.needsAuth,
+  (needsAuth) => {
+    if (needsAuth) void hidePanelWindow()
+  }
+)
+
 watch(hasBubbleMessage, (visible) => {
   if (!visible) return
   closeContextMenu()
@@ -578,6 +650,16 @@ onMounted(async () => {
   removeCloseOverlaysListener = await listen('mascot-close-overlays', () => {
     dismissTransientOverlays()
   })
+  removePanelActivityListener = await listen<PanelActivityPayload>(PANEL_ACTIVITY_EVENT, (event) => {
+    panelHasText.value = event.payload.hasText
+    panelFocused.value = event.payload.focused
+    refreshIdleHideSchedule()
+  })
+  removePanelVisibilityListener = await listen<boolean>(PANEL_VISIBILITY_EVENT, (event) => {
+    panelVisible.value = event.payload
+    if (!event.payload) panelFocused.value = false
+    refreshIdleHideSchedule()
+  })
   removeNativeDragEndedListener = await listen(MASCOT_NATIVE_DRAG_ENDED_EVENT, () => {
     finishNativeDrag()
   })
@@ -588,6 +670,16 @@ onMounted(async () => {
     }
     lastNativeWindowX = payload.x
   })
+
+  // The initial reactive watcher can run while the native window is still
+  // completing setup. Reapply the desired bounds after mount so a first-run
+  // login card cannot be rendered inside the collapsed 168x144 mascot window
+  // and survive only as a clipped horizontal border.
+  await syncNativeNotificationLayout(
+    isNotifying.value,
+    usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value,
+    { force: true }
+  )
   scheduleIdleHide()
 })
 
@@ -603,6 +695,8 @@ onUnmounted(() => {
   window.removeEventListener('pointerup', finishGlobalNativeDrag, true)
   window.removeEventListener('mouseup', finishGlobalNativeDrag, true)
   removeCloseOverlaysListener?.()
+  removePanelActivityListener?.()
+  removePanelVisibilityListener?.()
   removeWindowMovedListener?.()
   removeNativeDragEndedListener?.()
   void syncNativeNotificationLayout(false, false, { force: true })
@@ -613,7 +707,7 @@ onUnmounted(() => {
   <section
     class="mascot-window"
     :class="{
-      'is-dragging': isDragging,
+      'is-dragging': isDragging || previewAnimationState?.startsWith('running-'),
       'is-notifying': isNotifying,
       'has-expanded-notification': usesExpandedNotificationLayout
     }"

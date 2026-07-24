@@ -9,6 +9,14 @@ import { storage } from '../utils/storage'
 export const MASCOT_REVEAL_EVENT = 'huali:mascot-reveal'
 export const MASCOT_NATIVE_DRAG_ENDED_EVENT = 'mascot-native-drag-ended'
 export const PANEL_REVEAL_EVENT = 'huali:panel-reveal'
+export const PANEL_ACTIVITY_EVENT = 'huali:panel-activity'
+export const PANEL_VISIBILITY_EVENT = 'huali:panel-visibility'
+export type MascotDockSide = 'left' | 'right'
+
+export interface PanelActivityPayload {
+  hasText: boolean
+  focused: boolean
+}
 
 function announceMascotReveal() {
   window.dispatchEvent(new Event(MASCOT_REVEAL_EVENT))
@@ -137,9 +145,9 @@ export async function showNotificationWindow() {
 
 export async function peekMascotWindow(reducedMotion = false) {
   try {
-    await invoke('peek_mascot_window', { reducedMotion })
+    return await invoke<MascotDockSide | null>('peek_mascot_window', { reducedMotion })
   } catch {
-    return
+    return null
   }
 }
 
@@ -159,10 +167,13 @@ export async function startMascotWindowDrag() {
 export async function togglePanelWindow() {
   announceMascotReveal()
   try {
-    await invoke('toggle_panel_window')
-    await emitTo('panel', PANEL_REVEAL_EVENT)
+    const visible = await invoke<boolean>('toggle_panel_window')
+    if (visible) {
+      await emitTo('panel', PANEL_REVEAL_EVENT)
+    }
+    return visible
   } catch {
-    return
+    return undefined
   }
 }
 
@@ -209,9 +220,20 @@ export async function setMascotNotificationVisible(
   }
 }
 
-export async function setPanelExpanded(expanded: boolean) {
+export async function setPanelHeight(height: number) {
   try {
-    await invoke('set_panel_expanded', { expanded })
+    await invoke('set_panel_height', { height })
+  } catch {
+    return
+  }
+}
+
+export async function setPanelActivity(activity: PanelActivityPayload) {
+  try {
+    await invoke('set_panel_activity', {
+      hasText: activity.hasText,
+      focused: activity.focused
+    })
   } catch {
     return
   }
