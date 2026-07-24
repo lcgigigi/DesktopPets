@@ -27,15 +27,22 @@ interface DesktopRequestOptions {
   params?: Record<string, string | number | boolean | null | undefined>
 }
 
-type UnauthorizedListener = () => void
+export interface DesktopUnauthorizedContext {
+  token: string
+}
+
+type UnauthorizedListener = (context: DesktopUnauthorizedContext) => void
 type DesktopRequestMethod = 'GET' | 'POST' | 'PUT'
 
 const unauthorizedListeners = new Set<UnauthorizedListener>()
 const REQUEST_TIMEOUT = 12_000
 
-function notifyUnauthorized(status?: number, code?: number) {
-  if (status !== 401 && status !== 403 && code !== 401 && code !== 403) return
-  unauthorizedListeners.forEach((listener) => listener())
+function notifyUnauthorized(token: string, status?: number, code?: number) {
+  // 401 means the token is no longer accepted. A 403 can instead mean this
+  // user lacks one optional desktop permission, so it must not erase an
+  // otherwise valid login.
+  if (status !== 401 && code !== 401) return
+  unauthorizedListeners.forEach((listener) => listener({ token }))
 }
 
 function getBusinessMessage(response: BusinessResponse, fallback: string) {
@@ -111,7 +118,7 @@ async function send<T>(
   const code = typeof result?.code === 'number' ? result.code : undefined
 
   if (!response.ok || result?.success === false || (code !== undefined && code !== 200)) {
-    notifyUnauthorized(response.status, code)
+    notifyUnauthorized(token, response.status, code)
     throw new DesktopRequestError(
       getBusinessMessage(result ?? {}, response.ok ? '接口请求失败' : `请求失败（${response.status}）`),
       { status: response.status, code },

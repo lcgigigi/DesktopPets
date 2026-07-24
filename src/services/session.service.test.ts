@@ -75,12 +75,35 @@ describe('validateDesktopSession', () => {
     })
   })
 
-  it('treats an account mismatch or an unauthorized response as an expired desktop session', async () => {
+  it('keeps a valid login when getInfo exposes a different account identifier', async () => {
     mocks.get.mockResolvedValue({ user: { userName: '10002', nickName: '李华' } })
-    await expect(validateDesktopSession('10001')).resolves.toEqual({ status: 'unauthorized' })
+
+    await expect(validateDesktopSession('10001')).resolves.toEqual({
+      status: 'valid',
+      userInfo: {
+        userId: '10001',
+        userName: '李华',
+        department: undefined,
+      },
+    })
+  })
+
+  it('only treats an explicit unauthorized response as an expired desktop session', async () => {
 
     mocks.get.mockRejectedValue(new DesktopRequestError('登录状态已过期', { status: 401 }))
     await expect(validateDesktopSession('10001')).resolves.toEqual({ status: 'unauthorized' })
+  })
+
+  it('does not erase login when the account lacks permission for getInfo', async () => {
+    mocks.get.mockRejectedValue(new DesktopRequestError('无权访问', { status: 403 }))
+
+    await expect(validateDesktopSession('10001')).resolves.toEqual({ status: 'unavailable' })
+  })
+
+  it('keeps the desktop session when getInfo temporarily omits identity fields', async () => {
+    mocks.get.mockResolvedValue({ user: {} })
+
+    await expect(validateDesktopSession('10001')).resolves.toEqual({ status: 'unavailable' })
   })
 
   it('keeps the desktop session on a temporary network failure', async () => {

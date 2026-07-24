@@ -18,4 +18,6 @@ export type MascotAnimationState =
   | 'success'
   | 'cooling-office'
   | 'peeking'
+  | 'peeking-left'
   | 'revealing'
+  | 'revealing-left'

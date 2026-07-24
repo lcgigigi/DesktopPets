@@ -25,7 +25,7 @@ vi.mock('../utils/storage', () => ({
   storage: { getToken: mocks.getToken },
 }))
 
-import { DesktopRequestError, request } from './request'
+import { DesktopRequestError, onDesktopUnauthorized, request } from './request'
 
 describe('desktop request', () => {
   beforeEach(() => {
@@ -64,5 +64,32 @@ describe('desktop request', () => {
         code: 500,
       }),
     )
+  })
+
+  it('reports which session token produced an unauthorized response', async () => {
+    const listener = vi.fn()
+    const removeListener = onDesktopUnauthorized(listener)
+    mocks.getToken.mockReturnValue('old-session-token')
+    mocks.nativeFetch.mockResolvedValue(
+      new Response(JSON.stringify({ code: 401, msg: '登录状态已过期' }), { status: 200 }),
+    )
+
+    await expect(request.get('/getInfo')).rejects.toBeInstanceOf(DesktopRequestError)
+    expect(listener).toHaveBeenCalledWith({ token: 'old-session-token' })
+
+    removeListener()
+  })
+
+  it('does not treat a permission-only 403 as an expired login', async () => {
+    const listener = vi.fn()
+    const removeListener = onDesktopUnauthorized(listener)
+    mocks.nativeFetch.mockResolvedValue(
+      new Response(JSON.stringify({ code: 403, msg: '无权访问此消息接口' }), { status: 200 }),
+    )
+
+    await expect(request.get('/sys-message/page')).rejects.toBeInstanceOf(DesktopRequestError)
+    expect(listener).not.toHaveBeenCalled()
+
+    removeListener()
   })
 })

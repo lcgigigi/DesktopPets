@@ -1,7 +1,9 @@
 node_modules/
 dist/
+artifacts/
 src-tauri/target/
 src-tauri/gen/
+src-tauri/tauri.enterprise-msi.generated.conf.json
 .DS_Store
 *.log
 *.pyc

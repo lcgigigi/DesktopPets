@@ -26,13 +26,16 @@ require_cmd llvm-rc "请执行: brew install llvm"
 require_cmd cargo-xwin "请执行: cargo install --locked cargo-xwin"
 require_cmd makensis "请执行: brew install makensis"
 require_cmd zip "请执行: brew install zip"
+require_cmd shasum "系统缺少 shasum，无法生成完整性校验文件"
 
 MODE="${BUILD_MODE:-prod}"
 export BUILD_MODE="$MODE"
 VERSION="$(node -p "require('./package.json').version")"
-STAGING_DIR="$ROOT/dist/windows-installer-${MODE}"
-ZIP_PATH="$ROOT/dist/huali-ai-mascot-${VERSION}-${MODE}-setup.zip"
+ARTIFACTS_DIR="$ROOT/artifacts"
+STAGING_DIR="$ARTIFACTS_DIR/windows-installer-${MODE}"
+ZIP_PATH="$ARTIFACTS_DIR/huali-ai-mascot-${VERSION}-${MODE}-setup.zip"
 BUNDLE_DIR="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/bundle/nsis"
+APP_EXE="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/HualiAIDesktopAssistant.exe"
 
 if ! rustup target list --installed | grep -q '^x86_64-pc-windows-msvc$'; then
   echo "正在安装 Windows 编译目标..."
@@ -51,11 +54,24 @@ if [[ -z "$SETUP_EXE" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$APP_EXE" ]]; then
+  echo "未找到 Windows 主程序: $APP_EXE"
+  exit 1
+fi
+
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
 OUTPUT="$STAGING_DIR/Huali-AI-Desktop-Assistant_${VERSION}_x64-setup.exe"
 cp "$SETUP_EXE" "$OUTPUT"
 cp "$ROOT/scripts/windows-installer/使用说明.txt" "$STAGING_DIR/README.txt"
+(
+  cd "$STAGING_DIR"
+  shasum -a 256 "$(basename "$OUTPUT")" > SHA256.txt
+)
+(
+  cd "$(dirname "$APP_EXE")"
+  shasum -a 256 "$(basename "$APP_EXE")" > "$STAGING_DIR/APPLICATION-SHA256.txt"
+)
 
 rm -f "$ZIP_PATH"
 (

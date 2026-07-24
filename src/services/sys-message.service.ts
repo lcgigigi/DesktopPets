@@ -12,6 +12,7 @@ let activeUserId = ''
 let pollTimer: number | undefined
 let polling = false
 let pollInitialized = false
+let pollGeneration = 0
 const messageListeners = new Set<MessageListener>()
 const knownMessageIds = new Set<string>()
 const SYS_MESSAGE_POLL_INTERVAL = 10_000
@@ -153,6 +154,8 @@ function buildSysMessageWebSocketUrl(userId: string) {
 async function pollUnreadMessages() {
   if (polling || !activeUserId.trim()) return
 
+  const generation = pollGeneration
+  const userId = activeUserId
   polling = true
   try {
     const payload = await request.get<unknown, SysMessagePagePayload>('/sys-message/page', {
@@ -165,6 +168,10 @@ async function pollUnreadMessages() {
     const messages = (payload?.rows ?? payload?.list ?? [])
       .map((item) => normalizeSysMessageItem(item))
       .filter((item): item is SysMessageNotification => Boolean(item))
+
+    // A request started for a signed-out or previous user must never enqueue a
+    // notification after the desktop session has changed.
+    if (generation !== pollGeneration || userId !== activeUserId) return
 
     if (!pollInitialized) {
       pollInitialized = true
@@ -180,14 +187,20 @@ async function pollUnreadMessages() {
       .reverse()
       .forEach((message) => deliverMessage(message))
   } catch (error) {
-    console.warn('Sys message polling failed', error)
+    if (generation === pollGeneration) {
+      console.warn('Sys message polling failed', error)
+    }
   } finally {
-    polling = false
+    if (generation === pollGeneration) {
+      polling = false
+    }
   }
 }
 
 function startPolling(reset: boolean) {
   window.clearInterval(pollTimer)
+  pollGeneration += 1
+  polling = false
   if (reset) {
     pollInitialized = false
     knownMessageIds.clear()
@@ -202,6 +215,7 @@ function startPolling(reset: boolean) {
 function stopPolling() {
   window.clearInterval(pollTimer)
   pollTimer = undefined
+  pollGeneration += 1
   polling = false
   pollInitialized = false
   knownMessageIds.clear()

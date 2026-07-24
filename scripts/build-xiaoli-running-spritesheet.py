@@ -11,7 +11,9 @@ from PIL import Image
 SOURCE = Path("src/assets/mascot/xiaoli-motion-spritesheet.webp")
 OUTPUT = Path("src/assets/mascot/xiaoli-running-spritesheet.webp")
 SOURCE_CELL = (384, 320)
-RUNTIME_CELL = (132, 110)
+RUNTIME_CONTENT = (132, 110)
+RUNTIME_BOTTOM_GUTTER_PX = 12
+RUNTIME_CELL = (RUNTIME_CONTENT[0], RUNTIME_CONTENT[1] + RUNTIME_BOTTOM_GUTTER_PX)
 SOURCE_FRAME_COUNT = 24
 INTERPOLATED_PER_PAIR = 2
 RIGHT_RUN_SAFE_SHIFT_PX = 8
@@ -104,7 +106,7 @@ def interpolate(first: Image.Image, second: Image.Image, amount: float) -> Image
 
 
 def build_runtime_row(frames: list[Image.Image]) -> list[Image.Image]:
-    resized = [frame.resize(RUNTIME_CELL, Image.Resampling.LANCZOS) for frame in frames]
+    resized = [frame.resize(RUNTIME_CONTENT, Image.Resampling.LANCZOS) for frame in frames]
     output: list[Image.Image] = []
     for index, current in enumerate(resized):
         following = resized[(index + 1) % len(resized)]
@@ -118,10 +120,25 @@ def add_right_run_safety_inset(frames: list[Image.Image]) -> list[Image.Image]:
     """Move right-running poses left so helmet antialiasing never meets the cell edge."""
     shifted: list[Image.Image] = []
     for frame in frames:
-        canvas = Image.new("RGBA", RUNTIME_CELL, (0, 0, 0, 0))
+        canvas = Image.new("RGBA", RUNTIME_CONTENT, (0, 0, 0, 0))
         canvas.alpha_composite(frame, (-RIGHT_RUN_SAFE_SHIFT_PX, 0))
         shifted.append(canvas)
     return shifted
+
+
+def frame_with_safety_gutter(frame: Image.Image, row: int, column: int) -> Image.Image:
+    """Place one pose in a taller cell and enforce the runtime foot safe area."""
+    cell = Image.new("RGBA", RUNTIME_CELL, (0, 0, 0, 0))
+    cell.alpha_composite(frame, (0, 0))
+    bbox = cell.getchannel("A").getbbox()
+    if bbox is None:
+        raise ValueError(f"running frame {row}:{column} is empty")
+    bottom_margin = RUNTIME_CELL[1] - bbox[3]
+    if bottom_margin < RUNTIME_BOTTOM_GUTTER_PX:
+        raise ValueError(
+            f"running frame {row}:{column} only has {bottom_margin}px bottom safety"
+        )
+    return cell
 
 
 def main() -> None:
@@ -148,12 +165,14 @@ def main() -> None:
     )
     for row, frames in enumerate(rows):
         for column, frame in enumerate(frames):
-            output.alpha_composite(frame, (column * RUNTIME_CELL[0], row * RUNTIME_CELL[1]))
+            cell = frame_with_safety_gutter(frame, row, column)
+            output.alpha_composite(cell, (column * RUNTIME_CELL[0], row * RUNTIME_CELL[1]))
 
     output.save(OUTPUT, "WEBP", lossless=True, method=6)
     print(
         f"built {OUTPUT}: {frame_count} frames x {len(rows)} rows, "
-        f"head anchors {targets}, {output.size[0]}x{output.size[1]}"
+        f"head anchors {targets}, {output.size[0]}x{output.size[1]}, "
+        f"{RUNTIME_BOTTOM_GUTTER_PX}px bottom gutter"
     )
 
 

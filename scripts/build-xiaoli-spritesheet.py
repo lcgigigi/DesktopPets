@@ -333,18 +333,10 @@ def preserve_grid_staging(frame: Image.Image) -> Image.Image:
     return output
 
 
-def chest_badge_center(frame: Image.Image) -> tuple[int, int, int]:
-    """Lock the exact badge to the red mark already rendered in the chest armor.
-
-    Blue-part tracking is easily pulled toward a raised arm or ear. Every
-    approved source frame already has a red Huali mark embedded in its chest,
-    so that mark is the most reliable pose-aware anchor for the final exact
-    logo overlay.
-    """
+def brand_mark_candidates(frame: Image.Image) -> list[tuple[int, int]]:
+    """Locate saturated-red pixels belonging to the Huali chest mark."""
 
     left, top, right, bottom = alpha_bbox(frame)
-    body_height = bottom - top
-    anchor_x = body_anchor_x(frame)
     # Three-quarter running poses move the chest module well away from the
     # canvas centre. Search the full torso width; the corporate mark is the
     # only saturated red detail on the robot and is therefore a safer anchor
@@ -367,6 +359,23 @@ def chest_badge_center(frame: Image.Image) -> tuple[int, int, int]:
             ):
                 red_candidates.append((x, y))
 
+    return red_candidates
+
+
+def chest_badge_center(frame: Image.Image) -> tuple[int, int, int]:
+    """Lock the exact badge to the red mark already rendered in the chest armor.
+
+    Blue-part tracking is easily pulled toward a raised arm or ear. Every
+    approved source frame already has a red Huali mark embedded in its chest,
+    so that mark is the most reliable pose-aware anchor for the final exact
+    logo overlay.
+    """
+
+    left, top, right, bottom = alpha_bbox(frame)
+    body_height = bottom - top
+    anchor_x = body_anchor_x(frame)
+    red_candidates = brand_mark_candidates(frame)
+
     if len(red_candidates) >= 24:
         center_x = round(median(x for x, _ in red_candidates))
         center_y = round(median(y for _, y in red_candidates))
@@ -375,6 +384,82 @@ def chest_badge_center(frame: Image.Image) -> tuple[int, int, int]:
         center_y = round(top + body_height * 0.68)
 
     return center_x, center_y, 46
+
+
+def correct_brand_mark(frame: Image.Image, logo: Image.Image) -> Image.Image:
+    """Replace only the red mark while preserving the authored 3D badge.
+
+    Repainting the entire badge would flatten its shell foreshortening, rim
+    shadow, highlight and body occlusion into a front-facing sticker. The
+    detected glyph bounds naturally retain each frame's side-on width, while a
+    feathered glyph-only cleanup leaves the surrounding material untouched.
+    """
+
+    candidates = brand_mark_candidates(frame)
+    if len(candidates) < 24:
+        return frame
+
+    xs = [x for x, _ in candidates]
+    ys = [y for _, y in candidates]
+    mark_left, mark_top = min(xs), min(ys)
+    mark_right, mark_bottom = max(xs) + 1, max(ys) + 1
+    mark_width = mark_right - mark_left
+    mark_height = mark_bottom - mark_top
+    center_x = round(median(xs))
+    center_y = round(median(ys))
+
+    # Sample the pearl-white face immediately around the mark. Restricting the
+    # sample to bright, low-saturation pixels avoids borrowing the navy rim or
+    # blue torso when the module becomes strongly foreshortened.
+    pixels = frame.load()
+    sample_padding = max(4, round(mark_height * 0.22))
+    pearl_samples: list[tuple[int, int, int, int]] = []
+    sample_left = max(0, mark_left - sample_padding)
+    sample_top = max(0, mark_top - sample_padding)
+    sample_right = min(frame.width, mark_right + sample_padding)
+    sample_bottom = min(frame.height, mark_bottom + sample_padding)
+
+    for y in range(sample_top, sample_bottom):
+        for x in range(sample_left, sample_right):
+            if mark_left <= x < mark_right and mark_top <= y < mark_bottom:
+                continue
+            red, green, blue, alpha = pixels[x, y]
+            if alpha > 200 and min(red, green, blue) > 178 and max(red, green, blue) - min(red, green, blue) < 34:
+                pearl_samples.append((red, green, blue, alpha))
+
+    if pearl_samples:
+        pearl = tuple(round(median(channel)) for channel in zip(*pearl_samples))
+    else:
+        pearl = (243, 246, 250, 255)
+
+    # Feather only the old red pixels (plus a two-pixel antialias margin) back
+    # into the pearl face. This preserves the original face gradient around the
+    # glyph far better than covering its rectangular bounds.
+    old_mark_mask = Image.new("L", frame.size, 0)
+    mask_pixels = old_mark_mask.load()
+    for x, y in candidates:
+        mask_pixels[x, y] = 255
+    old_mark_mask = old_mark_mask.filter(ImageFilter.MaxFilter(5))
+    old_mark_mask = old_mark_mask.filter(ImageFilter.GaussianBlur(0.72))
+
+    cleaned = frame.copy()
+    pearl_layer = Image.new("RGBA", frame.size, pearl)
+    cleaned = Image.composite(pearl_layer, cleaned, old_mark_mask)
+
+    # Downsampling the high-resolution official mark directly to the detected
+    # bounds keeps its edges clean. Matching both dimensions is intentional:
+    # the changing width/height ratio is the badge's authored foreshortening.
+    logo_copy = logo.copy()
+    target_height = max(2, round(mark_height * 0.98))
+    target_width = max(2, round(mark_width * 0.98))
+    logo_copy = logo_copy.resize(
+        (target_width, target_height), Image.Resampling.LANCZOS
+    )
+    cleaned.alpha_composite(
+        logo_copy,
+        (center_x - logo_copy.width // 2, center_y - logo_copy.height // 2),
+    )
+    return cleaned
 
 
 def build_badge_layer(
@@ -645,6 +730,14 @@ def build_motion_atlas(source_dir: Path, logo: Image.Image) -> Image.Image:
         preserve_grid_staging(frame)
         for frame in extract_grid_frames(load_rgba(source_dir / "peeking.png"), 12, 4)
     ]
+    # Use the official mark on both directional rows, but preserve the source
+    # badge shell. The left row mirrors the authored body turn and staging;
+    # correcting only its mark prevents the corporate symbol reading backward.
+    # Late, head-only frames intentionally need no mark correction.
+    peeking_right = [correct_brand_mark(frame, logo) for frame in peeking]
+    peeking_left = [
+        correct_brand_mark(ImageOps.mirror(frame), logo) for frame in peeking
+    ]
 
     # A side-facing torso needs a foreshortened badge and mark. Apply the exact
     # corporate mark after mirroring so the left cycle never mirrors the logo.
@@ -657,17 +750,39 @@ def build_motion_atlas(source_dir: Path, logo: Image.Image) -> Image.Image:
             "running-left-24",
             [apply_brand_badge(frame, logo, 0.68) for frame in running_left],
         ),
-        Sequence("peeking", peeking),
+        Sequence("peeking-right", peeking_right),
+        Sequence("peeking-left", peeking_left),
     ]
 
     for sequence in sequences[:2]:
         validate_sequence(sequence)
-    for index, frame in enumerate(peeking):
-        bbox = alpha_bbox(frame)
-        if bbox[0] < 8 or bbox[1] < 4 or bbox[2] > CELL_WIDTH - 8:
-            raise ValueError(f"peeking[{index}]: staged pose violates the safe canvas")
-        if (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) < CELL_WIDTH * CELL_HEIGHT * 0.045:
-            raise ValueError(f"peeking[{index}]: staged pose is unexpectedly empty")
+    for sequence in sequences[2:]:
+        for index, frame in enumerate(sequence.frames):
+            bbox = alpha_bbox(frame)
+            if bbox[0] < 8 or bbox[1] < 4 or bbox[2] > CELL_WIDTH - 8:
+                raise ValueError(
+                    f"{sequence.name}[{index}]: staged pose violates the safe canvas"
+                )
+            if (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) < CELL_WIDTH * CELL_HEIGHT * 0.045:
+                raise ValueError(f"{sequence.name}[{index}]: staged pose is unexpectedly empty")
+
+    # Rebranding must not disturb the mirrored motion silhouette. This guards
+    # against a future badge edit accidentally changing the left edge timing.
+    for index, (right_frame, left_frame) in enumerate(
+        zip(peeking_right, peeking_left)
+    ):
+        right_bbox = alpha_bbox(right_frame)
+        left_bbox = alpha_bbox(left_frame)
+        expected_left_bbox = (
+            CELL_WIDTH - right_bbox[2],
+            right_bbox[1],
+            CELL_WIDTH - right_bbox[0],
+            right_bbox[3],
+        )
+        if left_bbox != expected_left_bbox:
+            raise ValueError(
+                f"peeking-left[{index}]: silhouette no longer mirrors peeking-right"
+            )
 
     atlas = Image.new(
         "RGBA",
@@ -702,7 +817,7 @@ def main() -> None:
     )
     print(
         f"Wrote {args.motion_out} ({motion_atlas.width}x{motion_atlas.height}, "
-        f"3 rows, {CELL_WIDTH}x{CELL_HEIGHT}px cells)"
+        f"4 rows, {CELL_WIDTH}x{CELL_HEIGHT}px cells)"
     )
 
 

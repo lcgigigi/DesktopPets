@@ -2,6 +2,7 @@ const TOKEN_KEY = 'huali_ai_desktop_token'
 const USER_INFO_KEY = 'huali_ai_desktop_user_info'
 const DESKTOP_AUTH_STATE_KEY = 'huali_ai_desktop_auth_state'
 const LAST_SYS_MESSAGE_DETAIL_KEY = 'huali_ai_last_sys_message_detail'
+const TODO_INPUT_DRAFT_KEY = 'huali_ai_todo_input_draft'
 
 export interface StoredUserInfo {
   userId: string
@@ -62,6 +63,16 @@ export const storage = {
       return JSON.parse(value) as LastSysMessageDetail
     } catch {
       return null
+    }
+  },
+  getTodoInputDraft() {
+    return localStorage.getItem(TODO_INPUT_DRAFT_KEY) || ''
+  },
+  setTodoInputDraft(text: string) {
+    if (text) {
+      localStorage.setItem(TODO_INPUT_DRAFT_KEY, text)
+    } else {
+      localStorage.removeItem(TODO_INPUT_DRAFT_KEY)
     }
   }
 }
