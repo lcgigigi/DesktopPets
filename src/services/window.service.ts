@@ -119,8 +119,7 @@ export function openAgents() {
 
 export async function hideAssistant() {
   try {
-    await invoke('hide_panel_window')
-    await invoke('show_main_window')
+    await invoke('hide_main_window')
   } catch {
     document.body.classList.add('is-hidden-preview')
   }

@@ -78,7 +78,6 @@ const needsAuth = computed(
     && !env.enableMock
     && !userStore.isAuthenticated
 )
-const showLogout = computed(() => !env.enableMock && userStore.isAuthenticated)
 const currentSysMessageContent = computed(() => currentSysMessage.value?.displayContent || '')
 const isCurrentSysMessageReadPending = computed(
   () => currentSysMessage.value?.dedupeKey === sysMessageReadPendingKey.value
@@ -447,14 +446,12 @@ onUnmounted(() => {
       :needs-auth="needsAuth"
       :auth-pending="authPending"
       :auth-error-message="authErrorMessage"
-      :show-logout="showLogout"
       :sys-message="currentSysMessage"
       :sys-message-content="currentSysMessageContent"
       :pending-sys-message-count="pendingSysMessageCount"
       :sys-message-read-pending="isCurrentSysMessageReadPending"
       :sys-message-action-error="sysMessageActionError"
       @login="startDesktopLogin"
-      @logout="handleLogout"
       @read-sys-message="handleSysMessageRead"
       @view-sys-message="handleSysMessageView"
     />

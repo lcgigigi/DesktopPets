@@ -614,14 +614,17 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 124px;
-  min-height: 40px;
-  gap: 4px;
+  width: 168px;
+  min-height: 42px;
+  gap: 3px;
   padding: 4px;
-  border: 1px solid rgba(94, 116, 158, 0.18);
-  border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 8px 22px rgba(31, 42, 68, 0.12);
+  border: 1px solid rgba(91, 112, 151, 0.16);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow:
+    0 10px 26px rgba(31, 42, 68, 0.14),
+    0 2px 6px rgba(31, 42, 68, 0.06);
+  backdrop-filter: blur(10px);
   cursor: grab;
   transform-origin: 50% 100%;
   animation: mascot-context-menu-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -657,10 +660,14 @@
 .mascot-context-menu__item {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  min-width: 76px;
+  flex: 1 1 0;
   min-height: 32px;
-  padding: 0 10px;
-  border-radius: 8px;
+  padding: 0 9px;
+  border-radius: 9px;
+  background: transparent;
   color: #334155;
   font-size: 12px;
   font-weight: 700;
@@ -677,6 +684,26 @@
 .mascot-context-menu__item:hover {
   background: rgba(47, 111, 237, 0.08);
   color: #1d4ed8;
+}
+
+.mascot-context-menu__item--danger {
+  color: #9f3a43;
+}
+
+.mascot-context-menu__item--danger::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  bottom: 10px;
+  width: 1px;
+  background: rgba(94, 116, 158, 0.12);
+  pointer-events: none;
+}
+
+.mascot-context-menu__item--danger:hover {
+  background: rgba(220, 38, 38, 0.07);
+  color: #c12833;
 }
 
 .mascot-context-menu__item:active {

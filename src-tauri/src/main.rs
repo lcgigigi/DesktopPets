@@ -1403,6 +1403,10 @@ fn show_panel_window(app: tauri::AppHandle, motion: tauri::State<'_, MascotDockM
     ) {
         let (width, height) = mascot_logical_size(&mascot);
         restore_mascot_if_peeked(&mascot, motion.inner(), width, height);
+        // Task pushes use this command as their reminder surface. If the user
+        // explicitly hid the assistant, a new task should bring the mascot and
+        // its panel back without requiring a tray-menu action.
+        let _ = mascot.show();
         place_panel_near_mascot(&panel, &mascot, current_panel_height(&panel));
         let _ = panel.show();
         let _ = panel.set_focus();

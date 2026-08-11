@@ -15,6 +15,8 @@ import {
   PANEL_VISIBILITY_EVENT,
   type MascotDockSide,
   type PanelActivityPayload,
+  exitAssistant,
+  hideAssistant,
   hidePanelWindow,
   openWorkbench,
   peekMascotWindow,
@@ -38,7 +40,6 @@ const props = defineProps<{
   needsAuth: boolean
   authPending: boolean
   authErrorMessage?: string
-  showLogout: boolean
   sysMessage: SysMessageNotification | null
   sysMessageContent: string
   pendingSysMessageCount?: number
@@ -48,7 +49,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   login: []
-  logout: []
   readSysMessage: [message: SysMessageNotification]
   viewSysMessage: [message: SysMessageNotification]
 }>()
@@ -79,8 +79,10 @@ const previewAnimationState = requestedPreviewAnimation
   : undefined
 const contextMenu = ref<{ x: number; y: number } | null>(null)
 const isDragging = ref(false)
-const contextMenuSize = { width: 124, height: 40 }
+const contextMenuSize = { width: 168, height: 42 }
 const compactOverlaySize = { width: 220, height: 176 }
+const mascotAvatarHeight = 128
+const expandedNotificationBottomPadding = 8
 const animationState = ref<MascotAnimationState>()
 const dragThreshold = 8
 const avatarSingleClickDelayMs = 280
@@ -445,27 +447,45 @@ function clampMenuPosition(x: number, y: number, width: number, height: number) 
 
 function handleContextMenu(event: MouseEvent) {
   event.preventDefault()
+  if (!(event.target instanceof Element) || !event.target.closest('.mascot-avatar')) return
+
   revealFromInteraction()
-  if (usesExpandedNotificationLayout.value) return
-  // 登录提示已经提供登录入口时，不再显示重复的右键菜单入口。
-  if (props.needsAuth) return
-  if (!props.showLogout) return
 
   void hidePanelWindow()
   mascotStore.resetStatus()
 
   const container = event.currentTarget as HTMLElement
   const rect = container.getBoundingClientRect()
-  // The native window expands after this state update. Calculate against the
-  // expanded width immediately so the menu never starts at a negative x.
-  const overlayWidth = Math.max(rect.width, compactOverlaySize.width)
+  // Collapsed windows expand around the avatar. Expanded login/reminder cards
+  // keep their current bounds while the menu temporarily takes the card's
+  // place, avoiding a resize jump under the pointer.
+  const isExpanded = usesExpandedNotificationLayout.value
+  const overlayWidth = isExpanded ? rect.width : Math.max(rect.width, compactOverlaySize.width)
+  const overlayHeight = isExpanded ? rect.height : Math.max(rect.height, compactOverlaySize.height)
+  const avatarBottomPadding = isExpanded ? expandedNotificationBottomPadding : 0
+  const menuGap = isExpanded ? 6 : 4
   const centeredX = (overlayWidth - contextMenuSize.width) / 2
+  const menuY = overlayHeight
+    - avatarBottomPadding
+    - mascotAvatarHeight
+    - contextMenuSize.height
+    - menuGap
   contextMenu.value = clampMenuPosition(
     centeredX,
-    20,
+    menuY,
     overlayWidth,
-    Math.max(rect.height, compactOverlaySize.height)
+    overlayHeight
   )
+}
+
+function handleHide() {
+  closeContextMenu()
+  mascotStore.resetStatus()
+  void hideAssistant()
+}
+
+function handleExit() {
+  void exitAssistant()
 }
 
 function handleOutsidePointerDown(event: PointerEvent) {
@@ -724,10 +744,8 @@ onUnmounted(() => {
         v-if="contextMenu"
         :x="contextMenu.x"
         :y="contextMenu.y"
-        :show-login="needsAuth"
-        :show-logout="showLogout"
-        @login="emit('login')"
-        @logout="emit('logout')"
+        @hide="handleHide"
+        @exit="handleExit"
         @close="closeContextMenu"
       />
     </Transition>
@@ -737,14 +755,14 @@ onUnmounted(() => {
       @after-leave="handleExpandedOverlayAfterLeave"
     >
       <AuthLoginTip
-        v-if="needsAuth"
+        v-if="needsAuth && !isContextMenuOpen"
         key="auth-login"
         :pending="authPending"
         :message="authErrorMessage"
         @login="emit('login')"
       />
       <SysMessageTip
-        v-else-if="sysMessage"
+        v-else-if="sysMessage && !isContextMenuOpen"
         :key="sysMessage.dedupeKey"
         :message="sysMessage"
         :display-content="sysMessageContent"
