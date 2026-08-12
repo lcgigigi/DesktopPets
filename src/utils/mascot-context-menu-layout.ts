@@ -2,11 +2,11 @@ export const MASCOT_CONTEXT_MENU_WIDTH = 168
 export const MASCOT_CONTEXT_MENU_HEIGHT = 42
 export const MASCOT_CONTEXT_MENU_TAIL_HEIGHT = 5
 export const MASCOT_CONTEXT_MENU_EDGE_PADDING = 12
-export const MASCOT_CONTEXT_MENU_GAP = 18
+export const MASCOT_CONTEXT_MENU_GAP = 24
 export const MASCOT_COMPACT_OVERLAY_WIDTH = 240
-export const MASCOT_COMPACT_OVERLAY_HEIGHT = 208
+export const MASCOT_COMPACT_OVERLAY_HEIGHT = 224
 export const MASCOT_AVATAR_HEIGHT = 128
-export const MASCOT_EXPANDED_BOTTOM_PADDING = 8
+export const MASCOT_AVATAR_BOTTOM_PADDING = 8
 
 export interface MascotContextMenuLayout {
   x: number
@@ -23,7 +23,7 @@ function clamp(value: number, min: number, max: number) {
 export function getMascotContextMenuLayout(
   viewportWidth: number,
   viewportHeight: number,
-  expanded = false
+  measuredAvatarTop?: number
 ): MascotContextMenuLayout {
   const safeViewportWidth = Math.max(0, viewportWidth)
   const safeViewportHeight = Math.max(0, viewportHeight)
@@ -38,8 +38,14 @@ export function getMascotContextMenuLayout(
     MASCOT_CONTEXT_MENU_EDGE_PADDING,
     maxX
   )
-  const avatarBottomPadding = expanded ? MASCOT_EXPANDED_BOTTOM_PADDING : 0
-  const avatarTop = safeViewportHeight - avatarBottomPadding - MASCOT_AVATAR_HEIGHT
+  const avatarBottomPadding = MASCOT_AVATAR_BOTTOM_PADDING
+  // Prefer the avatar's live DOM position. The native WebView can expose a
+  // slightly different logical height at fractional Windows DPI, so deriving
+  // the menu solely from the requested window size creates inconsistent gaps.
+  const fallbackAvatarTop = safeViewportHeight - avatarBottomPadding - MASCOT_AVATAR_HEIGHT
+  const avatarTop = Number.isFinite(measuredAvatarTop)
+    ? clamp(measuredAvatarTop as number, 0, safeViewportHeight)
+    : fallbackAvatarTop
   const desiredY = avatarTop - MASCOT_CONTEXT_MENU_HEIGHT - MASCOT_CONTEXT_MENU_GAP
   const maxY = safeViewportHeight
     - MASCOT_CONTEXT_MENU_HEIGHT

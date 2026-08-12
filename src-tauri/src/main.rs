@@ -183,10 +183,11 @@ fn take_desktop_auth_callback(
 const MASCOT_NOTIFICATION_WIDTH: f64 = 320.0;
 const MASCOT_NOTIFICATION_HEIGHT: f64 = 480.0;
 // Compact overlays need enough transparent safety space for the context menu,
-// its tail and shadow at every Windows DPI. 240x208 also prevents the menu
-// from touching the 128px mascot avatar below it.
+// its tail and shadow at every Windows DPI. 240x224 keeps a deliberate visual
+// gap above the mascot while preserving the same 8px bottom safety gutter as
+// the collapsed and expanded layouts.
 const MASCOT_MESSAGE_WIDTH: f64 = 240.0;
-const MASCOT_MESSAGE_HEIGHT: f64 = 208.0;
+const MASCOT_MESSAGE_HEIGHT: f64 = 224.0;
 const PANEL_WIDTH: f64 = 380.0;
 const PANEL_COMPACT_HEIGHT: f64 = 78.0;
 const PANEL_MAX_HEIGHT: f64 = 240.0;
@@ -503,10 +504,11 @@ mod mascot_position_tests {
         fit_notification_size_to_rect, fit_panel_height_to_rect, mascot_avatar_offset,
         mascot_bottom_right_position, mascot_dock_x, nearest_dock_side, notification_drag_delta,
         peeked_dock_side, target_outer_dimension, LogicalPosition, LogicalSize, MascotDockSide,
-        PanelActivityState, MASCOT_HEIGHT, MASCOT_MESSAGE_HEIGHT, MASCOT_MESSAGE_WIDTH,
-        MASCOT_NOTIFICATION_HEIGHT, MASCOT_NOTIFICATION_WIDTH, MASCOT_PEEK_VISIBLE_WIDTH,
-        MASCOT_REST_BOTTOM_MARGIN, MASCOT_REST_RIGHT_MARGIN, MASCOT_WIDTH, PANEL_COMPACT_HEIGHT,
-        PANEL_MAX_HEIGHT, SCREEN_MARGIN,
+        PanelActivityState, MASCOT_AVATAR_HEIGHT, MASCOT_HEIGHT, MASCOT_MESSAGE_HEIGHT,
+        MASCOT_MESSAGE_WIDTH, MASCOT_NOTIFICATION_BOTTOM_PADDING, MASCOT_NOTIFICATION_HEIGHT,
+        MASCOT_NOTIFICATION_WIDTH, MASCOT_PEEK_VISIBLE_WIDTH, MASCOT_REST_BOTTOM_MARGIN,
+        MASCOT_REST_RIGHT_MARGIN, MASCOT_WIDTH, PANEL_COMPACT_HEIGHT, PANEL_MAX_HEIGHT,
+        SCREEN_MARGIN,
     };
 
     #[test]
@@ -754,11 +756,11 @@ mod mascot_position_tests {
     #[test]
     fn compact_overlay_has_exact_physical_bounds_across_supported_windows_dpi_scales() {
         for (scale, expected_width, expected_height) in [
-            (1.0, 240, 208),
-            (1.25, 300, 260),
-            (1.5, 360, 312),
-            (1.75, 420, 364),
-            (2.0, 480, 416),
+            (1.0, 240, 224),
+            (1.25, 300, 280),
+            (1.5, 360, 336),
+            (1.75, 420, 392),
+            (2.0, 480, 448),
         ] {
             assert_eq!(
                 target_outer_dimension(MASCOT_MESSAGE_WIDTH, scale, 100, 100),
@@ -792,6 +794,24 @@ mod mascot_position_tests {
 
             assert_eq!(fitted.width, MASCOT_MESSAGE_WIDTH);
             assert_eq!(fitted.height, MASCOT_MESSAGE_HEIGHT);
+        }
+    }
+
+    #[test]
+    fn every_mascot_layout_uses_the_same_bottom_safety_gutter() {
+        for (width, height, visible, compact) in [
+            (MASCOT_WIDTH, MASCOT_HEIGHT, false, false),
+            (MASCOT_MESSAGE_WIDTH, MASCOT_MESSAGE_HEIGHT, true, true),
+            (
+                MASCOT_NOTIFICATION_WIDTH,
+                MASCOT_NOTIFICATION_HEIGHT,
+                true,
+                false,
+            ),
+        ] {
+            let offset = mascot_avatar_offset(width, height, visible, compact);
+            let bottom_gutter = height - offset.y - MASCOT_AVATAR_HEIGHT;
+            assert_eq!(bottom_gutter, MASCOT_NOTIFICATION_BOTTOM_PADDING);
         }
     }
 
@@ -916,7 +936,7 @@ fn mascot_avatar_offset(
         y: if !visible {
             (height - MASCOT_AVATAR_HEIGHT) / 2.0
         } else if compact {
-            height - MASCOT_AVATAR_HEIGHT
+            height - MASCOT_NOTIFICATION_BOTTOM_PADDING - MASCOT_AVATAR_HEIGHT
         } else {
             height - MASCOT_NOTIFICATION_BOTTOM_PADDING - MASCOT_AVATAR_HEIGHT
         },

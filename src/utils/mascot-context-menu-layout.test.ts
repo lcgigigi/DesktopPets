@@ -4,6 +4,7 @@ import {
   MASCOT_COMPACT_OVERLAY_HEIGHT,
   MASCOT_COMPACT_OVERLAY_WIDTH,
   MASCOT_CONTEXT_MENU_EDGE_PADDING,
+  MASCOT_CONTEXT_MENU_GAP,
   MASCOT_CONTEXT_MENU_HEIGHT,
   MASCOT_CONTEXT_MENU_TAIL_HEIGHT,
   MASCOT_CONTEXT_MENU_WIDTH,
@@ -52,12 +53,25 @@ describe('getMascotContextMenuLayout', () => {
   })
 
   it('positions the menu above the mascot in the expanded login and reminder window', () => {
-    const layout = getMascotContextMenuLayout(320, 480, true)
+    const layout = getMascotContextMenuLayout(320, 480)
 
     expect(layout).toMatchObject({
       width: MASCOT_CONTEXT_MENU_WIDTH,
       fitsHorizontally: true,
       fitsAboveAvatar: true
     })
+  })
+
+  it('uses the measured avatar position to keep a consistent visual gap at fractional DPI', () => {
+    const measuredAvatarTop = 86.4
+    const layout = getMascotContextMenuLayout(
+      MASCOT_COMPACT_OVERLAY_WIDTH,
+      MASCOT_COMPACT_OVERLAY_HEIGHT,
+      measuredAvatarTop
+    )
+
+    expect(layout.y + MASCOT_CONTEXT_MENU_HEIGHT + MASCOT_CONTEXT_MENU_GAP)
+      .toBeCloseTo(measuredAvatarTop)
+    expect(layout.fitsAboveAvatar).toBe(true)
   })
 })

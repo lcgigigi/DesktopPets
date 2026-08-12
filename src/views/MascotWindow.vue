@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { listen } from '@tauri-apps/api/event'
 import AuthLoginTip from '../components/AuthLoginTip.vue'
@@ -81,6 +81,7 @@ const previewAnimationState = requestedPreviewAnimation
   ? requestedPreviewAnimation as MascotAnimationState
   : undefined
 const contextMenu = ref<{ x: number; y: number; width: number } | null>(null)
+const isContextMenuPreparing = ref(false)
 const isDragging = ref(false)
 const animationState = ref<MascotAnimationState>()
 const dragThreshold = 8
@@ -118,6 +119,7 @@ let removeCloseOverlaysListener: UnlistenFn | undefined
 let removePanelActivityListener: UnlistenFn | undefined
 let removePanelVisibilityListener: UnlistenFn | undefined
 let removeWindowMovedListener: UnlistenFn | undefined
+let removeWindowFocusListener: UnlistenFn | undefined
 let removeNativeDragEndedListener: UnlistenFn | undefined
 let nativeNotificationLayout = { visible: false, compact: false }
 let nativeNotificationLayoutGeneration = 0
@@ -433,22 +435,31 @@ function cancelPointer(event: PointerEvent) {
 
 function closeContextMenu() {
   contextMenuOpeningGeneration += 1
+  isContextMenuPreparing.value = false
   contextMenu.value = null
 }
 
-function viewportMatchesContextMenuLayout(container: HTMLElement, expanded: boolean) {
+function viewportMatchesContextMenuLayout(container: HTMLElement) {
   const rect = container.getBoundingClientRect()
-  const layout = getMascotContextMenuLayout(rect.width, rect.height, expanded)
+  const avatarRect = container
+    .querySelector<HTMLElement>('.mascot-avatar')
+    ?.getBoundingClientRect()
+  const avatarTop = avatarRect ? avatarRect.top - rect.top : undefined
+  const layout = getMascotContextMenuLayout(
+    rect.width,
+    rect.height,
+    avatarTop
+  )
   return layout.fitsHorizontally && layout.fitsAboveAvatar
 }
 
-async function waitForContextMenuViewport(container: HTMLElement, expanded: boolean) {
-  if (viewportMatchesContextMenuLayout(container, expanded)) return
+async function waitForContextMenuViewport(container: HTMLElement) {
+  if (viewportMatchesContextMenuLayout(container)) return
 
   const deadline = performance.now() + 600
   while (performance.now() < deadline) {
     await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
-    if (viewportMatchesContextMenuLayout(container, expanded)) return
+    if (viewportMatchesContextMenuLayout(container)) return
   }
 }
 
@@ -457,24 +468,44 @@ async function handleContextMenu(event: MouseEvent) {
   if (!(event.target instanceof Element) || !event.target.closest('.mascot-avatar')) return
 
   const openingGeneration = ++contextMenuOpeningGeneration
+  isContextMenuPreparing.value = true
   revealFromInteraction()
 
   void hidePanelWindow()
   mascotStore.resetStatus()
 
   const container = event.currentTarget as HTMLElement
-  let isExpanded = usesExpandedNotificationLayout.value
+  const isExpanded = usesExpandedNotificationLayout.value
+  // Apply the compact avatar layout before moving/resizing the native window.
+  // This keeps the avatar on the exact same desktop anchor throughout the
+  // transition instead of drawing one frame at the window's new top-left.
+  await nextTick()
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+  if (openingGeneration !== contextMenuOpeningGeneration) return
   // Resize the transparent native window before rendering the menu. On
   // 125%-200% Windows DPI the WebView resize event can trail SetWindowPos;
   // rendering first leaves the menu inside the old 168px-wide viewport.
   await syncNativeNotificationLayout(true, !isExpanded, { force: true })
   if (openingGeneration !== contextMenuOpeningGeneration) return
-  isExpanded = usesExpandedNotificationLayout.value
-  await waitForContextMenuViewport(container, isExpanded)
+  await waitForContextMenuViewport(container)
   if (openingGeneration !== contextMenuOpeningGeneration) return
 
   const rect = container.getBoundingClientRect()
-  contextMenu.value = getMascotContextMenuLayout(rect.width, rect.height, isExpanded)
+  const avatarRect = container
+    .querySelector<HTMLElement>('.mascot-avatar')
+    ?.getBoundingClientRect()
+  const avatarTop = avatarRect ? avatarRect.top - rect.top : undefined
+  contextMenu.value = getMascotContextMenuLayout(
+    rect.width,
+    rect.height,
+    avatarTop
+  )
+  isContextMenuPreparing.value = false
+  try {
+    await getCurrentWindow().setFocus()
+  } catch {
+    // Browser previews do not expose the native Tauri window.
+  }
 }
 
 function handleHide() {
@@ -508,6 +539,12 @@ function handleContextMenuKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') closeContextMenu()
 }
 
+function handleContextMenuWindowBlur() {
+  if (isContextMenuOpen.value || isContextMenuPreparing.value) {
+    closeContextMenu()
+  }
+}
+
 const hasBubbleMessage = computed(() => Boolean(mascotStore.message))
 const hasExpandedNotification = computed(
   () => Boolean(props.sysMessage || props.needsAuth)
@@ -522,6 +559,7 @@ const isContextMenuOpen = computed(() => contextMenu.value !== null)
 const usesCompactNotificationLayout = computed(
   () => hasBubbleMessage.value
     || isBubbleMessageDismissing.value
+    || isContextMenuPreparing.value
     || isContextMenuOpen.value
     || isContextMenuDismissing.value
 )
@@ -660,10 +698,14 @@ watch(
     }
     void syncNativeNotificationLayout(visible, compact, { reveal })
   },
-  { immediate: true }
+  // Update the DOM layout first, then atomically resize the native WebView.
+  // Otherwise Windows can briefly draw the avatar against its old flex layout
+  // at the expanded window's new top-left position.
+  { immediate: true, flush: 'post' }
 )
 
 onMounted(async () => {
+  window.addEventListener('blur', handleContextMenuWindowBlur)
   window.addEventListener(MASCOT_REVEAL_EVENT, handleExternalReveal)
   window.addEventListener('pointerup', finishGlobalNativeDrag, true)
   window.addEventListener('mouseup', finishGlobalNativeDrag, true)
@@ -690,6 +732,9 @@ onMounted(async () => {
     }
     lastNativeWindowX = payload.x
   })
+  removeWindowFocusListener = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+    if (!focused) handleContextMenuWindowBlur()
+  })
 
   // The initial reactive watcher can run while the native window is still
   // completing setup. Reapply the desired bounds after mount so a first-run
@@ -714,10 +759,12 @@ onUnmounted(() => {
   window.removeEventListener(MASCOT_REVEAL_EVENT, handleExternalReveal)
   window.removeEventListener('pointerup', finishGlobalNativeDrag, true)
   window.removeEventListener('mouseup', finishGlobalNativeDrag, true)
+  window.removeEventListener('blur', handleContextMenuWindowBlur)
   removeCloseOverlaysListener?.()
   removePanelActivityListener?.()
   removePanelVisibilityListener?.()
   removeWindowMovedListener?.()
+  removeWindowFocusListener?.()
   removeNativeDragEndedListener?.()
   void syncNativeNotificationLayout(false, false, { force: true })
 })

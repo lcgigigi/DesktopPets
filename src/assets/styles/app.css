@@ -33,6 +33,9 @@
 
 .mascot-window.is-notifying {
   align-items: flex-end;
+  /* Match the collapsed window's 8px safety floor so expanding a menu,
+     bubble or reminder never changes the mascot's desktop anchor. */
+  padding-bottom: 8px;
 }
 
 .mascot-window.is-notifying.has-expanded-notification {
