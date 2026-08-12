@@ -33,6 +33,9 @@ import {
   advanceRunningDirection,
   createRunningDirectionState
 } from '../utils/mascot-drag-motion'
+import {
+  getMascotContextMenuLayout
+} from '../utils/mascot-context-menu-layout'
 import { canOpenMascotTodoPanel } from '../utils/mascot-panel-access'
 import { shouldPauseMascotIdleHide } from '../utils/mascot-idle-policy'
 
@@ -77,12 +80,8 @@ const previewAnimationState = requestedPreviewAnimation
   && previewAnimationStates.includes(requestedPreviewAnimation as MascotAnimationState)
   ? requestedPreviewAnimation as MascotAnimationState
   : undefined
-const contextMenu = ref<{ x: number; y: number } | null>(null)
+const contextMenu = ref<{ x: number; y: number; width: number } | null>(null)
 const isDragging = ref(false)
-const contextMenuSize = { width: 168, height: 42 }
-const compactOverlaySize = { width: 220, height: 176 }
-const mascotAvatarHeight = 128
-const expandedNotificationBottomPadding = 8
 const animationState = ref<MascotAnimationState>()
 const dragThreshold = 8
 const avatarSingleClickDelayMs = 280
@@ -113,6 +112,7 @@ let idleHideTimer: number | undefined
 let peekTransitionTimer: number | undefined
 let nativeDragIdleTimer: number | undefined
 let lastNativeWindowX: number | undefined
+let contextMenuOpeningGeneration = 0
 let runningMotion = createRunningDirectionState()
 let removeCloseOverlaysListener: UnlistenFn | undefined
 let removePanelActivityListener: UnlistenFn | undefined
@@ -432,50 +432,49 @@ function cancelPointer(event: PointerEvent) {
 }
 
 function closeContextMenu() {
+  contextMenuOpeningGeneration += 1
   contextMenu.value = null
 }
 
-function clampMenuPosition(x: number, y: number, width: number, height: number) {
-  const maxX = Math.max(8, width - contextMenuSize.width - 8)
-  const maxY = Math.max(8, height - contextMenuSize.height - 8)
+function viewportMatchesContextMenuLayout(container: HTMLElement, expanded: boolean) {
+  const rect = container.getBoundingClientRect()
+  const layout = getMascotContextMenuLayout(rect.width, rect.height, expanded)
+  return layout.fitsHorizontally && layout.fitsAboveAvatar
+}
 
-  return {
-    x: Math.min(Math.max(8, x), maxX),
-    y: Math.min(Math.max(8, y), maxY)
+async function waitForContextMenuViewport(container: HTMLElement, expanded: boolean) {
+  if (viewportMatchesContextMenuLayout(container, expanded)) return
+
+  const deadline = performance.now() + 600
+  while (performance.now() < deadline) {
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+    if (viewportMatchesContextMenuLayout(container, expanded)) return
   }
 }
 
-function handleContextMenu(event: MouseEvent) {
+async function handleContextMenu(event: MouseEvent) {
   event.preventDefault()
   if (!(event.target instanceof Element) || !event.target.closest('.mascot-avatar')) return
 
+  const openingGeneration = ++contextMenuOpeningGeneration
   revealFromInteraction()
 
   void hidePanelWindow()
   mascotStore.resetStatus()
 
   const container = event.currentTarget as HTMLElement
+  let isExpanded = usesExpandedNotificationLayout.value
+  // Resize the transparent native window before rendering the menu. On
+  // 125%-200% Windows DPI the WebView resize event can trail SetWindowPos;
+  // rendering first leaves the menu inside the old 168px-wide viewport.
+  await syncNativeNotificationLayout(true, !isExpanded, { force: true })
+  if (openingGeneration !== contextMenuOpeningGeneration) return
+  isExpanded = usesExpandedNotificationLayout.value
+  await waitForContextMenuViewport(container, isExpanded)
+  if (openingGeneration !== contextMenuOpeningGeneration) return
+
   const rect = container.getBoundingClientRect()
-  // Collapsed windows expand around the avatar. Expanded login/reminder cards
-  // keep their current bounds while the menu temporarily takes the card's
-  // place, avoiding a resize jump under the pointer.
-  const isExpanded = usesExpandedNotificationLayout.value
-  const overlayWidth = isExpanded ? rect.width : Math.max(rect.width, compactOverlaySize.width)
-  const overlayHeight = isExpanded ? rect.height : Math.max(rect.height, compactOverlaySize.height)
-  const avatarBottomPadding = isExpanded ? expandedNotificationBottomPadding : 0
-  const menuGap = isExpanded ? 6 : 4
-  const centeredX = (overlayWidth - contextMenuSize.width) / 2
-  const menuY = overlayHeight
-    - avatarBottomPadding
-    - mascotAvatarHeight
-    - contextMenuSize.height
-    - menuGap
-  contextMenu.value = clampMenuPosition(
-    centeredX,
-    menuY,
-    overlayWidth,
-    overlayHeight
-  )
+  contextMenu.value = getMascotContextMenuLayout(rect.width, rect.height, isExpanded)
 }
 
 function handleHide() {
@@ -485,6 +484,7 @@ function handleHide() {
 }
 
 function handleExit() {
+  closeContextMenu()
   void exitAssistant()
 }
 
@@ -744,6 +744,7 @@ onUnmounted(() => {
         v-if="contextMenu"
         :x="contextMenu.x"
         :y="contextMenu.y"
+        :width="contextMenu.width"
         @hide="handleHide"
         @exit="handleExit"
         @close="closeContextMenu"

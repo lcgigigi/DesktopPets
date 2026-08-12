@@ -1,15 +1,15 @@
-name: Build unsigned Windows enterprise MSI v1.0.35
+name: Build unsigned Windows enterprise MSI v1.0.36
 
 on:
   push:
     branches:
-      - codex/windows-admin-silent-1.0.35
+      - codex/fix-menu-dpi-1.0.36
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-enterprise-msi-unsigned-v1035
+  group: windows-enterprise-msi-unsigned-v1036
   cancel-in-progress: false
 
 jobs:
@@ -44,7 +44,7 @@ jobs:
       - name: Upload administrator distribution package
         uses: actions/upload-artifact@v6
         with:
-          name: huali-windows-enterprise-msi-intranet-v1.0.35
+          name: huali-windows-enterprise-msi-intranet-v1.0.36
           path: |
             artifacts/windows-msi-intranet/
             artifacts/*-intranet-windows-enterprise-msi-x64.zip

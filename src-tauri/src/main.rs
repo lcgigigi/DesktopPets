@@ -182,8 +182,11 @@ fn take_desktop_auth_callback(
 }
 const MASCOT_NOTIFICATION_WIDTH: f64 = 320.0;
 const MASCOT_NOTIFICATION_HEIGHT: f64 = 480.0;
-const MASCOT_MESSAGE_WIDTH: f64 = 220.0;
-const MASCOT_MESSAGE_HEIGHT: f64 = 176.0;
+// Compact overlays need enough transparent safety space for the context menu,
+// its tail and shadow at every Windows DPI. 240x208 also prevents the menu
+// from touching the 128px mascot avatar below it.
+const MASCOT_MESSAGE_WIDTH: f64 = 240.0;
+const MASCOT_MESSAGE_HEIGHT: f64 = 208.0;
 const PANEL_WIDTH: f64 = 380.0;
 const PANEL_COMPACT_HEIGHT: f64 = 78.0;
 const PANEL_MAX_HEIGHT: f64 = 240.0;
@@ -746,6 +749,50 @@ mod mascot_position_tests {
         assert_eq!(target_outer_dimension(168.0, 1.25, 416, 400), 226);
         assert_eq!(target_outer_dimension(144.0, 1.25, 616, 600), 196);
         assert_eq!(target_outer_dimension(168.0, 1.0, 168, 168), 168);
+    }
+
+    #[test]
+    fn compact_overlay_has_exact_physical_bounds_across_supported_windows_dpi_scales() {
+        for (scale, expected_width, expected_height) in [
+            (1.0, 240, 208),
+            (1.25, 300, 260),
+            (1.5, 360, 312),
+            (1.75, 420, 364),
+            (2.0, 480, 416),
+        ] {
+            assert_eq!(
+                target_outer_dimension(MASCOT_MESSAGE_WIDTH, scale, 100, 100),
+                expected_width
+            );
+            assert_eq!(
+                target_outer_dimension(MASCOT_MESSAGE_HEIGHT, scale, 100, 100),
+                expected_height
+            );
+        }
+    }
+
+    #[test]
+    fn compact_menu_fits_common_windows_laptop_work_areas() {
+        for (screen_width, screen_height, taskbar_height, scale) in [
+            (1366.0, 768.0, 40.0, 1.25),
+            (1366.0, 768.0, 40.0, 1.5),
+            (1920.0, 1080.0, 48.0, 1.25),
+            (1920.0, 1080.0, 48.0, 1.5),
+            (2560.0, 1600.0, 48.0, 1.75),
+            (2560.0, 1600.0, 48.0, 2.0),
+        ] {
+            let fitted = fit_notification_size_to_rect(
+                MASCOT_MESSAGE_WIDTH,
+                MASCOT_MESSAGE_HEIGHT,
+                LogicalSize {
+                    width: screen_width / scale,
+                    height: (screen_height - taskbar_height) / scale,
+                },
+            );
+
+            assert_eq!(fitted.width, MASCOT_MESSAGE_WIDTH);
+            assert_eq!(fitted.height, MASCOT_MESSAGE_HEIGHT);
+        }
     }
 
     #[test]

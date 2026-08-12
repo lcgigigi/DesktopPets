@@ -4,6 +4,7 @@ import { nextTick, onMounted, ref } from 'vue'
 defineProps<{
   x: number
   y: number
+  width: number
 }>()
 
 const emit = defineEmits<{
@@ -53,7 +54,7 @@ onMounted(() => {
   <nav
     ref="menu"
     class="mascot-context-menu"
-    :style="{ left: `${x}px`, top: `${y}px` }"
+    :style="{ left: `${x}px`, top: `${y}px`, width: `${width}px` }"
     aria-label="机器人功能菜单"
     @contextmenu.prevent
     @keydown="handleKeydown"
