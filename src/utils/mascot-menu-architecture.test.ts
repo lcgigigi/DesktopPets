@@ -83,7 +83,7 @@ describe('mascot context menu architecture', () => {
     const handler = sourceBetween(
       mascotWindowSource,
       'async function handleContextMenu',
-      '\n\nconst hasBubbleMessage'
+      'const hasBubbleMessage'
     )
     expect(handler).toContain('await showMascotContextMenu()')
     expect(handler).not.toContain('syncNativeNotificationLayout')
@@ -94,7 +94,7 @@ describe('mascot context menu architecture', () => {
     const nativeHandler = sourceBetween(
       rustSource,
       'fn show_mascot_context_menu',
-      '\n\n#[tauri::command]\nfn hide_mascot_context_menu'
+      'fn hide_mascot_context_menu('
     )
 
     expect(nativeHandler).toContain('mascot_client_origin_physical(')
