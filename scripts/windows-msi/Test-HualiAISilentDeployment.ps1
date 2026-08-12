@@ -38,7 +38,12 @@ function Find-InstalledProduct {
     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
   )
   return Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue |
-    Where-Object { $_.DisplayName -eq $ProductName -and $_.WindowsInstaller -eq 1 } |
+    Where-Object {
+      $displayName = $_.PSObject.Properties['DisplayName']
+      $windowsInstaller = $_.PSObject.Properties['WindowsInstaller']
+      $displayName -and $windowsInstaller -and
+        $displayName.Value -eq $ProductName -and $windowsInstaller.Value -eq 1
+    } |
     Select-Object -First 1
 }
 
@@ -78,7 +83,8 @@ try {
   if (-not (Test-Path -LiteralPath $mainExecutable)) {
     throw "安装目录缺少主程序：$mainExecutable"
   }
-  $programFilesRoot = [IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\') + '\'
+  $separator = [IO.Path]::DirectorySeparatorChar
+  $programFilesRoot = [IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd($separator) + $separator
   $installedExecutablePath = [IO.Path]::GetFullPath($mainExecutable)
   if (-not $installedExecutablePath.StartsWith($programFilesRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "程序未按计算机安装到 Program Files：$installedExecutablePath"
