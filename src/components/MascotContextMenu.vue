@@ -5,6 +5,8 @@ defineProps<{
   x: number
   y: number
   width: number
+  placement?: 'above' | 'below'
+  tailX?: number
 }>()
 
 const emit = defineEmits<{
@@ -54,7 +56,13 @@ onMounted(() => {
   <nav
     ref="menu"
     class="mascot-context-menu"
-    :style="{ left: `${x}px`, top: `${y}px`, width: `${width}px` }"
+    :class="placement === 'below' ? 'is-below' : 'is-above'"
+    :style="{
+      left: `${x}px`,
+      top: `${y}px`,
+      width: `${width}px`,
+      '--menu-tail-x': `${tailX ?? width / 2}px`
+    }"
     aria-label="机器人功能菜单"
     @contextmenu.prevent
     @keydown="handleKeydown"

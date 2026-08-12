@@ -10,14 +10,23 @@
 .app-shell.is-mascot {
   width: 100%;
   height: 100%;
-  min-width: 168px;
-  min-height: 144px;
+  min-width: 120px;
+  min-height: 104px;
 }
 
 .app-shell.is-panel {
   width: 100%;
   height: 100%;
   padding: 0;
+  background: rgba(0, 0, 0, 0) !important;
+}
+
+.app-shell.is-mascot-menu,
+.mascot-menu-window {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
   background: rgba(0, 0, 0, 0) !important;
 }
 
@@ -51,13 +60,22 @@
   position: relative;
   top: auto;
   left: auto;
-  max-height: calc(100vh - 168px);
+  max-height: calc(100vh - 128px);
   transform: none;
   flex-shrink: 0;
 }
 
 .mascot-window.is-notifying.has-expanded-notification .mascot-avatar {
   flex-shrink: 0;
+}
+
+.mascot-window.has-context-menu .auth-login-tip,
+.mascot-window.has-context-menu .sys-message-tip,
+.mascot-window.has-context-menu .mascot-bubble {
+  visibility: hidden;
+  opacity: 0;
+  animation: none;
+  transition: none;
 }
 
 .mascot-bubble {
@@ -622,11 +640,12 @@
   padding: 4px;
   border: 1px solid rgba(91, 112, 151, 0.16);
   border-radius: 13px;
-  background: rgba(255, 255, 255, 0.98);
+  background: #ffffff;
   box-shadow:
     0 4px 12px rgba(31, 42, 68, 0.1),
     0 1px 3px rgba(31, 42, 68, 0.06);
-  backdrop-filter: blur(10px);
+  /* An opaque surface avoids stale WebView2 blur/backdrop frames on Windows. */
+  backdrop-filter: none;
   cursor: grab;
   transform-origin: 50% 100%;
   animation: mascot-context-menu-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -647,7 +666,7 @@
 .mascot-context-menu::after {
   content: '';
   position: absolute;
-  left: 50%;
+  left: var(--menu-tail-x, 50%);
   bottom: -5px;
   width: 10px;
   height: 10px;
@@ -657,6 +676,35 @@
   border-bottom-right-radius: 2px;
   background: #ffffff;
   transform: rotate(45deg);
+}
+
+.mascot-context-menu.is-below {
+  transform-origin: 50% 0;
+}
+
+.mascot-context-menu.is-below::after {
+  top: -5px;
+  bottom: auto;
+  border: 0;
+  border-top: 1px solid rgba(94, 116, 158, 0.12);
+  border-left: 1px solid rgba(94, 116, 158, 0.12);
+  border-top-left-radius: 2px;
+}
+
+.mascot-context-menu.is-below {
+  animation-name: mascot-context-menu-in-below;
+}
+
+@keyframes mascot-context-menu-in-below {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .mascot-context-menu__item {
@@ -835,8 +883,8 @@
 
 .mascot-avatar {
   position: relative;
-  width: 144px;
-  height: 128px;
+  width: 96px;
+  height: 88px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -890,10 +938,10 @@
 .mascot-sprite-stage {
   position: relative;
   z-index: 1;
-  width: 132px;
-  /* Keep a shared 12px transparent floor below every pose. The base sprites
-     remain 110px tall; running cells carry the same gutter in their atlas. */
-  height: 122px;
+  width: 90px;
+  /* Keep a shared 9px transparent floor below every pose. The base sprites
+     remain 75px tall; running cells carry the same gutter in their atlas. */
+  height: 84px;
   display: block;
   overflow: visible;
   pointer-events: none;
@@ -902,8 +950,8 @@
 .mascot-sprite {
   position: absolute;
   inset: 0;
-  width: var(--sprite-display-width, 132px);
-  height: var(--sprite-display-height, 110px);
+  width: var(--sprite-display-width, 90px);
+  height: var(--sprite-display-height, 75px);
   display: block;
   background-position: 0 0;
   background-repeat: no-repeat;
@@ -935,8 +983,8 @@
   position: absolute;
   inset: 0;
   display: block;
-  width: 132px;
-  height: 122px;
+  width: 90px;
+  height: 84px;
   overflow: visible;
   opacity: 1;
   pointer-events: none;
@@ -951,8 +999,8 @@
   position: absolute;
   inset: 0;
   display: block;
-  width: 132px;
-  height: 122px;
+  width: 90px;
+  height: 84px;
   overflow: visible;
   background-position: 0 var(--run-row-offset);
   background-repeat: no-repeat;

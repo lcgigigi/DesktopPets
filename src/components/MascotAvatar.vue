@@ -21,8 +21,8 @@ type SpriteState = {
   direction?: 'normal' | 'reverse'
 }
 
-const SPRITE_DISPLAY_WIDTH = 132
-const SPRITE_DISPLAY_HEIGHT = 110
+const SPRITE_DISPLAY_WIDTH = 90
+const SPRITE_DISPLAY_HEIGHT = 75
 const spriteSheets = {
   main: { url: spriteSheetUrl, columns: 12, rows: 10 },
   motion: { url: motionSpriteSheetUrl, columns: 24, rows: 4 }

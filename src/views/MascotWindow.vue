@@ -1,27 +1,26 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { nextTick, onMounted, onUnmounted, ref, watch, computed } from 'vue'
+import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { listen } from '@tauri-apps/api/event'
 import AuthLoginTip from '../components/AuthLoginTip.vue'
-import MascotContextMenu from '../components/MascotContextMenu.vue'
 import MascotAvatar from '../components/MascotAvatar.vue'
 import MascotBubble from '../components/MascotBubble.vue'
 import SysMessageTip from '../components/SysMessageTip.vue'
 import {
   MASCOT_NATIVE_DRAG_ENDED_EVENT,
+  MASCOT_CONTEXT_MENU_VISIBILITY_EVENT,
   MASCOT_REVEAL_EVENT,
   PANEL_ACTIVITY_EVENT,
   PANEL_VISIBILITY_EVENT,
   type MascotDockSide,
   type PanelActivityPayload,
-  exitAssistant,
-  hideAssistant,
   hidePanelWindow,
   openWorkbench,
   peekMascotWindow,
   revealMascotWindow,
   setMascotNotificationVisible,
+  showMascotContextMenu,
   startMascotWindowDrag,
   syncPanelWindow,
   togglePanelWindow
@@ -33,9 +32,6 @@ import {
   advanceRunningDirection,
   createRunningDirectionState
 } from '../utils/mascot-drag-motion'
-import {
-  getMascotContextMenuLayout
-} from '../utils/mascot-context-menu-layout'
 import { canOpenMascotTodoPanel } from '../utils/mascot-panel-access'
 import { shouldPauseMascotIdleHide } from '../utils/mascot-idle-policy'
 
@@ -80,8 +76,6 @@ const previewAnimationState = requestedPreviewAnimation
   && previewAnimationStates.includes(requestedPreviewAnimation as MascotAnimationState)
   ? requestedPreviewAnimation as MascotAnimationState
   : undefined
-const contextMenu = ref<{ x: number; y: number; width: number } | null>(null)
-const isContextMenuPreparing = ref(false)
 const isDragging = ref(false)
 const animationState = ref<MascotAnimationState>()
 const dragThreshold = 8
@@ -95,6 +89,7 @@ const isPointerInside = ref(false)
 const panelVisible = ref(false)
 const panelHasText = ref(false)
 const panelFocused = ref(false)
+const isContextMenuVisible = ref(false)
 const peekTransition = ref<'revealing'>()
 let dragState:
   | {
@@ -113,14 +108,13 @@ let idleHideTimer: number | undefined
 let peekTransitionTimer: number | undefined
 let nativeDragIdleTimer: number | undefined
 let lastNativeWindowX: number | undefined
-let contextMenuOpeningGeneration = 0
 let runningMotion = createRunningDirectionState()
 let removeCloseOverlaysListener: UnlistenFn | undefined
 let removePanelActivityListener: UnlistenFn | undefined
 let removePanelVisibilityListener: UnlistenFn | undefined
 let removeWindowMovedListener: UnlistenFn | undefined
-let removeWindowFocusListener: UnlistenFn | undefined
 let removeNativeDragEndedListener: UnlistenFn | undefined
+let removeContextMenuVisibilityListener: UnlistenFn | undefined
 let nativeNotificationLayout = { visible: false, compact: false }
 let nativeNotificationLayoutGeneration = 0
 
@@ -179,6 +173,7 @@ function scheduleIdleHide() {
 }
 
 function shouldPauseIdleHide() {
+  if (isContextMenuVisible.value) return true
   return shouldPauseMascotIdleHide({
     isNotifying: isNotifying.value,
     isDragging: isDragging.value,
@@ -256,7 +251,6 @@ function scheduleAvatarSingleClick() {
 }
 
 function dismissTransientOverlays() {
-  closeContextMenu()
   mascotStore.resetStatus()
 }
 
@@ -433,115 +427,26 @@ function cancelPointer(event: PointerEvent) {
   }
 }
 
-function closeContextMenu() {
-  contextMenuOpeningGeneration += 1
-  isContextMenuPreparing.value = false
-  contextMenu.value = null
-}
-
-function viewportMatchesContextMenuLayout(container: HTMLElement) {
-  const rect = container.getBoundingClientRect()
-  const avatarRect = container
-    .querySelector<HTMLElement>('.mascot-avatar')
-    ?.getBoundingClientRect()
-  const avatarTop = avatarRect ? avatarRect.top - rect.top : undefined
-  const layout = getMascotContextMenuLayout(
-    rect.width,
-    rect.height,
-    avatarTop
-  )
-  return layout.fitsHorizontally && layout.fitsAboveAvatar
-}
-
-async function waitForContextMenuViewport(container: HTMLElement) {
-  if (viewportMatchesContextMenuLayout(container)) return
-
-  const deadline = performance.now() + 600
-  while (performance.now() < deadline) {
-    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
-    if (viewportMatchesContextMenuLayout(container)) return
-  }
-}
-
 async function handleContextMenu(event: MouseEvent) {
   event.preventDefault()
   if (!(event.target instanceof Element) || !event.target.closest('.mascot-avatar')) return
 
-  const openingGeneration = ++contextMenuOpeningGeneration
-  isContextMenuPreparing.value = true
-  revealFromInteraction()
-
+  if (isPeeked.value || peekTransition.value) {
+    // A context menu needs a stable anchor immediately. Revealing without an
+    // animated native move avoids racing the menu placement with peek motion.
+    await revealMascotWindow(true)
+    isPeeked.value = false
+    peekTransition.value = undefined
+  }
+  // Hide an active bubble/reminder in this WebView before the separate native
+  // menu window appears. This removes even a one-frame overlap between them.
+  isContextMenuVisible.value = true
+  refreshIdleHideSchedule()
   void hidePanelWindow()
-  mascotStore.resetStatus()
-
-  const container = event.currentTarget as HTMLElement
-  const isExpanded = usesExpandedNotificationLayout.value
-  // Apply the compact avatar layout before moving/resizing the native window.
-  // This keeps the avatar on the exact same desktop anchor throughout the
-  // transition instead of drawing one frame at the window's new top-left.
-  await nextTick()
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
-  if (openingGeneration !== contextMenuOpeningGeneration) return
-  // Resize the transparent native window before rendering the menu. On
-  // 125%-200% Windows DPI the WebView resize event can trail SetWindowPos;
-  // rendering first leaves the menu inside the old 168px-wide viewport.
-  await syncNativeNotificationLayout(true, !isExpanded, { force: true })
-  if (openingGeneration !== contextMenuOpeningGeneration) return
-  await waitForContextMenuViewport(container)
-  if (openingGeneration !== contextMenuOpeningGeneration) return
-
-  const rect = container.getBoundingClientRect()
-  const avatarRect = container
-    .querySelector<HTMLElement>('.mascot-avatar')
-    ?.getBoundingClientRect()
-  const avatarTop = avatarRect ? avatarRect.top - rect.top : undefined
-  contextMenu.value = getMascotContextMenuLayout(
-    rect.width,
-    rect.height,
-    avatarTop
-  )
-  isContextMenuPreparing.value = false
-  try {
-    await getCurrentWindow().setFocus()
-  } catch {
-    // Browser previews do not expose the native Tauri window.
-  }
-}
-
-function handleHide() {
-  closeContextMenu()
-  mascotStore.resetStatus()
-  void hideAssistant()
-}
-
-function handleExit() {
-  closeContextMenu()
-  void exitAssistant()
-}
-
-function handleOutsidePointerDown(event: PointerEvent) {
-  const target = event.target
-  if (target instanceof Element && target.closest('.mascot-context-menu')) return
-  closeContextMenu()
-}
-
-watch(contextMenu, (menu) => {
-  if (menu) {
-    window.addEventListener('pointerdown', handleOutsidePointerDown, true)
-    window.addEventListener('keydown', handleContextMenuKeydown)
-  } else {
-    window.removeEventListener('pointerdown', handleOutsidePointerDown, true)
-    window.removeEventListener('keydown', handleContextMenuKeydown)
-  }
-})
-
-function handleContextMenuKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') closeContextMenu()
-}
-
-function handleContextMenuWindowBlur() {
-  if (isContextMenuOpen.value || isContextMenuPreparing.value) {
-    closeContextMenu()
+  if (!await showMascotContextMenu()) {
+    isContextMenuVisible.value = false
+    refreshIdleHideSchedule()
+    void releaseDismissedNotificationLayout()
   }
 }
 
@@ -551,17 +456,12 @@ const hasExpandedNotification = computed(
 )
 const isExpandedNotificationDismissing = ref(false)
 const isBubbleMessageDismissing = ref(false)
-const isContextMenuDismissing = ref(false)
 const usesExpandedNotificationLayout = computed(
   () => hasExpandedNotification.value || isExpandedNotificationDismissing.value
 )
-const isContextMenuOpen = computed(() => contextMenu.value !== null)
 const usesCompactNotificationLayout = computed(
   () => hasBubbleMessage.value
     || isBubbleMessageDismissing.value
-    || isContextMenuPreparing.value
-    || isContextMenuOpen.value
-    || isContextMenuDismissing.value
 )
 const avatarAnimationState = computed<MascotAnimationState | undefined>(() => {
   if (previewAnimationState) return previewAnimationState
@@ -590,14 +490,13 @@ watch(
 )
 
 function hasVisibleOverlay() {
-  return hasExpandedNotification.value || hasBubbleMessage.value || isContextMenuOpen.value
+  return hasExpandedNotification.value || hasBubbleMessage.value
 }
 
 async function releaseDismissedNotificationLayout() {
   const releaseExpanded = !hasExpandedNotification.value && isExpandedNotificationDismissing.value
   const releaseBubble = !hasBubbleMessage.value && isBubbleMessageDismissing.value
-  const releaseContextMenu = !isContextMenuOpen.value && isContextMenuDismissing.value
-  if (!releaseExpanded && !releaseBubble && !releaseContextMenu) return
+  if (!releaseExpanded && !releaseBubble) return
 
   // Preserve the current flex layout until the native window has already been
   // resized around the avatar. Releasing the class first lets one expanded
@@ -611,9 +510,6 @@ async function releaseDismissedNotificationLayout() {
   }
   if (releaseBubble && !hasBubbleMessage.value) {
     isBubbleMessageDismissing.value = false
-  }
-  if (releaseContextMenu && !isContextMenuOpen.value) {
-    isContextMenuDismissing.value = false
   }
 
   // A new item can arrive while the native command is in flight. In that case
@@ -645,26 +541,9 @@ watch(
 )
 
 watch(
-  isContextMenuOpen,
-  (visible, wasVisible) => {
-    if (visible) {
-      isContextMenuDismissing.value = false
-    } else if (wasVisible) {
-      isContextMenuDismissing.value = true
-    }
-  },
-  { flush: 'sync' }
-)
-
-function handleContextMenuAfterLeave() {
-  void releaseDismissedNotificationLayout()
-}
-
-watch(
   () => props.sysMessage,
   (message) => {
     if (message) {
-      closeContextMenu()
       void hidePanelWindow()
     }
   }
@@ -679,7 +558,6 @@ watch(
 
 watch(hasBubbleMessage, (visible) => {
   if (!visible) return
-  closeContextMenu()
   void hidePanelWindow()
 })
 
@@ -705,7 +583,6 @@ watch(
 )
 
 onMounted(async () => {
-  window.addEventListener('blur', handleContextMenuWindowBlur)
   window.addEventListener(MASCOT_REVEAL_EVENT, handleExternalReveal)
   window.addEventListener('pointerup', finishGlobalNativeDrag, true)
   window.addEventListener('mouseup', finishGlobalNativeDrag, true)
@@ -725,6 +602,14 @@ onMounted(async () => {
   removeNativeDragEndedListener = await listen(MASCOT_NATIVE_DRAG_ENDED_EVENT, () => {
     finishNativeDrag()
   })
+  removeContextMenuVisibilityListener = await listen<boolean>(
+    MASCOT_CONTEXT_MENU_VISIBILITY_EVENT,
+    (event) => {
+      isContextMenuVisible.value = event.payload
+      refreshIdleHideSchedule()
+      if (!event.payload) void releaseDismissedNotificationLayout()
+    }
+  )
   removeWindowMovedListener = await getCurrentWindow().onMoved(({ payload }) => {
     if (!isDragging.value) return
     if (lastNativeWindowX !== undefined) {
@@ -732,13 +617,10 @@ onMounted(async () => {
     }
     lastNativeWindowX = payload.x
   })
-  removeWindowFocusListener = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-    if (!focused) handleContextMenuWindowBlur()
-  })
 
   // The initial reactive watcher can run while the native window is still
   // completing setup. Reapply the desired bounds after mount so a first-run
-  // login card cannot be rendered inside the collapsed 168x144 mascot window
+  // login card cannot be rendered inside the collapsed 120x104 mascot window
   // and survive only as a clipped horizontal border.
   await syncNativeNotificationLayout(
     isNotifying.value,
@@ -754,18 +636,15 @@ onUnmounted(() => {
   window.clearTimeout(nativeDragIdleTimer)
   clearAvatarSingleClickTimer()
   clearIdleHideTimer()
-  window.removeEventListener('pointerdown', handleOutsidePointerDown, true)
-  window.removeEventListener('keydown', handleContextMenuKeydown)
   window.removeEventListener(MASCOT_REVEAL_EVENT, handleExternalReveal)
   window.removeEventListener('pointerup', finishGlobalNativeDrag, true)
   window.removeEventListener('mouseup', finishGlobalNativeDrag, true)
-  window.removeEventListener('blur', handleContextMenuWindowBlur)
   removeCloseOverlaysListener?.()
   removePanelActivityListener?.()
   removePanelVisibilityListener?.()
   removeWindowMovedListener?.()
-  removeWindowFocusListener?.()
   removeNativeDragEndedListener?.()
+  removeContextMenuVisibilityListener?.()
   void syncNativeNotificationLayout(false, false, { force: true })
 })
 </script>
@@ -776,7 +655,8 @@ onUnmounted(() => {
     :class="{
       'is-dragging': isDragging || previewAnimationState?.startsWith('running-'),
       'is-notifying': isNotifying,
-      'has-expanded-notification': usesExpandedNotificationLayout
+      'has-expanded-notification': usesExpandedNotificationLayout,
+      'has-context-menu': isContextMenuVisible
     }"
     @pointerdown="handlePointerDown"
     @pointerenter="handlePointerEnter"
@@ -786,31 +666,20 @@ onUnmounted(() => {
     @pointercancel="cancelPointer"
     @contextmenu="handleContextMenu"
   >
-    <Transition name="mascot-overlay" @after-leave="handleContextMenuAfterLeave">
-      <MascotContextMenu
-        v-if="contextMenu"
-        :x="contextMenu.x"
-        :y="contextMenu.y"
-        :width="contextMenu.width"
-        @hide="handleHide"
-        @exit="handleExit"
-        @close="closeContextMenu"
-      />
-    </Transition>
     <Transition
       name="mascot-overlay"
       mode="out-in"
       @after-leave="handleExpandedOverlayAfterLeave"
     >
       <AuthLoginTip
-        v-if="needsAuth && !isContextMenuOpen"
+        v-if="!isContextMenuVisible && needsAuth"
         key="auth-login"
         :pending="authPending"
         :message="authErrorMessage"
         @login="emit('login')"
       />
       <SysMessageTip
-        v-else-if="sysMessage && !isContextMenuOpen"
+        v-else-if="!isContextMenuVisible && sysMessage"
         :key="sysMessage.dedupeKey"
         :message="sysMessage"
         :display-content="sysMessageContent"
@@ -821,7 +690,7 @@ onUnmounted(() => {
         @view="emit('viewSysMessage', $event)"
       />
       <MascotBubble
-        v-else-if="mascotStore.message"
+        v-else-if="!isContextMenuVisible && mascotStore.message"
         key="mascot-message"
         :message="mascotStore.message"
       />

@@ -11,7 +11,14 @@ export const MASCOT_NATIVE_DRAG_ENDED_EVENT = 'mascot-native-drag-ended'
 export const PANEL_REVEAL_EVENT = 'huali:panel-reveal'
 export const PANEL_ACTIVITY_EVENT = 'huali:panel-activity'
 export const PANEL_VISIBILITY_EVENT = 'huali:panel-visibility'
+export const MASCOT_CONTEXT_MENU_VISIBILITY_EVENT = 'mascot-context-menu-visibility'
 export type MascotDockSide = 'left' | 'right'
+
+export interface MascotContextMenuPlacement {
+  placement: 'above' | 'below'
+  /** Horizontal tail position inside the 168px visible menu card. */
+  tailX: number
+}
 
 export interface PanelActivityPayload {
   hasText: boolean
@@ -122,6 +129,31 @@ export async function hideAssistant() {
     await invoke('hide_main_window')
   } catch {
     document.body.classList.add('is-hidden-preview')
+  }
+}
+
+export async function showMascotContextMenu() {
+  try {
+    await invoke('show_mascot_context_menu')
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function hideMascotContextMenu() {
+  try {
+    await invoke('hide_mascot_context_menu')
+  } catch {
+    return
+  }
+}
+
+export async function setMascotContextMenuReady() {
+  try {
+    await invoke('set_mascot_context_menu_ready')
+  } catch {
+    return
   }
 }
 

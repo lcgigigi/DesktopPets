@@ -15,27 +15,38 @@ use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::window::Color;
-use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, Position, Size};
+use tauri::{
+    Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size,
+};
 
 // Keep a transparent safety gutter around the sprite. WebView2 can otherwise
 // clip the last physical pixel at 125%/150% Windows display scaling.
-const MASCOT_WIDTH: f64 = 168.0;
-const MASCOT_HEIGHT: f64 = 144.0;
-const MASCOT_AVATAR_WIDTH: f64 = 144.0;
-const MASCOT_AVATAR_HEIGHT: f64 = 128.0;
+const MASCOT_WIDTH: f64 = 120.0;
+const MASCOT_HEIGHT: f64 = 104.0;
+const MASCOT_AVATAR_WIDTH: f64 = 96.0;
+const MASCOT_AVATAR_HEIGHT: f64 = 88.0;
 const MASCOT_NOTIFICATION_BOTTOM_PADDING: f64 = 8.0;
 // Keep the same amount of the safety window visible when peeking from either
 // desktop edge. This leaves a discoverable part of Xiaoli on screen.
-const MASCOT_PEEK_VISIBLE_WIDTH: f64 = 96.0;
+const MASCOT_PEEK_VISIBLE_WIDTH: f64 = 68.0;
 const MASCOT_PEEK_ANIMATION_DURATION_MS: u64 = 560;
 const MASCOT_REVEAL_ANIMATION_DURATION_MS: u64 = 480;
 const MASCOT_DOCK_ANIMATION_FRAME_MS: u64 = 12;
 // WebView2 can report a fractional logical position after a DPI-aware resize.
 // Treat that sub-pixel drift as resize noise instead of a user drag.
 const MASCOT_NOTIFICATION_DRAG_EPSILON: f64 = 1.0;
+const MASCOT_CONTEXT_MENU_WIDTH: f64 = 192.0;
+const MASCOT_CONTEXT_MENU_HEIGHT: f64 = 64.0;
+const MASCOT_CONTEXT_MENU_GAP: f64 = 18.0;
+const MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM: f64 = 51.0;
+const MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP: f64 = 7.0;
+const MASCOT_CONTEXT_MENU_NAV_LEFT: f64 = 12.0;
+const MASCOT_CONTEXT_MENU_TAIL_MIN: f64 = 18.0;
+const MASCOT_CONTEXT_MENU_TAIL_MAX: f64 = 150.0;
 const DESKTOP_AUTH_CALLBACK_PREFIX: &str = "huali-ai-mascot://auth-callback";
 const DESKTOP_AUTH_CALLBACK_FILE: &str = "huali-ai-mascot-auth-callback.tmp";
 const PANEL_VISIBILITY_EVENT: &str = "huali:panel-visibility";
+const MASCOT_CONTEXT_MENU_VISIBILITY_EVENT: &str = "mascot-context-menu-visibility";
 
 #[derive(Clone, Default)]
 struct PendingDesktopAuthCallback(Arc<Mutex<Option<NativeDesktopAuthCallback>>>);
@@ -66,6 +77,84 @@ struct MascotNotificationLayout {
 
 #[derive(Clone, Default)]
 struct MascotNotificationLayoutState(Arc<Mutex<Option<MascotNotificationLayout>>>);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MascotContextMenuStatus {
+    ready: bool,
+    desired_visible: bool,
+    visible: bool,
+    generation: u64,
+}
+
+#[derive(Clone, Default)]
+struct MascotContextMenuState {
+    status: Arc<Mutex<MascotContextMenuStatus>>,
+    // Serializes native show/hide operations. The generation guards logical
+    // intent; this lock prevents a stale show from physically overtaking a
+    // newer hide while WebView2 is processing window messages.
+    transition: Arc<Mutex<()>>,
+}
+
+impl MascotContextMenuState {
+    fn request_show(&self) -> u64 {
+        let Ok(mut status) = self.status.lock() else {
+            return 0;
+        };
+        status.generation = status.generation.wrapping_add(1);
+        status.desired_visible = true;
+        // A new show request supersedes the focus state of any older menu
+        // generation. Its delayed Focused(false) event must not cancel this
+        // newer request while the independent window is being repositioned.
+        status.visible = false;
+        status.generation
+    }
+
+    fn request_hide(&self) -> u64 {
+        let Ok(mut status) = self.status.lock() else {
+            return 0;
+        };
+        status.generation = status.generation.wrapping_add(1);
+        status.desired_visible = false;
+        status.visible = false;
+        status.generation
+    }
+
+    fn mark_ready(&self) -> Option<u64> {
+        let mut status = self.status.lock().ok()?;
+        status.ready = true;
+        status.desired_visible.then_some(status.generation)
+    }
+
+    fn can_show(&self, generation: u64) -> bool {
+        self.status
+            .lock()
+            .map(|status| status.ready && status.desired_visible && status.generation == generation)
+            .unwrap_or(false)
+    }
+
+    fn mark_visible(&self, generation: u64) -> bool {
+        let Ok(mut status) = self.status.lock() else {
+            return false;
+        };
+        if !status.ready || !status.desired_visible || status.generation != generation {
+            return false;
+        }
+        status.visible = true;
+        true
+    }
+
+    fn is_visible(&self) -> bool {
+        self.status
+            .lock()
+            .map(|status| status.visible)
+            .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self) -> MascotContextMenuStatus {
+        self.status.lock().map(|status| *status).unwrap_or_default()
+    }
+}
 
 #[derive(Clone, Default)]
 struct MascotDragMonitor(Arc<AtomicU64>);
@@ -100,6 +189,7 @@ impl MascotDragMonitor {
     }
 }
 
+#[cfg(any(windows, test))]
 fn async_key_state_is_pressed(state: i16) -> bool {
     state as u16 & 0x8000 != 0
 }
@@ -187,7 +277,7 @@ const MASCOT_NOTIFICATION_HEIGHT: f64 = 480.0;
 // gap above the mascot while preserving the same 8px bottom safety gutter as
 // the collapsed and expanded layouts.
 const MASCOT_MESSAGE_WIDTH: f64 = 240.0;
-const MASCOT_MESSAGE_HEIGHT: f64 = 224.0;
+const MASCOT_MESSAGE_HEIGHT: f64 = 176.0;
 const PANEL_WIDTH: f64 = 380.0;
 const PANEL_COMPACT_HEIGHT: f64 = 78.0;
 const PANEL_MAX_HEIGHT: f64 = 240.0;
@@ -502,13 +592,18 @@ mod mascot_position_tests {
     use super::{
         align_window_to_avatar, async_key_state_is_pressed, clamp_position_to_rect,
         fit_notification_size_to_rect, fit_panel_height_to_rect, mascot_avatar_offset,
-        mascot_bottom_right_position, mascot_dock_x, nearest_dock_side, notification_drag_delta,
-        peeked_dock_side, target_outer_dimension, LogicalPosition, LogicalSize, MascotDockSide,
-        PanelActivityState, MASCOT_AVATAR_HEIGHT, MASCOT_HEIGHT, MASCOT_MESSAGE_HEIGHT,
-        MASCOT_MESSAGE_WIDTH, MASCOT_NOTIFICATION_BOTTOM_PADDING, MASCOT_NOTIFICATION_HEIGHT,
-        MASCOT_NOTIFICATION_WIDTH, MASCOT_PEEK_VISIBLE_WIDTH, MASCOT_REST_BOTTOM_MARGIN,
-        MASCOT_REST_RIGHT_MARGIN, MASCOT_WIDTH, PANEL_COMPACT_HEIGHT, PANEL_MAX_HEIGHT,
-        SCREEN_MARGIN,
+        mascot_avatar_physical_rect, mascot_bottom_right_position,
+        mascot_context_menu_physical_geometry, mascot_dock_x, nearest_dock_side,
+        notification_drag_delta, peeked_dock_side, target_outer_dimension, LogicalPosition,
+        LogicalSize, MascotContextMenuPlacement, MascotContextMenuState, MascotDockSide,
+        PanelActivityState, PhysicalPosition, PhysicalRect, PhysicalSize, MASCOT_AVATAR_HEIGHT,
+        MASCOT_AVATAR_WIDTH, MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM,
+        MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP, MASCOT_CONTEXT_MENU_GAP, MASCOT_CONTEXT_MENU_HEIGHT,
+        MASCOT_CONTEXT_MENU_TAIL_MAX, MASCOT_CONTEXT_MENU_TAIL_MIN, MASCOT_CONTEXT_MENU_WIDTH,
+        MASCOT_HEIGHT, MASCOT_MESSAGE_HEIGHT, MASCOT_MESSAGE_WIDTH,
+        MASCOT_NOTIFICATION_BOTTOM_PADDING, MASCOT_NOTIFICATION_HEIGHT, MASCOT_NOTIFICATION_WIDTH,
+        MASCOT_PEEK_VISIBLE_WIDTH, MASCOT_REST_BOTTOM_MARGIN, MASCOT_REST_RIGHT_MARGIN,
+        MASCOT_WIDTH, PANEL_COMPACT_HEIGHT, PANEL_MAX_HEIGHT, SCREEN_MARGIN,
     };
 
     #[test]
@@ -756,11 +851,11 @@ mod mascot_position_tests {
     #[test]
     fn compact_overlay_has_exact_physical_bounds_across_supported_windows_dpi_scales() {
         for (scale, expected_width, expected_height) in [
-            (1.0, 240, 224),
-            (1.25, 300, 280),
-            (1.5, 360, 336),
-            (1.75, 420, 392),
-            (2.0, 480, 448),
+            (1.0, 240, 176),
+            (1.25, 300, 220),
+            (1.5, 360, 264),
+            (1.75, 420, 308),
+            (2.0, 480, 352),
         ] {
             assert_eq!(
                 target_outer_dimension(MASCOT_MESSAGE_WIDTH, scale, 100, 100),
@@ -795,6 +890,203 @@ mod mascot_position_tests {
             assert_eq!(fitted.width, MASCOT_MESSAGE_WIDTH);
             assert_eq!(fitted.height, MASCOT_MESSAGE_HEIGHT);
         }
+    }
+
+    #[test]
+    fn context_menu_position_keeps_mascot_window_stationary() {
+        let client_origin = PhysicalPosition { x: 1500, y: 700 };
+        let avatar = mascot_avatar_physical_rect(
+            client_origin,
+            PhysicalSize {
+                width: MASCOT_WIDTH as u32,
+                height: MASCOT_HEIGHT as u32,
+            },
+            1.0,
+        );
+        let geometry = mascot_context_menu_physical_geometry(
+            avatar,
+            PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1040,
+            },
+            1.0,
+        );
+
+        assert_eq!(
+            geometry.payload.placement,
+            MascotContextMenuPlacement::Above
+        );
+        assert_eq!(client_origin, PhysicalPosition { x: 1500, y: 700 });
+        assert_eq!(
+            geometry.position.y + MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM as i32,
+            avatar.y - MASCOT_CONTEXT_MENU_GAP as i32
+        );
+        assert_eq!(
+            geometry.position.x + MASCOT_CONTEXT_MENU_WIDTH as i32 / 2,
+            avatar.x + avatar.width as i32 / 2
+        );
+        assert_eq!(geometry.payload.tail_x, 84.0);
+    }
+
+    #[test]
+    fn context_menu_flips_below_the_mascot_near_the_top_edge() {
+        let avatar = PhysicalRect {
+            x: 112,
+            y: 38,
+            width: 96,
+            height: 88,
+        };
+        let geometry = mascot_context_menu_physical_geometry(
+            avatar,
+            PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1366,
+                height: 728,
+            },
+            1.0,
+        );
+
+        assert_eq!(
+            geometry.payload.placement,
+            MascotContextMenuPlacement::Below
+        );
+        assert_eq!(
+            geometry.position.y + MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP as i32,
+            avatar.y + avatar.height as i32 + MASCOT_CONTEXT_MENU_GAP as i32
+        );
+    }
+
+    #[test]
+    fn context_menu_uses_target_monitor_physical_pixels_at_fractional_dpi() {
+        for scale in [1.0_f64, 1.25, 1.5, 1.75, 2.0] {
+            let work_area = PhysicalRect {
+                x: -(1920.0 * scale) as i32,
+                y: 0,
+                width: (1920.0 * scale) as u32,
+                height: (1040.0 * scale) as u32,
+            };
+            let avatar = PhysicalRect {
+                x: work_area.x + (12.0 * scale).round() as i32,
+                y: (700.0 * scale).round() as i32,
+                width: (MASCOT_AVATAR_WIDTH * scale).round() as u32,
+                height: (MASCOT_AVATAR_HEIGHT * scale).round() as u32,
+            };
+            let geometry = mascot_context_menu_physical_geometry(avatar, work_area, scale);
+            let margin = (SCREEN_MARGIN * scale).round() as i32;
+
+            assert_eq!(
+                geometry.size.width,
+                (MASCOT_CONTEXT_MENU_WIDTH * scale).round() as u32
+            );
+            assert_eq!(
+                geometry.size.height,
+                (MASCOT_CONTEXT_MENU_HEIGHT * scale).round() as u32
+            );
+            assert!(geometry.position.x >= work_area.x + margin);
+            assert!(
+                geometry.position.x + geometry.size.width as i32
+                    <= work_area.x + work_area.width as i32 - margin
+            );
+            assert!(geometry.payload.tail_x >= MASCOT_CONTEXT_MENU_TAIL_MIN);
+            assert!(geometry.payload.tail_x <= MASCOT_CONTEXT_MENU_TAIL_MAX);
+        }
+    }
+
+    #[test]
+    fn context_menu_tail_stays_inside_the_nav_when_window_is_edge_clamped() {
+        let work_area = PhysicalRect {
+            x: 0,
+            y: 0,
+            width: 1366,
+            height: 728,
+        };
+        let left = mascot_context_menu_physical_geometry(
+            PhysicalRect {
+                x: 0,
+                y: 400,
+                width: MASCOT_AVATAR_WIDTH as u32,
+                height: MASCOT_AVATAR_HEIGHT as u32,
+            },
+            work_area,
+            1.0,
+        );
+        let right = mascot_context_menu_physical_geometry(
+            PhysicalRect {
+                x: 1366 - MASCOT_AVATAR_WIDTH as i32,
+                y: 400,
+                width: MASCOT_AVATAR_WIDTH as u32,
+                height: MASCOT_AVATAR_HEIGHT as u32,
+            },
+            work_area,
+            1.0,
+        );
+
+        assert_eq!(left.payload.tail_x, MASCOT_CONTEXT_MENU_TAIL_MIN);
+        assert_eq!(right.payload.tail_x, MASCOT_CONTEXT_MENU_TAIL_MAX);
+    }
+
+    #[test]
+    fn context_menu_anchor_uses_the_live_expanded_client_size() {
+        let avatar = mascot_avatar_physical_rect(
+            PhysicalPosition { x: 200, y: 100 },
+            PhysicalSize {
+                width: 400,
+                height: 600,
+            },
+            1.25,
+        );
+
+        assert_eq!(avatar.x, 200 + (112.0_f64 * 1.25).round() as i32);
+        assert_eq!(avatar.y, 100 + (384.0_f64 * 1.25).round() as i32);
+        assert_eq!(avatar.width, (MASCOT_AVATAR_WIDTH * 1.25).round() as u32);
+        assert_eq!(avatar.height, (MASCOT_AVATAR_HEIGHT * 1.25).round() as u32);
+    }
+
+    #[test]
+    fn context_menu_state_waits_for_webview_ready_and_cancels_stale_show() {
+        let state = MascotContextMenuState::default();
+        let first_show = state.request_show();
+        assert!(!state.can_show(first_show));
+        assert_eq!(state.mark_ready(), Some(first_show));
+        assert!(state.can_show(first_show));
+
+        state.request_hide();
+        assert!(!state.can_show(first_show));
+        assert!(!state.snapshot().visible);
+
+        let latest_show = state.request_show();
+        assert!(!state.can_show(first_show));
+        assert!(state.can_show(latest_show));
+        assert!(state.mark_visible(latest_show));
+        assert!(state.snapshot().visible);
+    }
+
+    #[test]
+    fn context_menu_hide_before_ready_prevents_late_first_show() {
+        let state = MascotContextMenuState::default();
+        let stale_show = state.request_show();
+        state.request_hide();
+
+        assert_eq!(state.mark_ready(), None);
+        assert!(!state.can_show(stale_show));
+        assert!(!state.snapshot().desired_visible);
+    }
+
+    #[test]
+    fn stale_focus_loss_cannot_cancel_a_new_context_menu_generation() {
+        let state = MascotContextMenuState::default();
+        let first_show = state.request_show();
+        assert_eq!(state.mark_ready(), Some(first_show));
+        assert!(state.mark_visible(first_show));
+        assert!(state.is_visible());
+
+        let replacement_show = state.request_show();
+        assert!(!state.is_visible());
+        assert!(state.can_show(replacement_show));
+        assert!(!state.can_show(first_show));
     }
 
     #[test]
@@ -929,16 +1221,14 @@ fn mascot_avatar_offset(
     width: f64,
     height: f64,
     visible: bool,
-    compact: bool,
+    _compact: bool,
 ) -> LogicalPosition<f64> {
     LogicalPosition {
         x: (width - MASCOT_AVATAR_WIDTH) / 2.0,
-        y: if !visible {
-            (height - MASCOT_AVATAR_HEIGHT) / 2.0
-        } else if compact {
+        y: if visible {
             height - MASCOT_NOTIFICATION_BOTTOM_PADDING - MASCOT_AVATAR_HEIGHT
         } else {
-            height - MASCOT_NOTIFICATION_BOTTOM_PADDING - MASCOT_AVATAR_HEIGHT
+            (height - MASCOT_AVATAR_HEIGHT) / 2.0
         },
     }
 }
@@ -978,6 +1268,7 @@ fn notification_drag_delta(
     }
 }
 
+#[cfg(any(windows, test))]
 fn target_outer_dimension(
     logical_inner_size: f64,
     scale: f64,
@@ -1032,6 +1323,36 @@ fn set_window_bounds(
     if let Some(position) = position {
         let _ = window.set_position(Position::Logical(position));
     }
+}
+
+fn set_window_physical_bounds(
+    window: &tauri::WebviewWindow,
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+) {
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+        };
+        let updated = unsafe {
+            SetWindowPos(
+                hwnd.0,
+                std::ptr::null_mut(),
+                position.x,
+                position.y,
+                size.width.min(i32::MAX as u32) as i32,
+                size.height.min(i32::MAX as u32) as i32,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
+            )
+        };
+        if updated != 0 {
+            return;
+        }
+    }
+
+    let _ = window.set_size(Size::Physical(size));
+    let _ = window.set_position(Position::Physical(position));
 }
 
 fn resize_mascot_for_notification(
@@ -1306,6 +1627,294 @@ fn hide_panel_and_notify(app: &tauri::AppHandle) {
     emit_panel_visibility(app, false);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum MascotContextMenuPlacement {
+    Above,
+    Below,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MascotContextMenuPlacementPayload {
+    placement: MascotContextMenuPlacement,
+    // CSS consumes this as a logical coordinate inside the 168-DIP nav. It is
+    // deliberately not relative to the 192-DIP transparent native window.
+    tail_x: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PhysicalRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MascotContextMenuGeometry {
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    payload: MascotContextMenuPlacementPayload,
+}
+
+fn logical_to_physical(value: f64, scale: f64) -> i64 {
+    (value * scale.max(f64::EPSILON)).round() as i64
+}
+
+fn mascot_context_menu_physical_geometry(
+    avatar: PhysicalRect,
+    work_area: PhysicalRect,
+    scale: f64,
+) -> MascotContextMenuGeometry {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let menu_width = logical_to_physical(MASCOT_CONTEXT_MENU_WIDTH, scale).max(1);
+    let menu_height = logical_to_physical(MASCOT_CONTEXT_MENU_HEIGHT, scale).max(1);
+    let margin = logical_to_physical(SCREEN_MARGIN, scale).max(0);
+    let gap = logical_to_physical(MASCOT_CONTEXT_MENU_GAP, scale).max(0);
+    let visible_bottom =
+        logical_to_physical(MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM, scale).max(0);
+    let visible_top = logical_to_physical(MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP, scale).max(0);
+
+    let work_left = i64::from(work_area.x);
+    let work_top = i64::from(work_area.y);
+    let work_right = work_left + i64::from(work_area.width);
+    let work_bottom = work_top + i64::from(work_area.height);
+    let avatar_left = i64::from(avatar.x);
+    let avatar_top = i64::from(avatar.y);
+    let avatar_right = avatar_left + i64::from(avatar.width);
+    let avatar_bottom = avatar_top + i64::from(avatar.height);
+    let avatar_center_x = (avatar_left as f64 + avatar_right as f64) / 2.0;
+
+    let min_x = work_left + margin;
+    let max_x = work_right - menu_width - margin;
+    let desired_x = (avatar_center_x - menu_width as f64 / 2.0).round() as i64;
+    let x = if max_x >= min_x {
+        desired_x.clamp(min_x, max_x)
+    } else {
+        work_left + (i64::from(work_area.width) - menu_width) / 2
+    };
+
+    // The outer menu window contains transparent gutters. Align the visible
+    // tail edge, not the HWND edge, to the requested gap from the avatar.
+    let above_y = avatar_top - gap - visible_bottom;
+    let below_y = avatar_bottom + gap - visible_top;
+    let min_y = work_top + margin;
+    let max_y = work_bottom - menu_height - margin;
+    let (y, placement) = if above_y >= min_y {
+        (above_y, MascotContextMenuPlacement::Above)
+    } else {
+        (
+            if max_y >= min_y {
+                below_y.clamp(min_y, max_y)
+            } else {
+                work_top + (i64::from(work_area.height) - menu_height) / 2
+            },
+            MascotContextMenuPlacement::Below,
+        )
+    };
+
+    let nav_left_physical = x as f64 + MASCOT_CONTEXT_MENU_NAV_LEFT * scale;
+    let tail_x = ((avatar_center_x - nav_left_physical) / scale)
+        .clamp(MASCOT_CONTEXT_MENU_TAIL_MIN, MASCOT_CONTEXT_MENU_TAIL_MAX);
+
+    MascotContextMenuGeometry {
+        position: PhysicalPosition {
+            x: x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            y: y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        },
+        size: PhysicalSize {
+            width: menu_width.min(i64::from(u32::MAX)) as u32,
+            height: menu_height.min(i64::from(u32::MAX)) as u32,
+        },
+        payload: MascotContextMenuPlacementPayload { placement, tail_x },
+    }
+}
+
+fn mascot_client_origin_physical(mascot: &tauri::WebviewWindow) -> Option<PhysicalPosition<i32>> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+
+        let hwnd = mascot.hwnd().ok()?;
+        let mut point = POINT { x: 0, y: 0 };
+        if unsafe { ClientToScreen(hwnd.0, &mut point) } != 0 {
+            return Some(PhysicalPosition {
+                x: point.x,
+                y: point.y,
+            });
+        }
+    }
+
+    mascot.outer_position().ok()
+}
+
+fn mascot_avatar_physical_rect(
+    client_origin: PhysicalPosition<i32>,
+    client_size: PhysicalSize<u32>,
+    scale: f64,
+) -> PhysicalRect {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let logical_size = client_size.to_logical::<f64>(scale);
+    let visible =
+        logical_size.width > MASCOT_WIDTH + 1.0 || logical_size.height > MASCOT_HEIGHT + 1.0;
+    let compact = visible
+        && logical_size.width <= MASCOT_MESSAGE_WIDTH + 1.0
+        && logical_size.height <= MASCOT_MESSAGE_HEIGHT + 1.0;
+    let offset = mascot_avatar_offset(logical_size.width, logical_size.height, visible, compact);
+
+    PhysicalRect {
+        x: (i64::from(client_origin.x) + logical_to_physical(offset.x, scale))
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        y: (i64::from(client_origin.y) + logical_to_physical(offset.y, scale))
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        width: logical_to_physical(MASCOT_AVATAR_WIDTH, scale).clamp(1, i64::from(u32::MAX)) as u32,
+        height: logical_to_physical(MASCOT_AVATAR_HEIGHT, scale).clamp(1, i64::from(u32::MAX))
+            as u32,
+    }
+}
+
+fn emit_mascot_context_menu_visibility(app: &tauri::AppHandle, visible: bool) {
+    let _ = app.emit_to("mascot", MASCOT_CONTEXT_MENU_VISIBILITY_EVENT, visible);
+}
+
+fn hide_mascot_context_menu_window(app: &tauri::AppHandle) {
+    let state = app.state::<MascotContextMenuState>();
+    state.request_hide();
+    let Ok(_transition) = state.transition.lock() else {
+        return;
+    };
+    if let Some(menu) = app.get_webview_window("mascot-menu") {
+        let _ = menu.hide();
+    }
+    emit_mascot_context_menu_visibility(app, false);
+}
+
+fn show_mascot_context_menu_generation(
+    app: &tauri::AppHandle,
+    state: &MascotContextMenuState,
+    generation: u64,
+) {
+    let Ok(_transition) = state.transition.lock() else {
+        return;
+    };
+    if !state.can_show(generation) {
+        return;
+    }
+
+    let (Some(mascot), Some(menu)) = (
+        app.get_webview_window("mascot"),
+        app.get_webview_window("mascot-menu"),
+    ) else {
+        return;
+    };
+    let scale = mascot.scale_factor().unwrap_or(1.0);
+    let Some(client_origin) = mascot_client_origin_physical(&mascot) else {
+        return;
+    };
+    let client_size = mascot.inner_size().unwrap_or(PhysicalSize {
+        width: logical_to_physical(MASCOT_WIDTH, scale).max(1) as u32,
+        height: logical_to_physical(MASCOT_HEIGHT, scale).max(1) as u32,
+    });
+    let avatar = mascot_avatar_physical_rect(client_origin, client_size, scale);
+    let avatar_center_x = i64::from(avatar.x) + i64::from(avatar.width) / 2;
+    let avatar_center_y = i64::from(avatar.y) + i64::from(avatar.height) / 2;
+    // An expanded transparent mascot window can span displays. Select the
+    // monitor containing the actual avatar rather than the HWND's majority
+    // area, otherwise a mixed-DPI boundary can apply the wrong work area and
+    // scale to the independent menu window.
+    let monitor = mascot
+        .available_monitors()
+        .ok()
+        .and_then(|monitors| {
+            monitors.into_iter().find(|monitor| {
+                let position = monitor.position();
+                let size = monitor.size();
+                let left = i64::from(position.x);
+                let top = i64::from(position.y);
+                avatar_center_x >= left
+                    && avatar_center_x < left + i64::from(size.width)
+                    && avatar_center_y >= top
+                    && avatar_center_y < top + i64::from(size.height)
+            })
+        })
+        .or_else(|| mascot.current_monitor().ok().flatten())
+        .or_else(|| mascot.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let work_area = monitor.work_area();
+    let geometry = mascot_context_menu_physical_geometry(
+        avatar,
+        PhysicalRect {
+            x: work_area.position.x,
+            y: work_area.position.y,
+            width: work_area.size.width,
+            height: work_area.size.height,
+        },
+        monitor.scale_factor(),
+    );
+
+    harden_transparent_window(&menu);
+    set_window_physical_bounds(&menu, geometry.position, geometry.size);
+    let _ = app.emit_to(
+        "mascot-menu",
+        "mascot-context-menu-placement",
+        geometry.payload,
+    );
+    if !state.can_show(generation) {
+        return;
+    }
+
+    if menu.show().is_err() || !state.can_show(generation) || menu.set_focus().is_err() {
+        let _ = menu.hide();
+        emit_mascot_context_menu_visibility(app, false);
+        return;
+    }
+    if !state.mark_visible(generation) {
+        let _ = menu.hide();
+        emit_mascot_context_menu_visibility(app, false);
+        return;
+    }
+    emit_mascot_context_menu_visibility(app, true);
+}
+
+#[tauri::command]
+fn show_mascot_context_menu(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MascotContextMenuState>,
+) {
+    hide_panel_and_notify(&app);
+    let generation = state.request_show();
+    if state.can_show(generation) {
+        show_mascot_context_menu_generation(&app, state.inner(), generation);
+    }
+}
+
+#[tauri::command]
+fn hide_mascot_context_menu(app: tauri::AppHandle) {
+    hide_mascot_context_menu_window(&app);
+}
+
+#[tauri::command]
+fn set_mascot_context_menu_ready(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MascotContextMenuState>,
+) {
+    if let Some(generation) = state.mark_ready() {
+        show_mascot_context_menu_generation(&app, state.inner(), generation);
+    }
+}
+
 fn hide_panel_after_focus_moves_outside_app(app: tauri::AppHandle) {
     thread::spawn(move || {
         // Focus settles after the mouse-down that moves it to another native
@@ -1331,6 +1940,7 @@ fn hide_panel_after_focus_moves_outside_app(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn hide_main_window(app: tauri::AppHandle) {
+    hide_mascot_context_menu_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
         let _ = window.hide();
     }
@@ -1343,6 +1953,7 @@ fn show_main_window(
     motion: tauri::State<'_, MascotDockMotion>,
     initial_placement: tauri::State<'_, InitialMascotPlacement>,
 ) {
+    hide_mascot_context_menu_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
         ensure_initial_mascot_placement(&window, initial_placement.inner());
         let (width, height) = mascot_logical_size(&window);
@@ -1357,6 +1968,7 @@ fn show_notification_window(
     app: tauri::AppHandle,
     initial_placement: tauri::State<'_, InitialMascotPlacement>,
 ) {
+    hide_mascot_context_menu_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
         // A reminder should become visible without stealing focus from the
         // document or business application the user is working in.
@@ -1372,6 +1984,7 @@ fn peek_mascot_window(
     panel_activity: tauri::State<'_, PanelActivityState>,
     reduced_motion: bool,
 ) -> Option<String> {
+    hide_mascot_context_menu_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
         let (width, height) = mascot_logical_size(&window);
         // Expanded reminders and menus must remain fully visible until handled.
@@ -1405,6 +2018,7 @@ fn reveal_mascot_window(
     motion: tauri::State<'_, MascotDockMotion>,
     reduced_motion: bool,
 ) {
+    hide_mascot_context_menu_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
         let (width, height) = mascot_logical_size(&window);
         let _ = window.show();
@@ -1424,6 +2038,7 @@ fn start_mascot_drag(
     app: tauri::AppHandle,
     monitor: tauri::State<'_, MascotDragMonitor>,
 ) -> Result<(), String> {
+    hide_mascot_context_menu_window(&app);
     let window = app
         .get_webview_window("mascot")
         .ok_or_else(|| "mascot window is unavailable".to_string())?;
@@ -1440,6 +2055,7 @@ fn start_mascot_drag(
 
 #[tauri::command]
 fn toggle_panel_window(app: tauri::AppHandle, motion: tauri::State<'_, MascotDockMotion>) -> bool {
+    hide_mascot_context_menu_window(&app);
     if let (Some(panel), Some(mascot)) = (
         app.get_webview_window("panel"),
         app.get_webview_window("mascot"),
@@ -1464,6 +2080,7 @@ fn toggle_panel_window(app: tauri::AppHandle, motion: tauri::State<'_, MascotDoc
 
 #[tauri::command]
 fn show_panel_window(app: tauri::AppHandle, motion: tauri::State<'_, MascotDockMotion>) {
+    hide_mascot_context_menu_window(&app);
     if let (Some(panel), Some(mascot)) = (
         app.get_webview_window("panel"),
         app.get_webview_window("mascot"),
@@ -1492,6 +2109,7 @@ fn sync_panel_window(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn set_mascot_notification_visible(
     app: tauri::AppHandle,
     motion: tauri::State<'_, MascotDockMotion>,
@@ -1502,6 +2120,9 @@ fn set_mascot_notification_visible(
     reveal: Option<bool>,
     reduced_motion: Option<bool>,
 ) {
+    if visible {
+        hide_mascot_context_menu_window(&app);
+    }
     if let Some(window) = app.get_webview_window("mascot") {
         // The first frontend layout request can race the hidden window's native
         // setup on Windows. Anchor the collapsed mascot before calculating the
@@ -1802,10 +2423,14 @@ fn main() {
         .manage(InitialMascotPlacement::default())
         .manage(MascotDockMotion::default())
         .manage(MascotNotificationLayoutState::default())
+        .manage(MascotContextMenuState::default())
         .manage(MascotDragMonitor::default())
         .manage(PanelActivityState::default())
         .invoke_handler(tauri::generate_handler![
             hide_main_window,
+            show_mascot_context_menu,
+            hide_mascot_context_menu,
+            set_mascot_context_menu_ready,
             show_main_window,
             show_notification_window,
             peek_mascot_window,
@@ -1848,6 +2473,17 @@ fn main() {
                     }
                 });
             }
+            if let Some(window) = app.get_webview_window("mascot-menu") {
+                harden_transparent_window(&window);
+                let app_handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if matches!(event, tauri::WindowEvent::Focused(false))
+                        && app_handle.state::<MascotContextMenuState>().is_visible()
+                    {
+                        hide_mascot_context_menu_window(&app_handle);
+                    }
+                });
+            }
 
             let open = MenuItem::with_id(app, "open_workbench", "打开工作台", true, None::<&str>)?;
             let show = MenuItem::with_id(app, "show", "显示助手", true, None::<&str>)?;
@@ -1868,9 +2504,11 @@ fn main() {
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open_workbench" => {
+                        hide_mascot_context_menu_window(app);
                         let _ = app.emit("tray-open-workbench", ());
                     }
                     "show" => {
+                        hide_mascot_context_menu_window(app);
                         if let Some(window) = app.get_webview_window("mascot") {
                             let initial_placement = app.state::<InitialMascotPlacement>();
                             ensure_initial_mascot_placement(&window, initial_placement.inner());
@@ -1882,6 +2520,7 @@ fn main() {
                         }
                     }
                     "hide" => {
+                        hide_mascot_context_menu_window(app);
                         if let Some(window) = app.get_webview_window("mascot") {
                             let _ = window.hide();
                         }
@@ -1890,6 +2529,7 @@ fn main() {
                         }
                     }
                     "logout" => {
+                        hide_mascot_context_menu_window(app);
                         let _ = app.emit("tray-logout", ());
                     }
                     "quit" => app.exit(0),

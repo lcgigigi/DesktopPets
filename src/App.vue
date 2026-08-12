@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import MascotWindow from './views/MascotWindow.vue'
+import MascotMenuWindow from './views/MascotMenuWindow.vue'
 import PanelWindow from './views/PanelWindow.vue'
 import {
   createDesktopAuthState,
@@ -391,7 +392,7 @@ onMounted(async () => {
     }
     // Keep the native window hidden until its first collapsed/login-card bounds
     // have been applied. This prevents an MSI first launch from exposing the
-    // 168x144 startup frame with only a clipped strip of the login prompt.
+    // 120x104 startup frame with only a clipped strip of the login prompt.
     await setMascotNotificationVisible(needsAuth.value, false)
     await showAssistant()
   }
@@ -455,6 +456,7 @@ onUnmounted(() => {
       @read-sys-message="handleSysMessageRead"
       @view-sys-message="handleSysMessageView"
     />
+    <MascotMenuWindow v-else-if="windowMode === 'mascot-menu'" />
     <PanelWindow v-else :socket-status="socketStatus" :mock-enabled="env.enableMock" :task="currentTask" />
   </main>
 </template>

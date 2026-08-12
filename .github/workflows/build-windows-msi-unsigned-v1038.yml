@@ -1,15 +1,15 @@
-name: Build unsigned Windows enterprise MSI v1.0.37
+name: Build unsigned Windows enterprise MSI v1.0.38
 
 on:
   push:
     branches:
-      - codex/fix-context-menu-ux-1.0.37
+      - codex/context-menu-window-1.0.38
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-enterprise-msi-unsigned-v1037
+  group: windows-enterprise-msi-unsigned-v1038
   cancel-in-progress: false
 
 jobs:
@@ -36,17 +36,39 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Run frontend regression tests
+        run: npm test -- --run
+
+      - name: Run Windows native regression tests
+        run: cargo test --locked --manifest-path .\src-tauri\Cargo.toml
+
+      - name: Validate all 360 mascot frames
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check Pillow==12.2.0
+          python .\scripts\audit-mascot-frames.py --output .\artifacts\mascot-frame-audit
+
       - name: Build and validate unsigned intranet enterprise MSI
         shell: pwsh
         run: |
           & .\scripts\build-windows-msi.ps1 -Mode intranet -AllowUnsigned -SkipNpmCi
 
+      - name: Smoke-test administrator silent install and uninstall
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem .\artifacts\windows-msi-intranet\*.msi | Select-Object -First 1
+          if (-not $msi) { throw 'MSI artifact was not found.' }
+          & .\scripts\windows-msi\Test-HualiAISilentDeployment.ps1 `
+            -MsiPath $msi.FullName `
+            -ExpectedVersion '1.0.38'
+
       - name: Upload administrator distribution package
         uses: actions/upload-artifact@v6
         with:
-          name: huali-windows-enterprise-msi-intranet-v1.0.37
+          name: huali-windows-enterprise-msi-intranet-v1.0.38
           path: |
             artifacts/windows-msi-intranet/
             artifacts/*-intranet-windows-enterprise-msi-x64.zip
+            artifacts/mascot-frame-audit/
           if-no-files-found: error
           retention-days: 30

@@ -76,10 +76,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-HualiAI.ps1
 $env:WINDOWS_CERTIFICATE_THUMBPRINT = "证书指纹"
 $env:WINDOWS_TIMESTAMP_URL = "http://timestamp.digicert.com"
 
-仅开发测试可以生成未签名包：
+在企业终端安全策略已允许、发布负责人明确接受未签名风险时，可以生成未签名包：
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-msi.ps1 -Mode intranet -AllowUnsigned
 
-未签名包不能用于公司正式推送，可能被 SmartScreen、终端安全策略或管理平台拒绝。
+未签名不会影响 MSI 的管理员静默安装、全机安装或覆盖升级结构，但仍可能被 SmartScreen、终端安全策略或管理平台拦截；正式推送前必须先完成小范围灰度并确认公司策略已放行。
 
 八、在 Windows x64 构建
 

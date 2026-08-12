@@ -27,8 +27,8 @@ body[data-window='mascot'],
 body[data-window='mascot'] #app {
   width: 100%;
   height: 100%;
-  min-width: 168px;
-  min-height: 144px;
+  min-width: 120px;
+  min-height: 104px;
   background: rgba(0, 0, 0, 0) !important;
 }
 
@@ -37,6 +37,16 @@ body[data-window='panel'],
 body[data-window='panel'] #app {
   width: 100%;
   height: 100%;
+}
+
+html[data-window='mascot-menu'],
+body[data-window='mascot-menu'],
+body[data-window='mascot-menu'] #app {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: rgba(0, 0, 0, 0) !important;
 }
 
 button,
