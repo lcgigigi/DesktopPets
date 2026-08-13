@@ -644,7 +644,7 @@ try {
     processRemoved = $true
   }
   $report.ok = $true
-  Write-Host '管理员 /qn 覆盖升级、本 runner 可执行的默认启动路径、视觉检查与完整卸载验证全部通过。'
+  Write-Host '管理员 /qn 覆盖升级、本 runner 可执行的默认启动路径与完整卸载验证全部通过。'
 } catch {
   $primaryFailure = $_
   $report.failure = $_.Exception.Message
