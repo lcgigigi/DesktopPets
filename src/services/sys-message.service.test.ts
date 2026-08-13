@@ -123,6 +123,23 @@ describe('sysMessageService', () => {
     expect(message.msgStatus).toBe(1)
   })
 
+  it('keeps the message unread when the backend returns data false', async () => {
+    mocks.get.mockResolvedValue({ rows: [] })
+    mocks.put.mockResolvedValue(false)
+    const message = {
+      id: '101',
+      rawId: 101,
+      dedupeKey: '101',
+      msgSubject: '新待办提醒',
+      msgContent: '你有一条新待办',
+      msgStatus: 0 as const,
+      msgType: 1,
+    }
+
+    await expect(sysMessageService.markRead(message)).rejects.toThrow('服务端未确认消息已读')
+    expect(message.msgStatus).toBe(0)
+  })
+
   it('忽略退出或切换用户后才返回的旧轮询结果', async () => {
     let resolveOldRequest: ((value: unknown) => void) | undefined
     mocks.get

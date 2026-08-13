@@ -3,6 +3,7 @@ import {
   clampTodoTextareaHeight,
   getTodoPanelHeight,
   TODO_PANEL_BASE_HEIGHT,
+  TODO_PANEL_ERROR_HEIGHT,
   TODO_PANEL_MAX_HEIGHT,
   TODO_TEXTAREA_MAX_HEIGHT,
   TODO_TEXTAREA_MIN_HEIGHT
@@ -21,5 +22,11 @@ describe('todo input layout', () => {
   it('caps extreme content and lets the textarea scroll without clipping the window', () => {
     expect(clampTodoTextareaHeight(1000)).toBe(TODO_TEXTAREA_MAX_HEIGHT)
     expect(getTodoPanelHeight(1000)).toBe(TODO_PANEL_MAX_HEIGHT)
+  })
+
+  it('reserves native panel space for a retryable launch error', () => {
+    expect(getTodoPanelHeight(TODO_TEXTAREA_MIN_HEIGHT, true)).toBe(
+      TODO_PANEL_BASE_HEIGHT + TODO_PANEL_ERROR_HEIGHT
+    )
   })
 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { storage } from '../utils/storage'
 import {
   clampTodoTextareaHeight,
@@ -10,6 +10,7 @@ import {
 
 const props = defineProps<{
   loading: boolean
+  error?: string
 }>()
 
 const emit = defineEmits<{
@@ -46,7 +47,7 @@ function syncHeight() {
     textareaHeight.value = height
     input.style.height = `${height}px`
     input.style.overflowY = input.scrollHeight > TODO_TEXTAREA_MAX_HEIGHT ? 'auto' : 'hidden'
-    const panelHeight = getTodoPanelHeight(height)
+    const panelHeight = getTodoPanelHeight(height, Boolean(props.error))
     if (panelHeight !== lastPanelHeight) {
       lastPanelHeight = panelHeight
       emit('heightChange', panelHeight)
@@ -90,17 +91,27 @@ onMounted(() => {
   syncHeight()
 })
 
+watch(() => props.error, syncHeight)
+
 defineExpose({ clear, focus, getDraft, syncHeight })
 </script>
 
 <template>
-  <form class="todo-input" :class="{ 'is-multiline': isMultiline }" @submit.prevent="submit">
+  <form
+    class="todo-input"
+    :class="{ 'is-multiline': isMultiline, 'has-error': error }"
+    :aria-busy="loading"
+    @submit.prevent="submit"
+  >
+    <label class="sr-only" for="desktop-todo-input">输入要创建的待办、提醒或会议安排</label>
     <textarea
+      id="desktop-todo-input"
       ref="inputRef"
       v-model="text"
       rows="1"
       placeholder="一句话创建待办、提醒或会议安排"
       :disabled="loading"
+      :aria-describedby="error ? 'desktop-todo-input-error' : undefined"
       @input="handleInput"
       @focus="handleFocus"
       @blur="handleBlur"
@@ -113,5 +124,14 @@ defineExpose({ clear, focus, getDraft, syncHeight })
         <path d="m21 3-7 18-4-7-7-4 18-7Z" />
       </svg>
     </button>
+    <p
+      v-if="error"
+      id="desktop-todo-input-error"
+      class="todo-input__error"
+      role="alert"
+      tabindex="0"
+    >
+      {{ error }} 可保留当前内容再次提交。
+    </p>
   </form>
 </template>

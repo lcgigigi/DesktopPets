@@ -1,0 +1,191 @@
+name: Build unsigned Windows enterprise MSI v1.0.39
+
+on:
+  push:
+    branches:
+      - codex/production-readiness-1.0.39
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-enterprise-msi-unsigned-v1039
+  cancel-in-progress: false
+
+jobs:
+  build-msi:
+    runs-on: windows-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Initialize durable QA evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path .\artifacts\windows-deployment-smoke -Force | Out-Null
+          [ordered]@{
+            repository = '${{ github.repository }}'
+            commit = '${{ github.sha }}'
+            runId = '${{ github.run_id }}'
+            runner = '${{ runner.name }}'
+            startedAt = [DateTime]::UtcNow.ToString('o')
+          } | ConvertTo-Json | Set-Content `
+            -LiteralPath .\artifacts\windows-deployment-smoke\workflow-run.json `
+            -Encoding UTF8
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up stable Rust MSVC
+        shell: pwsh
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal
+          rustup default stable-x86_64-pc-windows-msvc
+          rustup component add rustfmt clippy
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run frontend regression tests
+        run: npm test -- --run
+
+      - name: Build production frontend
+        run: npm run build:prod
+
+      - name: Check native formatting
+        run: cargo fmt --manifest-path .\src-tauri\Cargo.toml -- --check
+
+      - name: Run Windows native regression tests
+        run: cargo test --locked --manifest-path .\src-tauri\Cargo.toml
+
+      - name: Reject native warnings
+        run: cargo clippy --locked --manifest-path .\src-tauri\Cargo.toml --all-targets -- -D warnings
+
+      - name: Validate all runtime mascot frames
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check Pillow==12.3.0
+          python .\scripts\audit-mascot-frames.py --output .\artifacts\mascot-frame-audit
+
+      - name: Build and validate unsigned intranet enterprise MSI
+        shell: pwsh
+        run: |
+          & .\scripts\build-windows-msi.ps1 -Mode intranet -AllowUnsigned -SkipNpmCi
+
+      - name: Download pinned v1.0.38 upgrade baseline
+        uses: actions/download-artifact@v6
+        with:
+          name: huali-windows-enterprise-msi-intranet-v1.0.38
+          path: artifacts/previous-release
+          github-token: ${{ github.token }}
+          run-id: 31584773214
+
+      - name: Verify pinned v1.0.38 upgrade baseline
+        shell: pwsh
+        run: |
+          $expectedHash = '49f38a75d098946deea7c570df7911a46bc3f361a935c58279a073cc1d00655a'
+          $oldMsi = @(Get-ChildItem .\artifacts\previous-release -Recurse -File -Filter '*.msi')
+          if ($oldMsi.Count -ne 1) {
+            throw "Pinned v1.0.38 artifact must contain exactly one MSI; found $($oldMsi.Count)."
+          }
+          $actualHash = (Get-FileHash -LiteralPath $oldMsi[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          [ordered]@{
+            sourceRunId = '31584773214'
+            artifact = 'huali-windows-enterprise-msi-intranet-v1.0.38'
+            path = $oldMsi[0].FullName
+            expectedSha256 = $expectedHash
+            actualSha256 = $actualHash
+            verifiedAt = [DateTime]::UtcNow.ToString('o')
+          } | ConvertTo-Json | Set-Content `
+            -LiteralPath .\artifacts\windows-deployment-smoke\previous-msi.json `
+            -Encoding UTF8
+          if ($actualHash -ne $expectedHash) {
+            throw "Pinned v1.0.38 MSI SHA256 mismatch: actual=$actualHash expected=$expectedHash."
+          }
+          "HUALI_PREVIOUS_MSI=$($oldMsi[0].FullName)" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Smoke-test administrator silent deployment and real Windows UI
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem .\artifacts\windows-msi-intranet\*.msi | Select-Object -First 1
+          if (-not $msi) { throw 'MSI artifact was not found.' }
+          & .\scripts\windows-msi\Test-HualiAISilentDeployment.ps1 `
+            -MsiPath $msi.FullName `
+            -ExpectedVersion '1.0.39' `
+            -PreviousMsiPath $env:HUALI_PREVIOUS_MSI `
+            -PreviousVersion '1.0.38' `
+            -PreviousMsiSha256 '49f38a75d098946deea7c570df7911a46bc3f361a935c58279a073cc1d00655a' `
+            -ValidateDefaultLaunch `
+            -RunVisualSmoke `
+            -VisualSmokeOutputDirectory .\artifacts\windows-visual-smoke `
+            -EvidenceDirectory .\artifacts\windows-deployment-smoke
+
+      - name: Record default-launch coverage
+        if: success()
+        shell: pwsh
+        run: |
+          $report = Get-Content `
+            -LiteralPath .\artifacts\windows-deployment-smoke\deployment-smoke-report.json `
+            -Raw | ConvertFrom-Json
+          $defaultLaunch = $report.checks.defaultLaunch
+          if (-not $defaultLaunch) {
+            throw 'Deployment report is missing the default-launch gate.'
+          }
+          if ($defaultLaunch.manualInteractiveGateRequired) {
+            @(
+              '## Windows default-launch coverage'
+              ''
+              '⚠️ This hosted runner had no Explorer session. The MSI helper no-user fallback, HKLM Run fallback, and no-spurious-process behavior passed; interactive post-install launch remains a documented manual Windows gate.'
+            ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+          } else {
+            @(
+              '## Windows default-launch coverage'
+              ''
+              '✅ Interactive post-install launch, exact executable, process session, and visible window passed.'
+            ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+          }
+
+      - name: Finalize QA evidence even after failure
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path .\artifacts\windows-deployment-smoke -Force | Out-Null
+          [ordered]@{
+            repository = '${{ github.repository }}'
+            commit = '${{ github.sha }}'
+            runId = '${{ github.run_id }}'
+            jobStatusBeforeEvidenceUpload = '${{ job.status }}'
+            completedAt = [DateTime]::UtcNow.ToString('o')
+          } | ConvertTo-Json | Set-Content `
+            -LiteralPath .\artifacts\windows-deployment-smoke\workflow-final-state.json `
+            -Encoding UTF8
+
+      - name: Upload administrator distribution package
+        if: success()
+        uses: actions/upload-artifact@v6
+        with:
+          name: huali-windows-enterprise-msi-intranet-v1.0.39
+          path: |
+            artifacts/windows-msi-intranet/
+            artifacts/*-intranet-windows-enterprise-msi-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Always upload QA evidence and installer logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: huali-windows-qa-evidence-v1.0.39-${{ github.run_id }}
+          path: |
+            artifacts/mascot-frame-audit/
+            artifacts/windows-deployment-smoke/
+            artifacts/windows-visual-smoke/
+          if-no-files-found: warn
+          retention-days: 30

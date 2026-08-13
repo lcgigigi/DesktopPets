@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import spriteSheetUrl from '../assets/mascot/xiaoli-spritesheet.webp'
-import motionSpriteSheetUrl from '../assets/mascot/xiaoli-motion-spritesheet.webp'
-import MascotRunSprite from './MascotRunSprite.vue'
+import runningSpriteSheetUrl from '../assets/mascot/xiaoli-running-spritesheet.webp'
+import peekSpriteSheetUrl from '../assets/mascot/xiaoli-peek-spritesheet.webp'
 import type { MascotAnimationState, MascotStatus } from '../types/mascot'
+import { mascotAnimationTiming } from '../utils/mascot-animation-timing'
 import type { RunningDirection } from '../utils/mascot-drag-motion'
 
 const props = defineProps<{
@@ -11,8 +12,10 @@ const props = defineProps<{
   animationState?: MascotAnimationState
 }>()
 
+type SpriteSheetName = 'main' | 'running' | 'peek'
+
 type SpriteState = {
-  sheet: 'main' | 'motion'
+  sheet: SpriteSheetName
   row: number
   frames: number
   duration: number
@@ -21,51 +24,133 @@ type SpriteState = {
   direction?: 'normal' | 'reverse'
 }
 
-const SPRITE_DISPLAY_WIDTH = 90
-const SPRITE_DISPLAY_HEIGHT = 75
+// These logical dimensions land on whole physical pixels at every supported
+// Windows scale: 125%, 150%, 175% and 200%.
+const SPRITE_DISPLAY_WIDTH = 92
+const BASE_SPRITE_DISPLAY_HEIGHT = 76
+const RUN_SPRITE_DISPLAY_HEIGHT = 84
 const spriteSheets = {
-  main: { url: spriteSheetUrl, columns: 12, rows: 10 },
-  motion: { url: motionSpriteSheetUrl, columns: 24, rows: 4 }
+  main: {
+    url: spriteSheetUrl,
+    columns: 12,
+    rows: 10,
+    displayHeight: BASE_SPRITE_DISPLAY_HEIGHT
+  },
+  running: {
+    url: runningSpriteSheetUrl,
+    columns: 24,
+    rows: 2,
+    displayHeight: RUN_SPRITE_DISPLAY_HEIGHT
+  },
+  peek: {
+    url: peekSpriteSheetUrl,
+    columns: 12,
+    rows: 2,
+    displayHeight: BASE_SPRITE_DISPLAY_HEIGHT
+  }
 } as const
-const showRunLayer = ref(false)
+
 const isReturningFromRun = ref(false)
 const lastRunningDirection = ref<RunningDirection>('running-right')
 let runReturnTimer: number | undefined
 
 const spriteStates: Record<string, SpriteState> = {
-  idle: { sheet: 'main', row: 0, frames: 12, duration: 5200, animation: 'mascot-sprite-idle' },
-  hover: { sheet: 'main', row: 1, frames: 6, duration: 1100, animation: 'mascot-sprite-active' },
-  thinking: { sheet: 'main', row: 2, frames: 12, duration: 2600, animation: 'mascot-sprite-active' },
-  waiting: { sheet: 'main', row: 3, frames: 6, duration: 900, animation: 'mascot-sprite-active' },
-  remind: { sheet: 'main', row: 4, frames: 12, duration: 1800, animation: 'mascot-sprite-active' },
-  waving: { sheet: 'main', row: 4, frames: 12, duration: 1800, animation: 'mascot-sprite-active' },
-  success: { sheet: 'main', row: 5, frames: 6, duration: 900, animation: 'mascot-sprite-active' },
-  error: { sheet: 'main', row: 6, frames: 6, duration: 1000, animation: 'mascot-sprite-active' },
+  idle: {
+    sheet: 'main', row: 0,
+    frames: mascotAnimationTiming.idle.frames,
+    duration: mascotAnimationTiming.idle.durationMs,
+    animation: 'mascot-sprite-idle'
+  },
+  hover: {
+    sheet: 'main', row: 1, frames: 6, duration: 500,
+    animation: 'mascot-sprite-active'
+  },
+  thinking: {
+    sheet: 'main', row: 2,
+    frames: mascotAnimationTiming.thinking.frames,
+    duration: mascotAnimationTiming.thinking.durationMs,
+    animation: 'mascot-sprite-active'
+  },
+  waiting: {
+    sheet: 'main', row: 3,
+    frames: mascotAnimationTiming.waiting.frames,
+    duration: mascotAnimationTiming.waiting.durationMs,
+    animation: 'mascot-sprite-active'
+  },
+  remind: {
+    sheet: 'main', row: 4,
+    frames: mascotAnimationTiming.remind.frames,
+    duration: mascotAnimationTiming.remind.durationMs,
+    animation: 'mascot-sprite-active'
+  },
+  waving: {
+    sheet: 'main', row: 4,
+    frames: mascotAnimationTiming.waving.frames,
+    duration: mascotAnimationTiming.waving.durationMs,
+    animation: 'mascot-sprite-active'
+  },
+  success: {
+    sheet: 'main', row: 5,
+    frames: mascotAnimationTiming.success.frames,
+    duration: mascotAnimationTiming.success.durationMs,
+    animation: 'mascot-sprite-active'
+  },
+  error: {
+    sheet: 'main', row: 6,
+    frames: mascotAnimationTiming.error.frames,
+    duration: mascotAnimationTiming.error.durationMs,
+    animation: 'mascot-sprite-active'
+  },
   peeking: {
-    sheet: 'motion', row: 2, frames: 12, duration: 560,
+    sheet: 'peek', row: 0,
+    frames: mascotAnimationTiming.peeking.frames,
+    duration: mascotAnimationTiming.peeking.durationMs,
     animation: 'mascot-sprite-active', iterations: '1'
   },
   'peeking-left': {
-    sheet: 'motion', row: 3, frames: 12, duration: 560,
+    sheet: 'peek', row: 1,
+    frames: mascotAnimationTiming.peeking.frames,
+    duration: mascotAnimationTiming.peeking.durationMs,
     animation: 'mascot-sprite-active', iterations: '1'
   },
   revealing: {
-    sheet: 'motion', row: 2, frames: 12, duration: 480,
+    sheet: 'peek', row: 0,
+    frames: mascotAnimationTiming.revealing.frames,
+    duration: mascotAnimationTiming.revealing.durationMs,
     animation: 'mascot-sprite-active', iterations: '1', direction: 'reverse'
   },
   'revealing-left': {
-    sheet: 'motion', row: 3, frames: 12, duration: 480,
+    sheet: 'peek', row: 1,
+    frames: mascotAnimationTiming.revealing.frames,
+    duration: mascotAnimationTiming.revealing.durationMs,
     animation: 'mascot-sprite-active', iterations: '1', direction: 'reverse'
   },
-  'cooling-office': { sheet: 'main', row: 9, frames: 6, duration: 1400, animation: 'mascot-sprite-active' }
+  'running-right': {
+    sheet: 'running', row: 0,
+    frames: mascotAnimationTiming.running.frames,
+    duration: mascotAnimationTiming.running.durationMs,
+    animation: 'mascot-sprite-active'
+  },
+  'running-left': {
+    sheet: 'running', row: 1,
+    frames: mascotAnimationTiming.running.frames,
+    duration: mascotAnimationTiming.running.durationMs,
+    animation: 'mascot-sprite-active'
+  },
+  'cooling-office': {
+    sheet: 'main', row: 9,
+    frames: mascotAnimationTiming.coolingOffice.frames,
+    duration: mascotAnimationTiming.coolingOffice.durationMs,
+    animation: 'mascot-sprite-active'
+  }
 }
 
 const resolvedState = computed<string>(() => {
   if (props.animationState === 'jumping') return 'success'
   if (props.animationState === 'failed') return 'error'
   if (props.animationState) return props.animationState
-  // Do not swap sprite rows on mouse hover. Cross-fading two transparent
-  // atlases makes the mascot appear to blink or turn translucent in WebView2.
+  // Keep the idle atlas on hover. A row swap adds visual noise without helping
+  // the pointer interaction, and the outer button already changes its cursor.
   if (props.status === 'hover') return 'idle'
   return props.status
 })
@@ -83,7 +168,6 @@ watch(runningDirection, (direction, previousDirection) => {
 
   if (direction) {
     lastRunningDirection.value = direction
-    showRunLayer.value = true
     isReturningFromRun.value = false
     return
   }
@@ -91,38 +175,40 @@ watch(runningDirection, (direction, previousDirection) => {
   if (!previousDirection) return
   isReturningFromRun.value = true
   runReturnTimer = window.setTimeout(() => {
-    showRunLayer.value = false
     isReturningFromRun.value = false
     runReturnTimer = undefined
   }, 280)
 }, { immediate: true })
 
+// Recreate a state sprite atomically so its timeline starts at frame zero. Both
+// running directions deliberately share one key, preserving gait phase when a
+// drag reverses. There is never an old and new sprite in the DOM together.
+const spriteElementKey = computed(() => runningDirection.value ? 'running' : resolvedState.value)
+
 const spriteStyle = computed(() => {
   const sprite = spriteStates[resolvedState.value] ?? spriteStates.idle
   const sheet = spriteSheets[sprite.sheet]
-  // Active animations travel one full cell past the final frame. Combined
-  // with steps(frameCount), this gives every frame an equal visible interval;
-  // the old frameCount - 1 setup only showed the last frame at the loop reset.
-  const isOneShot = sprite.iterations === '1'
-  const stepCount = sprite.animation === 'mascot-sprite-active' && !isOneShot
-    ? sprite.frames
-    : Math.max(1, sprite.frames - 1)
+  const isIdle = sprite.animation === 'mascot-sprite-idle'
+  const lastFrameOffset = Math.max(0, sprite.frames - 1) * SPRITE_DISPLAY_WIDTH
+  const timingFunction = isIdle
+    ? `steps(${Math.max(1, sprite.frames - 1)}, end)`
+    : `steps(${sprite.frames}, jump-none)`
 
   return {
     backgroundImage: `url(${sheet.url})`,
     '--sprite-display-width': `${SPRITE_DISPLAY_WIDTH}px`,
-    '--sprite-display-height': `${SPRITE_DISPLAY_HEIGHT}px`,
+    '--sprite-display-height': `${sheet.displayHeight}px`,
     '--sprite-sheet-width': `${sheet.columns * SPRITE_DISPLAY_WIDTH}px`,
-    '--sprite-sheet-height': `${sheet.rows * SPRITE_DISPLAY_HEIGHT}px`,
-    '--sprite-row-offset': `-${sprite.row * SPRITE_DISPLAY_HEIGHT}px`,
-    '--sprite-end-offset': `-${stepCount * SPRITE_DISPLAY_WIDTH}px`,
+    '--sprite-sheet-height': `${sheet.rows * sheet.displayHeight}px`,
+    '--sprite-row-offset': `-${sprite.row * sheet.displayHeight}px`,
+    '--sprite-end-offset': `-${lastFrameOffset}px`,
     '--sprite-animation': [
       sprite.animation,
       `${sprite.duration}ms`,
-      `steps(${stepCount}, end)`,
+      timingFunction,
       sprite.iterations ?? 'infinite',
       sprite.direction ?? 'normal',
-      isOneShot ? 'both' : 'none'
+      sprite.iterations === '1' ? 'both' : 'none'
     ].join(' ')
   }
 })
@@ -148,27 +234,12 @@ onBeforeUnmount(() => {
     aria-label="单击打开输入框，双击打开工作台"
   >
     <span class="status-orbit" />
-    <span
-      class="mascot-sprite-stage"
-      :class="{
-        'is-running': Boolean(runningDirection),
-        'is-returning': isReturningFromRun,
-        'is-returning-right': isReturningFromRun && lastRunningDirection === 'running-right',
-        'is-returning-left': isReturningFromRun && lastRunningDirection === 'running-left'
-      }"
-    >
-      <Transition name="mascot-sprite-state">
-        <span
-          :key="runningDirection ? 'run-base' : resolvedState"
-          class="mascot-sprite mascot-sprite--base"
-          :style="spriteStyle"
-          aria-hidden="true"
-        />
-      </Transition>
-      <MascotRunSprite
-        v-if="showRunLayer"
-        :direction="lastRunningDirection"
-        :active="Boolean(runningDirection)"
+    <span class="mascot-sprite-stage">
+      <span
+        :key="spriteElementKey"
+        class="mascot-sprite mascot-sprite--single"
+        :style="spriteStyle"
+        aria-hidden="true"
       />
     </span>
   </button>

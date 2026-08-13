@@ -1,22 +1,63 @@
 #!/usr/bin/env python3
-"""Build a stabilized, motion-interpolated runtime atlas for Xiaoli's run loop."""
+"""Build production, 2x-density runtime atlases from Xiaoli's authored frames.
 
+The motion source atlas contains real, high-resolution poses. Runtime atlases
+must preserve those poses rather than manufacture in-betweens: optical-flow
+frames soften hands, feet and the chest mark, producing a visible sharp/blur
+pulse. This builder only translates and resamples authored source cells.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 
-import cv2
-import numpy as np
 from PIL import Image
 
 
-SOURCE = Path("src/assets/mascot/xiaoli-motion-spritesheet.webp")
-OUTPUT = Path("src/assets/mascot/xiaoli-running-spritesheet.webp")
 SOURCE_CELL = (384, 320)
-RUNTIME_CONTENT = (132, 110)
-RUNTIME_BOTTOM_GUTTER_PX = 12
-RUNTIME_CELL = (RUNTIME_CONTENT[0], RUNTIME_CONTENT[1] + RUNTIME_BOTTOM_GUTTER_PX)
-SOURCE_FRAME_COUNT = 24
-INTERPOLATED_PER_PAIR = 2
-RIGHT_RUN_SAFE_SHIFT_PX = 8
+SOURCE_ANCHOR_X = SOURCE_CELL[0] / 2
+VISIBLE_ALPHA_THRESHOLD = 12
+
+RUN_FRAME_COUNT = 24
+RUN_CONTENT_SIZE = (184, 152)
+RUN_BOTTOM_GUTTER_PX = 16
+RUN_CELL = (RUN_CONTENT_SIZE[0], RUN_CONTENT_SIZE[1] + RUN_BOTTOM_GUTTER_PX)
+
+PEEK_FRAME_COUNT = 12
+PEEK_CELL = (184, 152)
+PEEK_SOURCE_ANCHOR_STEP_PX = 2
+
+
+@dataclass(frozen=True)
+class RuntimeSequence:
+    name: str
+    frames: list[Image.Image]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--source",
+        type=Path,
+        default=Path("src/assets/mascot/xiaoli-motion-spritesheet.webp"),
+        help="High-resolution motion source atlas.",
+    )
+    parser.add_argument(
+        "--running-out",
+        type=Path,
+        default=Path("src/assets/mascot/xiaoli-running-spritesheet.webp"),
+        help="2x runtime running atlas.",
+    )
+    parser.add_argument(
+        "--peek-out",
+        type=Path,
+        default=Path("src/assets/mascot/xiaoli-peek-spritesheet.webp"),
+        help="2x runtime peek/reveal atlas.",
+    )
+    return parser.parse_args()
 
 
 def source_frame(atlas: Image.Image, row: int, column: int) -> Image.Image:
@@ -31,148 +72,202 @@ def source_frame(atlas: Image.Image, row: int, column: int) -> Image.Image:
     )
 
 
-def head_center_x(frame: Image.Image) -> float:
-    # The upper 155 source pixels contain the helmet but not the running legs.
-    bbox = frame.getchannel("A").crop((0, 0, SOURCE_CELL[0], 155)).getbbox()
+def visible_alpha(frame: Image.Image) -> Image.Image:
+    return frame.getchannel("A").point(
+        lambda value: 255 if value > VISIBLE_ALPHA_THRESHOLD else 0,
+        mode="L",
+    )
+
+
+def visible_bbox(frame: Image.Image) -> tuple[int, int, int, int]:
+    bbox = visible_alpha(frame).getbbox()
     if bbox is None:
-        raise ValueError("running frame has no visible head")
+        raise ValueError("runtime source contains an empty frame")
+    return bbox
+
+
+def visible_pixel_count(frame: Image.Image) -> int:
+    return sum(visible_alpha(frame).histogram()[255:])
+
+
+def alpha_centroid_x(frame: Image.Image) -> float:
+    alpha = frame.getchannel("A")
+    pixels = alpha.load()
+    weighted_x = 0
+    total = 0
+    for y in range(frame.height):
+        for x in range(frame.width):
+            value = pixels[x, y]
+            if value <= VISIBLE_ALPHA_THRESHOLD:
+                continue
+            total += value
+            weighted_x += x * value
+    if total == 0:
+        raise ValueError("runtime source contains no visible alpha")
+    return weighted_x / total
+
+
+def head_anchor_x(frame: Image.Image) -> float:
+    """Use the helmet as a stable gait anchor, independent of moving limbs."""
+
+    helmet = visible_alpha(frame).crop((0, 0, SOURCE_CELL[0], 155))
+    bbox = helmet.getbbox()
+    if bbox is None:
+        raise ValueError("running frame has no visible helmet")
     return (bbox[0] + bbox[2]) / 2
 
 
-def translate_x(frame: Image.Image, offset: int) -> Image.Image:
+def translate(frame: Image.Image, offset_x: int, offset_y: int) -> Image.Image:
+    before = visible_pixel_count(frame)
     translated = Image.new("RGBA", SOURCE_CELL, (0, 0, 0, 0))
-    translated.alpha_composite(frame, (offset, 0))
+    translated.alpha_composite(frame, (offset_x, offset_y))
+    after = visible_pixel_count(translated)
+    if after < before:
+        raise ValueError(
+            f"stabilization clipped {before - after} visible source pixels "
+            f"at offset ({offset_x}, {offset_y})"
+        )
     return translated
 
 
-def stabilize_row(frames: list[Image.Image]) -> tuple[list[Image.Image], float]:
-    centers = [head_center_x(frame) for frame in frames]
-    target = float(np.median(centers))
-    stabilized = [
-        translate_x(frame, round(target - center))
-        for frame, center in zip(frames, centers, strict=True)
-    ]
-    return stabilized, target
+def common_baseline(frames: list[Image.Image]) -> int:
+    return round(median(visible_bbox(frame)[3] for frame in frames))
 
 
-def optical_flow_image(rgba: np.ndarray) -> np.ndarray:
-    alpha = rgba[..., 3:4].astype(np.float32) / 255
-    composite = rgba[..., :3].astype(np.float32) * alpha + 238 * (1 - alpha)
-    return cv2.cvtColor(composite.astype(np.uint8), cv2.COLOR_RGB2GRAY)
-
-
-def premultiply(rgba: np.ndarray) -> np.ndarray:
-    result = rgba.astype(np.float32)
-    result[..., :3] *= result[..., 3:4] / 255
-    return result
-
-
-def warp(image: np.ndarray, flow: np.ndarray, amount: float) -> np.ndarray:
-    height, width = flow.shape[:2]
-    grid_x, grid_y = np.meshgrid(
-        np.arange(width, dtype=np.float32),
-        np.arange(height, dtype=np.float32),
-    )
-    return cv2.remap(
-        image,
-        grid_x - flow[..., 0] * amount,
-        grid_y - flow[..., 1] * amount,
-        interpolation=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
-    )
-
-
-def interpolate(first: Image.Image, second: Image.Image, amount: float) -> Image.Image:
-    first_rgba = np.asarray(first, dtype=np.uint8)
-    second_rgba = np.asarray(second, dtype=np.uint8)
-    first_gray = optical_flow_image(first_rgba)
-    second_gray = optical_flow_image(second_rgba)
-    flow_forward = cv2.calcOpticalFlowFarneback(
-        first_gray, second_gray, None, 0.5, 4, 19, 4, 7, 1.5, 0
-    )
-    flow_backward = cv2.calcOpticalFlowFarneback(
-        second_gray, first_gray, None, 0.5, 4, 19, 4, 7, 1.5, 0
-    )
-    first_warped = warp(premultiply(first_rgba), flow_forward, amount)
-    second_warped = warp(premultiply(second_rgba), flow_backward, 1 - amount)
-    blended = first_warped * (1 - amount) + second_warped * amount
-    alpha = np.clip(blended[..., 3:4], 0, 255)
-    safe_alpha = np.maximum(alpha, 1)
-    rgb = np.clip(blended[..., :3] * 255 / safe_alpha, 0, 255)
-    rgba = np.concatenate((rgb, alpha), axis=2).astype(np.uint8)
-    rgba[alpha[..., 0] < 1] = 0
-    return Image.fromarray(rgba, mode="RGBA")
-
-
-def build_runtime_row(frames: list[Image.Image]) -> list[Image.Image]:
-    resized = [frame.resize(RUNTIME_CONTENT, Image.Resampling.LANCZOS) for frame in frames]
-    output: list[Image.Image] = []
-    for index, current in enumerate(resized):
-        following = resized[(index + 1) % len(resized)]
-        output.append(current)
-        for step in range(1, INTERPOLATED_PER_PAIR + 1):
-            output.append(interpolate(current, following, step / (INTERPOLATED_PER_PAIR + 1)))
-    return output
-
-
-def add_right_run_safety_inset(frames: list[Image.Image]) -> list[Image.Image]:
-    """Move right-running poses left so helmet antialiasing never meets the cell edge."""
-    shifted: list[Image.Image] = []
+def stabilize_running(frames: list[Image.Image], baseline: int) -> list[Image.Image]:
+    stabilized: list[Image.Image] = []
     for frame in frames:
-        canvas = Image.new("RGBA", RUNTIME_CONTENT, (0, 0, 0, 0))
-        canvas.alpha_composite(frame, (-RIGHT_RUN_SAFE_SHIFT_PX, 0))
-        shifted.append(canvas)
-    return shifted
-
-
-def frame_with_safety_gutter(frame: Image.Image, row: int, column: int) -> Image.Image:
-    """Place one pose in a taller cell and enforce the runtime foot safe area."""
-    cell = Image.new("RGBA", RUNTIME_CELL, (0, 0, 0, 0))
-    cell.alpha_composite(frame, (0, 0))
-    bbox = cell.getchannel("A").getbbox()
-    if bbox is None:
-        raise ValueError(f"running frame {row}:{column} is empty")
-    bottom_margin = RUNTIME_CELL[1] - bbox[3]
-    if bottom_margin < RUNTIME_BOTTOM_GUTTER_PX:
-        raise ValueError(
-            f"running frame {row}:{column} only has {bottom_margin}px bottom safety"
+        bbox = visible_bbox(frame)
+        helmet_stabilized = translate(
+            frame,
+            round(SOURCE_ANCHOR_X - head_anchor_x(frame)),
+            baseline - bbox[3],
         )
+        # The helmet anchor removes gait wobble; a second, small whole-silhouette
+        # correction puts both directions on the exact same visual center. This
+        # prevents an internal sprite jump when drag direction changes.
+        stabilized.append(
+            translate(
+                helmet_stabilized,
+                round(SOURCE_ANCHOR_X - alpha_centroid_x(helmet_stabilized)),
+                0,
+            )
+        )
+    return stabilized
+
+
+def stabilize_peek(
+    frames: list[Image.Image],
+    baseline: int,
+    direction: int,
+) -> list[Image.Image]:
+    """Use a quiet monotonic local path while the native window supplies travel."""
+
+    stabilized: list[Image.Image] = []
+    for index, frame in enumerate(frames):
+        bbox = visible_bbox(frame)
+        target_x = SOURCE_ANCHOR_X + direction * index * PEEK_SOURCE_ANCHOR_STEP_PX
+        stabilized.append(
+            translate(
+                frame,
+                round(target_x - alpha_centroid_x(frame)),
+                baseline - bbox[3],
+            )
+        )
+    return stabilized
+
+
+def build_runtime_frame(
+    source: Image.Image,
+    content_size: tuple[int, int],
+    cell_size: tuple[int, int],
+) -> Image.Image:
+    resized = source.resize(content_size, Image.Resampling.LANCZOS)
+    cell = Image.new("RGBA", cell_size, (0, 0, 0, 0))
+    cell.alpha_composite(resized, (0, 0))
+    bbox = visible_bbox(cell)
+    if min(bbox[0], bbox[1], cell.width - bbox[2], cell.height - bbox[3]) <= 0:
+        raise ValueError(f"runtime pose touches cell edge: bbox={bbox}, cell={cell_size}")
     return cell
 
 
-def main() -> None:
-    atlas = Image.open(SOURCE).convert("RGBA")
-    if atlas.size != (SOURCE_CELL[0] * SOURCE_FRAME_COUNT, SOURCE_CELL[1] * 3):
-        raise SystemExit(f"unexpected source atlas size: {atlas.size}")
-
-    rows: list[list[Image.Image]] = []
-    targets: list[float] = []
-    for row in range(2):
-        originals = [source_frame(atlas, row, column) for column in range(SOURCE_FRAME_COUNT)]
-        stabilized, target = stabilize_row(originals)
-        runtime_row = build_runtime_row(stabilized)
-        if row == 0:
-            runtime_row = add_right_run_safety_inset(runtime_row)
-        rows.append(runtime_row)
-        targets.append(target)
-
-    frame_count = len(rows[0])
-    output = Image.new(
+def pack_rows(
+    sequences: list[RuntimeSequence],
+    cell_size: tuple[int, int],
+) -> Image.Image:
+    frame_count = len(sequences[0].frames)
+    if any(len(sequence.frames) != frame_count for sequence in sequences):
+        raise ValueError("runtime atlas rows must use the same frame count")
+    atlas = Image.new(
         "RGBA",
-        (RUNTIME_CELL[0] * frame_count, RUNTIME_CELL[1] * len(rows)),
+        (cell_size[0] * frame_count, cell_size[1] * len(sequences)),
         (0, 0, 0, 0),
     )
-    for row, frames in enumerate(rows):
-        for column, frame in enumerate(frames):
-            cell = frame_with_safety_gutter(frame, row, column)
-            output.alpha_composite(cell, (column * RUNTIME_CELL[0], row * RUNTIME_CELL[1]))
+    for row, sequence in enumerate(sequences):
+        for column, frame in enumerate(sequence.frames):
+            atlas.alpha_composite(frame, (column * cell_size[0], row * cell_size[1]))
+    return atlas
 
-    output.save(OUTPUT, "WEBP", lossless=True, method=6)
+
+def save_lossless(atlas: Image.Image, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atlas.save(path, "WEBP", lossless=True, quality=100, method=6, exact=True)
+
+
+def main() -> None:
+    args = parse_args()
+    atlas = Image.open(args.source).convert("RGBA")
+    expected_size = (SOURCE_CELL[0] * RUN_FRAME_COUNT, SOURCE_CELL[1] * 4)
+    if atlas.size != expected_size:
+        raise SystemExit(f"unexpected source atlas size {atlas.size}; expected {expected_size}")
+
+    running_source_rows = [
+        [source_frame(atlas, row, column) for column in range(RUN_FRAME_COUNT)]
+        for row in range(2)
+    ]
+    running_baseline = common_baseline(running_source_rows[0] + running_source_rows[1])
+    running_rows = [
+        RuntimeSequence(
+            "running-right" if row == 0 else "running-left",
+            [
+                build_runtime_frame(frame, RUN_CONTENT_SIZE, RUN_CELL)
+                for frame in stabilize_running(source_frames, running_baseline)
+            ],
+        )
+        for row, source_frames in enumerate(running_source_rows)
+    ]
+    running_atlas = pack_rows(running_rows, RUN_CELL)
+    save_lossless(running_atlas, args.running_out)
+
+    peek_source_rows = [
+        [source_frame(atlas, row, column) for column in range(PEEK_FRAME_COUNT)]
+        for row in (2, 3)
+    ]
+    peek_baseline = common_baseline(peek_source_rows[0] + peek_source_rows[1])
+    peek_rows = [
+        RuntimeSequence(
+            "peeking-right" if row == 0 else "peeking-left",
+            [
+                build_runtime_frame(frame, PEEK_CELL, PEEK_CELL)
+                for frame in stabilize_peek(
+                    source_frames,
+                    peek_baseline,
+                    1 if row == 0 else -1,
+                )
+            ],
+        )
+        for row, source_frames in enumerate(peek_source_rows)
+    ]
+    peek_atlas = pack_rows(peek_rows, PEEK_CELL)
+    save_lossless(peek_atlas, args.peek_out)
+
     print(
-        f"built {OUTPUT}: {frame_count} frames x {len(rows)} rows, "
-        f"head anchors {targets}, {output.size[0]}x{output.size[1]}, "
-        f"{RUNTIME_BOTTOM_GUTTER_PX}px bottom gutter"
+        f"built {args.running_out}: {running_atlas.width}x{running_atlas.height}, "
+        f"{RUN_FRAME_COUNT} authored frames x 2, 2x logical 92x84"
+    )
+    print(
+        f"built {args.peek_out}: {peek_atlas.width}x{peek_atlas.height}, "
+        f"{PEEK_FRAME_COUNT} authored frames x 2, 2x logical 92x76"
     )
 
 

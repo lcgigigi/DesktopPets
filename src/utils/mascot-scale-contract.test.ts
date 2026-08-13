@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import mascotAvatarSource from '../components/MascotAvatar.vue?raw'
-import mascotRunSpriteSource from '../components/MascotRunSprite.vue?raw'
 import rustSource from '../../src-tauri/src/main.rs?raw'
 import tauriConfigSource from '../../src-tauri/tauri.conf.json?raw'
 
@@ -40,38 +39,47 @@ describe('mascot one-third-smaller size contract', () => {
     expect(baseStyles).toMatch(/data-window='mascot'[\s\S]*?min-width: 120px;[\s\S]*?min-height: 104px;/)
   })
 
-  it('keeps the avatar, base sprite and running sprite dimensions aligned', () => {
+  it('keeps the avatar and its only sprite stage aligned', () => {
     const avatarWidth = numericConst(rustSource, 'MASCOT_AVATAR_WIDTH')
     const avatarHeight = numericConst(rustSource, 'MASCOT_AVATAR_HEIGHT')
     const avatarRule = cssRule(appStyles, '.mascot-avatar')
     const stageRule = cssRule(appStyles, '.mascot-sprite-stage')
-    const runRule = cssRule(appStyles, '.mascot-run-sprite')
 
     expect([avatarWidth, avatarHeight]).toEqual([96, 88])
     expect(avatarRule).toContain('width: 96px')
     expect(avatarRule).toContain('height: 88px')
-    expect(stageRule).toContain('width: 90px')
+    expect(stageRule).toContain('width: 92px')
     expect(stageRule).toContain('height: 84px')
-    expect(runRule).toContain('width: 90px')
-    expect(runRule).toContain('height: 84px')
-    expect(mascotAvatarSource).toContain('const SPRITE_DISPLAY_WIDTH = 90')
-    expect(mascotAvatarSource).toContain('const SPRITE_DISPLAY_HEIGHT = 75')
-    expect(mascotRunSpriteSource).toContain('const SPRITE_WIDTH = 90')
-    expect(mascotRunSpriteSource).toContain('const SPRITE_HEIGHT = 84')
+    expect(mascotAvatarSource).toContain('const SPRITE_DISPLAY_WIDTH = 92')
+    expect(mascotAvatarSource).toContain('const BASE_SPRITE_DISPLAY_HEIGHT = 76')
+    expect(mascotAvatarSource).toContain('const RUN_SPRITE_DISPLAY_HEIGHT = 84')
+    expect(mascotAvatarSource).not.toContain('MascotRunSprite')
+    expect(mascotAvatarSource.match(/class="mascot-sprite /g)).toHaveLength(1)
   })
 
-  it('preserves the source sprite aspect ratio while reducing the visible robot by about one third', () => {
+  it('stays within one percent of the source aspect while shrinking about thirty percent', () => {
     const oldSprite = { width: 132, height: 110 }
     const resizedSprite = {
       width: numericConst(mascotAvatarSource, 'SPRITE_DISPLAY_WIDTH'),
-      height: numericConst(mascotAvatarSource, 'SPRITE_DISPLAY_HEIGHT')
+      height: numericConst(mascotAvatarSource, 'BASE_SPRITE_DISPLAY_HEIGHT')
     }
 
-    expect(resizedSprite.width / resizedSprite.height).toBe(oldSprite.width / oldSprite.height)
-    expect(resizedSprite.width / oldSprite.width).toBeGreaterThanOrEqual(0.66)
-    expect(resizedSprite.width / oldSprite.width).toBeLessThanOrEqual(0.69)
-    expect(resizedSprite.height / oldSprite.height).toBeGreaterThanOrEqual(0.66)
-    expect(resizedSprite.height / oldSprite.height).toBeLessThanOrEqual(0.69)
+    const aspectDelta = Math.abs(
+      (resizedSprite.width / resizedSprite.height) / (oldSprite.width / oldSprite.height) - 1
+    )
+    expect(aspectDelta).toBeLessThan(0.01)
+    expect(resizedSprite.width / oldSprite.width).toBeGreaterThanOrEqual(0.69)
+    expect(resizedSprite.width / oldSprite.width).toBeLessThanOrEqual(0.71)
+    expect(resizedSprite.height / oldSprite.height).toBeGreaterThanOrEqual(0.69)
+    expect(resizedSprite.height / oldSprite.height).toBeLessThanOrEqual(0.71)
+  })
+
+  it('lands the sprite and stage on whole physical pixels at supported Windows scales', () => {
+    for (const scale of [1.25, 1.5, 1.75, 2]) {
+      for (const logicalSize of [92, 76, 84]) {
+        expect(logicalSize * scale % 1).toBe(0)
+      }
+    }
   })
 
   it('retains symmetric transparent gutters around the resized avatar', () => {

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import type { MascotStatus } from '../types/mascot'
+import { mascotMessageAutoResetMs } from '../utils/mascot-animation-timing'
 
 interface MascotState {
   status: MascotStatus
@@ -38,7 +39,7 @@ export const useMascotStore = defineStore('mascot', {
         resetTimer = window.setTimeout(() => {
           this.status = 'idle'
           this.message = ''
-        }, 2200)
+        }, mascotMessageAutoResetMs)
       }
     },
     resetStatus() {

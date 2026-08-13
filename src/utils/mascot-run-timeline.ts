@@ -1,14 +1,15 @@
-export const mascotRunFrameCount = 72
-export const mascotRunCycleDurationMs = 1584
+import { mascotAnimationTiming } from './mascot-animation-timing'
+
+export const mascotRunFrameCount = mascotAnimationTiming.running.frames
+export const mascotRunCycleDurationMs = mascotAnimationTiming.running.durationMs
 
 export type MascotRunFrame = {
   frame: number
 }
 
 /**
- * Resolves one exact, bounded source frame for the stabilized running loop.
- * Every visible in-between pose is baked into the atlas, so runtime playback
- * never cross-fades two silhouettes or samples beyond the final column.
+ * Resolves one exact, bounded authored frame for the stabilized running loop.
+ * Runtime playback never blends silhouettes or samples beyond the final cell.
  */
 export function resolveMascotRunFrame(elapsedMs: number): MascotRunFrame {
   const wrappedElapsed = (

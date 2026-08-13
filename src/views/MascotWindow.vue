@@ -9,6 +9,7 @@ import MascotBubble from '../components/MascotBubble.vue'
 import SysMessageTip from '../components/SysMessageTip.vue'
 import {
   MASCOT_NATIVE_DRAG_ENDED_EVENT,
+  MASCOT_NATIVE_REVEALED_EVENT,
   MASCOT_CONTEXT_MENU_VISIBILITY_EVENT,
   MASCOT_REVEAL_EVENT,
   PANEL_ACTIVITY_EVENT,
@@ -20,6 +21,7 @@ import {
   peekMascotWindow,
   revealMascotWindow,
   setMascotNotificationVisible,
+  showNotificationWindow,
   showMascotContextMenu,
   startMascotWindowDrag,
   syncPanelWindow,
@@ -32,6 +34,7 @@ import {
   advanceRunningDirection,
   createRunningDirectionState
 } from '../utils/mascot-drag-motion'
+import { mascotWaitingInteractionMs } from '../utils/mascot-animation-timing'
 import { canOpenMascotTodoPanel } from '../utils/mascot-panel-access'
 import { shouldPauseMascotIdleHide } from '../utils/mascot-idle-policy'
 
@@ -83,6 +86,8 @@ const avatarSingleClickDelayMs = 280
 const idleHideDelayMs = 60 * 1000
 const peekRevealDurationMs = 480
 const nativeDragSafetyTimeoutMs = 15 * 1000
+const notificationLayoutRetryDelayMs = 120
+const scaleChangeLayoutDebounceMs = 48
 const isPeeked = ref(false)
 const peekSide = ref<MascotDockSide>('right')
 const isPointerInside = ref(false)
@@ -113,10 +118,17 @@ let removeCloseOverlaysListener: UnlistenFn | undefined
 let removePanelActivityListener: UnlistenFn | undefined
 let removePanelVisibilityListener: UnlistenFn | undefined
 let removeWindowMovedListener: UnlistenFn | undefined
+let removeWindowScaleChangedListener: UnlistenFn | undefined
 let removeNativeDragEndedListener: UnlistenFn | undefined
+let removeNativeRevealedListener: UnlistenFn | undefined
 let removeContextMenuVisibilityListener: UnlistenFn | undefined
 let nativeNotificationLayout = { visible: false, compact: false }
 let nativeNotificationLayoutGeneration = 0
+let notificationLayoutRetryTimer: number | undefined
+let scaleChangeLayoutTimer: number | undefined
+let notificationRevealGeneration = 0
+let notificationCoordinatorReady = false
+let scaleChangeLayoutPending = false
 
 function clearIdleHideTimer() {
   window.clearTimeout(idleHideTimer)
@@ -131,23 +143,92 @@ async function syncNativeNotificationLayout(
   visible: boolean,
   compact: boolean,
   options: { reveal?: boolean; force?: boolean } = {}
-) {
+): Promise<boolean> {
   const reveal = options.reveal ?? false
   if (
     !options.force
     && !reveal
     && nativeNotificationLayout.visible === visible
     && nativeNotificationLayout.compact === compact
-  ) return
+  ) return true
 
   const generation = ++nativeNotificationLayoutGeneration
-  await setMascotNotificationVisible(visible, compact, {
+  const synced = await setMascotNotificationVisible(visible, compact, {
     reveal,
     reducedMotion: prefersReducedMotion()
   })
-  if (generation === nativeNotificationLayoutGeneration) {
+  if (generation !== nativeNotificationLayoutGeneration) return false
+
+  if (synced) {
     nativeNotificationLayout = { visible, compact }
+    return true
   }
+  return false
+}
+
+function notificationLayoutStillDesired(visible: boolean, compact: boolean) {
+  return isNotifying.value === visible
+    && (usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value) === compact
+}
+
+async function revealNotificationAfterLayout(
+  visible: boolean,
+  compact: boolean,
+  reveal: boolean,
+  generation: number,
+  attempt = 0,
+) {
+  // A visible overlay always forces a native bounds confirmation. The cached
+  // size alone cannot tell whether the user previously soft-hid the HWND.
+  const synced = await syncNativeNotificationLayout(visible, compact, {
+    reveal,
+    force: visible || attempt > 0,
+  })
+  if (
+    generation !== notificationRevealGeneration
+    || !notificationLayoutStillDesired(visible, compact)
+  ) return
+
+  let shown = true
+  if (synced && visible && notificationCoordinatorReady) {
+    // Never expose a stale collapsed/compact frame: bounds success is the
+    // mandatory predecessor of the non-activating native show.
+    shown = await showNotificationWindow()
+  }
+
+  if (synced && shown) return
+  if (attempt >= 1) return
+
+  window.clearTimeout(notificationLayoutRetryTimer)
+  notificationLayoutRetryTimer = window.setTimeout(() => {
+    notificationLayoutRetryTimer = undefined
+    if (
+      generation !== notificationRevealGeneration
+      || !notificationLayoutStillDesired(visible, compact)
+    ) return
+    void revealNotificationAfterLayout(visible, compact, reveal, generation, attempt + 1)
+  }, notificationLayoutRetryDelayMs)
+}
+
+function scheduleScaleChangedLayoutSync() {
+  scaleChangeLayoutPending = true
+  window.clearTimeout(scaleChangeLayoutTimer)
+  scaleChangeLayoutTimer = window.setTimeout(() => {
+    scaleChangeLayoutTimer = undefined
+    // Native dragging owns the HWND until mouse-up. Re-fitting in the middle of
+    // that operation fights Windows; finishNativeDrag schedules the same work.
+    if (isDragging.value) return
+
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!scaleChangeLayoutPending || isDragging.value) return
+      scaleChangeLayoutPending = false
+      const visible = isNotifying.value
+      const compact = usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value
+      void syncNativeNotificationLayout(visible, compact, { force: true }).then((synced) => {
+        if (synced && panelVisible.value) void syncPanelWindow()
+      })
+    }))
+  }, scaleChangeLayoutDebounceMs)
 }
 
 function scheduleIdleHide() {
@@ -265,7 +346,7 @@ function togglePanel() {
   if (!canOpenMascotTodoPanel(props.needsAuth, Boolean(props.sysMessage))) return
 
   dismissTransientOverlays()
-  playTransientAnimation('waiting', 900)
+  playTransientAnimation('waiting', mascotWaitingInteractionMs)
   void togglePanelWindow()
 }
 
@@ -336,6 +417,7 @@ function beginNativeDrag(target: HTMLElement) {
     finishNativeDrag()
   })
   window.clearTimeout(nativeDragIdleTimer)
+  window.clearTimeout(notificationLayoutRetryTimer)
   nativeDragIdleTimer = window.setTimeout(finishNativeDrag, nativeDragSafetyTimeoutMs)
 }
 
@@ -347,7 +429,11 @@ function finishNativeDrag() {
   resetRunningMotion()
   window.clearTimeout(nativeDragIdleTimer)
   nativeDragIdleTimer = undefined
-  void syncPanelWindow()
+  if (scaleChangeLayoutPending) {
+    scheduleScaleChangedLayoutSync()
+  } else {
+    void syncPanelWindow()
+  }
   scheduleIdleHide()
 }
 
@@ -362,6 +448,7 @@ function handlePointerMove(event: PointerEvent) {
   dragState.lastScreenX = event.screenX
 
   const startedDragging = !dragState.dragging
+  if (startedDragging) clearAvatarSingleClickTimer()
   dragState.dragging = true
   isDragging.value = true
   updateRunningMotion(startedDragging ? deltaX : incrementalDeltaX, startedDragging)
@@ -430,6 +517,7 @@ function cancelPointer(event: PointerEvent) {
 async function handleContextMenu(event: MouseEvent) {
   event.preventDefault()
   if (!(event.target instanceof Element) || !event.target.closest('.mascot-avatar')) return
+  clearAvatarSingleClickTimer()
 
   if (isPeeked.value || peekTransition.value) {
     // A context menu needs a stable anchor immediately. Revealing without an
@@ -516,10 +604,12 @@ async function releaseDismissedNotificationLayout() {
   // explicitly restore its requested layout because isNotifying may have stayed
   // true throughout and therefore not retriggered the watcher below.
   if (hasVisibleOverlay()) {
-    await syncNativeNotificationLayout(
+    const generation = ++notificationRevealGeneration
+    await revealNotificationAfterLayout(
       true,
       !hasExpandedNotification.value,
-      { force: true }
+      false,
+      generation,
     )
   }
 }
@@ -556,15 +646,14 @@ watch(
   }
 )
 
-watch(hasBubbleMessage, (visible) => {
-  if (!visible) return
-  void hidePanelWindow()
-})
-
 watch(
   () => ({
     visible: isNotifying.value,
-    compact: usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value
+    compact: usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value,
+    identity: props.sysMessage?.dedupeKey
+      || (props.needsAuth ? 'auth' : '')
+      || mascotStore.message,
+    pendingCount: props.pendingSysMessageCount || 0,
   }),
   ({ visible, compact }) => {
     clearIdleHideTimer()
@@ -574,7 +663,10 @@ watch(
     } else {
       scheduleIdleHide()
     }
-    void syncNativeNotificationLayout(visible, compact, { reveal })
+    const generation = ++notificationRevealGeneration
+    window.clearTimeout(notificationLayoutRetryTimer)
+    notificationLayoutRetryTimer = undefined
+    void revealNotificationAfterLayout(visible, compact, reveal, generation)
   },
   // Update the DOM layout first, then atomically resize the native WebView.
   // Otherwise Windows can briefly draw the avatar against its old flex layout
@@ -602,6 +694,12 @@ onMounted(async () => {
   removeNativeDragEndedListener = await listen(MASCOT_NATIVE_DRAG_ENDED_EVENT, () => {
     finishNativeDrag()
   })
+  removeNativeRevealedListener = await listen(MASCOT_NATIVE_REVEALED_EVENT, () => {
+    isPeeked.value = false
+    peekTransition.value = undefined
+    window.clearTimeout(peekTransitionTimer)
+    scheduleIdleHide()
+  })
   removeContextMenuVisibilityListener = await listen<boolean>(
     MASCOT_CONTEXT_MENU_VISIBILITY_EVENT,
     (event) => {
@@ -617,6 +715,12 @@ onMounted(async () => {
     }
     lastNativeWindowX = payload.x
   })
+  removeWindowScaleChangedListener = await getCurrentWindow().onScaleChanged(() => {
+    // Tao has already applied WM_DPICHANGED by this point. Re-run our own
+    // work-area fit/clamp because a 320x480 card can otherwise overflow a
+    // high-DPI laptop even though its logical size stayed unchanged.
+    scheduleScaleChangedLayoutSync()
+  })
 
   // The initial reactive watcher can run while the native window is still
   // completing setup. Reapply the desired bounds after mount so a first-run
@@ -627,6 +731,7 @@ onMounted(async () => {
     usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value,
     { force: true }
   )
+  notificationCoordinatorReady = true
   scheduleIdleHide()
 })
 
@@ -634,6 +739,10 @@ onUnmounted(() => {
   window.clearTimeout(transientAnimationTimer)
   window.clearTimeout(peekTransitionTimer)
   window.clearTimeout(nativeDragIdleTimer)
+  window.clearTimeout(notificationLayoutRetryTimer)
+  window.clearTimeout(scaleChangeLayoutTimer)
+  scaleChangeLayoutPending = false
+  notificationRevealGeneration += 1
   clearAvatarSingleClickTimer()
   clearIdleHideTimer()
   window.removeEventListener(MASCOT_REVEAL_EVENT, handleExternalReveal)
@@ -643,7 +752,9 @@ onUnmounted(() => {
   removePanelActivityListener?.()
   removePanelVisibilityListener?.()
   removeWindowMovedListener?.()
+  removeWindowScaleChangedListener?.()
   removeNativeDragEndedListener?.()
+  removeNativeRevealedListener?.()
   removeContextMenuVisibilityListener?.()
   void syncNativeNotificationLayout(false, false, { force: true })
 })

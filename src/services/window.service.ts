@@ -8,13 +8,19 @@ import { storage } from '../utils/storage'
 
 export const MASCOT_REVEAL_EVENT = 'huali:mascot-reveal'
 export const MASCOT_NATIVE_DRAG_ENDED_EVENT = 'mascot-native-drag-ended'
+export const MASCOT_NATIVE_REVEALED_EVENT = 'mascot-native-revealed'
 export const PANEL_REVEAL_EVENT = 'huali:panel-reveal'
 export const PANEL_ACTIVITY_EVENT = 'huali:panel-activity'
 export const PANEL_VISIBILITY_EVENT = 'huali:panel-visibility'
+export const PANEL_TASK_STATE_EVENT = 'huali:panel-task-state'
+export const PANEL_TASK_STATE_REQUEST_EVENT = 'huali:panel-task-state-request'
+export const PANEL_TASK_READY_EVENT = 'huali:panel-task-ready'
+export const PANEL_TASK_DELIVERED_EVENT = 'huali:panel-task-delivered'
 export const MASCOT_CONTEXT_MENU_VISIBILITY_EVENT = 'mascot-context-menu-visibility'
 export type MascotDockSide = 'left' | 'right'
 
 export interface MascotContextMenuPlacement {
+  generation: number
   placement: 'above' | 'below'
   /** Horizontal tail position inside the 168px visible menu card. */
   tailX: number
@@ -23,6 +29,30 @@ export interface MascotContextMenuPlacement {
 export interface PanelActivityPayload {
   hasText: boolean
   focused: boolean
+}
+
+export interface PanelRevealPayload {
+  focus: boolean
+}
+
+export interface PanelTaskStatePayload {
+  hasTask: boolean
+  requestReveal: boolean
+  sessionEpoch: number
+}
+
+export interface PanelTaskStateRequestPayload {
+  sessionEpoch: number
+}
+
+export interface PanelTaskDeliveryPayload {
+  event: import('../types/task').TaskCreatedEvent
+  sessionEpoch: number
+}
+
+export interface PanelTaskDeliveredPayload {
+  eventId: string
+  sessionEpoch: number
 }
 
 function announceMascotReveal() {
@@ -60,14 +90,14 @@ function getDesktopLinkParams() {
   }
 }
 
-async function openExternal(url: string) {
+export async function openExternal(url: string): Promise<boolean> {
   try {
     const reused = await invoke<boolean>('open_or_focus_web_url', {
       url,
       matchUrl: getWebBaseUrl()
     })
 
-    if (reused) return
+    if (reused) return true
   } catch {
     // Browser tab reuse is implemented by the native desktop shell when the
     // operating system exposes a supported browser window.
@@ -75,12 +105,26 @@ async function openExternal(url: string) {
 
   try {
     await openUrl(url)
+    return true
   } catch {
-    window.open(url, '_blank', 'noopener,noreferrer')
+    try {
+      const openedWindow = window.open(url, '_blank')
+      if (!openedWindow) return false
+      // Preserve noopener semantics while still retaining the only reliable
+      // browser signal that a fallback window was actually created.
+      try {
+        openedWindow.opener = null
+      } catch {
+        // A created cross-origin WindowProxy is still a successful launch.
+      }
+      return true
+    } catch {
+      return false
+    }
   }
 }
 
-export function openWorkbench(options: { draftId?: string; todoText?: string } = {}) {
+export function openWorkbench(options: { draftId?: string; todoText?: string } = {}): Promise<boolean> {
   const query = buildQuery({
     ...getDesktopLinkParams(),
     todoDraftId: options.draftId,
@@ -89,7 +133,7 @@ export function openWorkbench(options: { draftId?: string; todoText?: string } =
   return openExternal(buildUrl(`/workbench${query}`))
 }
 
-export function openDesktopLogin(state: string) {
+export function openDesktopLogin(state: string): Promise<boolean> {
   const query = buildQuery({
     from: 'desktop',
     desktopCallback: `${DESKTOP_AUTH_SCHEME}://auth-callback`,
@@ -99,7 +143,7 @@ export function openDesktopLogin(state: string) {
   return openExternal(buildUrl(`/login${query}`))
 }
 
-export function openCalendar(taskId?: string) {
+export function openCalendar(taskId?: string): Promise<boolean> {
   const query = buildQuery({
     ...getDesktopLinkParams(),
     taskId
@@ -107,7 +151,7 @@ export function openCalendar(taskId?: string) {
   return openExternal(buildUrl(`/calendar${query}`))
 }
 
-export function openSysMessageDetail(message: SysMessageNotification) {
+export function openSysMessageDetail(message: SysMessageNotification): Promise<boolean> {
   const detailId = message.bizId || message.id
   const query = buildQuery({
     ...getDesktopLinkParams(),
@@ -119,7 +163,7 @@ export function openSysMessageDetail(message: SysMessageNotification) {
   return openExternal(buildUrl(`/calendar${query}`))
 }
 
-export function openAgents() {
+export function openAgents(): Promise<boolean> {
   const query = buildQuery(getDesktopLinkParams())
   return openExternal(buildUrl(`/agents${query}`))
 }
@@ -134,8 +178,15 @@ export async function hideAssistant() {
 
 export async function showMascotContextMenu() {
   try {
-    await invoke('show_mascot_context_menu')
-    return true
+    return await invoke<boolean>('show_mascot_context_menu')
+  } catch {
+    return false
+  }
+}
+
+export async function ackMascotContextMenuLayout(generation: number) {
+  try {
+    return await invoke<boolean>('ack_mascot_context_menu_layout', { generation })
   } catch {
     return false
   }
@@ -166,11 +217,11 @@ export async function showAssistant() {
   }
 }
 
-export async function showNotificationWindow() {
+export async function showNotificationWindow(): Promise<boolean> {
   try {
-    await invoke('show_notification_window')
+    return await invoke<boolean>('show_notification_window')
   } catch {
-    return
+    return false
   }
 }
 
@@ -200,7 +251,7 @@ export async function togglePanelWindow() {
   try {
     const visible = await invoke<boolean>('toggle_panel_window')
     if (visible) {
-      await emitTo('panel', PANEL_REVEAL_EVENT)
+      await emitTo('panel', PANEL_REVEAL_EVENT, { focus: true } satisfies PanelRevealPayload)
     }
     return visible
   } catch {
@@ -208,21 +259,28 @@ export async function togglePanelWindow() {
   }
 }
 
-export async function showPanelWindow() {
+export async function showPanelWindow(options: { focus?: boolean } = {}): Promise<boolean> {
   announceMascotReveal()
   try {
-    await invoke('show_panel_window')
-    await emitTo('panel', PANEL_REVEAL_EVENT)
+    const visible = await invoke<boolean>('show_panel_window', {
+      focus: options.focus ?? false
+    })
+    if (visible) {
+      await emitTo('panel', PANEL_REVEAL_EVENT, {
+        focus: options.focus ?? false
+      } satisfies PanelRevealPayload)
+    }
+    return visible
   } catch {
-    return
+    return false
   }
 }
 
-export async function hidePanelWindow() {
+export async function hidePanelWindow(): Promise<boolean> {
   try {
-    await invoke('hide_panel_window')
+    return await invoke<boolean>('hide_panel_window')
   } catch {
-    return
+    return false
   }
 }
 
@@ -238,16 +296,16 @@ export async function setMascotNotificationVisible(
   visible: boolean,
   compact = false,
   options: { reveal?: boolean; reducedMotion?: boolean } = {}
-) {
+): Promise<boolean> {
   try {
-    await invoke('set_mascot_notification_visible', {
+    return await invoke<boolean>('set_mascot_notification_visible', {
       visible,
       compact,
       reveal: options.reveal ?? false,
       reducedMotion: options.reducedMotion ?? false
     })
   } catch {
-    return
+    return false
   }
 }
 

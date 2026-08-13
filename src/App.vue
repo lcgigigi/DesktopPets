@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import MascotWindow from './views/MascotWindow.vue'
@@ -16,14 +16,21 @@ import { getSysMessageFallback, resolveSysMessageContent } from './services/sys-
 import { sysMessageService } from './services/sys-message.service'
 import { websocketService } from './services/websocket.service'
 import {
+  PANEL_TASK_DELIVERED_EVENT,
+  PANEL_TASK_READY_EVENT,
+  PANEL_TASK_STATE_EVENT,
+  PANEL_TASK_STATE_REQUEST_EVENT,
   hidePanelWindow,
   openDesktopLogin,
   openSysMessageDetail,
   openWorkbench,
   setMascotNotificationVisible,
   showAssistant,
-  showNotificationWindow,
   showPanelWindow,
+  type PanelTaskDeliveredPayload,
+  type PanelTaskDeliveryPayload,
+  type PanelTaskStatePayload,
+  type PanelTaskStateRequestPayload,
 } from './services/window.service'
 import { useMascotStore } from './stores/mascot'
 import { useTaskStore } from './stores/task'
@@ -44,32 +51,49 @@ const userStore = useUserStore()
 const searchParams = new URLSearchParams(window.location.search)
 const windowMode = searchParams.get('window') || 'mascot'
 const isSysMessagePreview = import.meta.env.DEV && searchParams.get('preview') === 'sys-message'
+const isTaskPreview = import.meta.env.DEV && windowMode === 'panel' && searchParams.get('preview') === 'task'
 const isMascotAnimationPreview = import.meta.env.DEV && searchParams.has('previewAnimation')
 const hasSysMessagePreviewQueue = isSysMessagePreview && searchParams.get('previewQueue') === '1'
 const hasSysMessagePreviewError = isSysMessagePreview && searchParams.get('previewError') === '1'
 const hasSysMessagePreviewLongContent = isSysMessagePreview && searchParams.get('previewLong') === '1'
+const hasTaskPreviewQueue = isTaskPreview && searchParams.get('previewQueue') === '1'
+const hasTaskPreviewError = isTaskPreview && searchParams.get('previewError') === '1'
+const hasTaskPreviewLongContent = isTaskPreview && searchParams.get('previewLong') === '1'
 const socketStatus = ref(env.enableMock ? 'mock' : 'closed')
 const currentSysMessage = ref<ResolvedSysMessage | null>(null)
 const sysMessageQueue = ref<ResolvedSysMessage[]>([])
-const sysMessageResolutionQueue = ref<SysMessageNotification[]>([])
-const isResolvingSysMessage = ref(false)
 const sysMessageReadPendingKey = ref('')
 const sysMessageActionError = ref('')
 const recentSysMessageKeys = new Set<string>()
 const authPending = ref(false)
 const authErrorMessage = ref('')
 const SESSION_VALIDATION_INTERVAL = 5 * 60 * 1000
+const TASK_DELIVERY_ACK_TIMEOUT = 1000
 let removeTaskListener: (() => void) | undefined
 let removeStatusListener: (() => void) | undefined
 let removeTrayListener: (() => void) | undefined
 let removeTrayLogoutListener: (() => void) | undefined
 let removePanelTaskListener: (() => void) | undefined
+let removePanelTaskDeliveredListener: (() => void) | undefined
+let removePanelTaskReadyListener: (() => void) | undefined
+let removePanelTaskStateListener: (() => void) | undefined
+let removePanelTaskStateRequestListener: (() => void) | undefined
+let removePanelSessionClearedListener: (() => void) | undefined
 let removeMascotMessageListener: (() => void) | undefined
 let removeSysMessageListener: (() => void) | undefined
 let removeDeepLinkListener: UnlistenFn | undefined
 let removeUnauthorizedListener: (() => void) | undefined
 let sessionValidationTimer: number | undefined
-let sysMessageResolutionGeneration = 0
+let sysMessageEnrichmentGeneration = 0
+let isDeliveringDeferredTasks = false
+const panelTaskStateReady = ref(false)
+const deferredTaskEvents: TaskCreatedEvent[] = []
+const panelHasTask = ref(false)
+const panelSessionEpoch = ref<number | null>(null)
+let taskSessionEpoch = Date.now()
+let awaitingTaskDelivery: PanelTaskDeliveredPayload | null = null
+let taskDeliveryRetryTimer: number | undefined
+let taskDeliveryFailureEventId = ''
 
 const currentTask = computed(() => taskStore.currentTask)
 const sysMessageUserId = computed(() => userStore.userInfo?.userId || env.desktopUserId || env.mockUserId)
@@ -83,9 +107,148 @@ const currentSysMessageContent = computed(() => currentSysMessage.value?.display
 const isCurrentSysMessageReadPending = computed(
   () => currentSysMessage.value?.dedupeKey === sysMessageReadPendingKey.value
 )
-const pendingSysMessageCount = computed(
-  () => sysMessageQueue.value.length + sysMessageResolutionQueue.value.length + Number(isResolvingSysMessage.value)
-)
+const pendingSysMessageCount = computed(() => sysMessageQueue.value.length)
+
+function publishPanelTaskState(requestReveal = false) {
+  if (windowMode !== 'panel' || panelSessionEpoch.value === null) return
+
+  const payload: PanelTaskStatePayload = {
+    hasTask: Boolean(currentTask.value),
+    requestReveal,
+    sessionEpoch: panelSessionEpoch.value,
+  }
+  void emitTo('mascot', PANEL_TASK_STATE_EVENT, payload)
+}
+
+function adoptPanelSessionEpoch(sessionEpoch: number) {
+  if (panelSessionEpoch.value !== null && sessionEpoch < panelSessionEpoch.value) return false
+  if (panelSessionEpoch.value !== null && sessionEpoch !== panelSessionEpoch.value) {
+    taskStore.clearTasks()
+  }
+  panelSessionEpoch.value = sessionEpoch
+  return true
+}
+
+async function showTaskPanelWithFallback() {
+  if (needsAuth.value || currentSysMessage.value || !panelHasTask.value) return
+
+  // The native panel command restores a peeked mascot, positions both HWNDs,
+  // then reveals them without activation. A separate mascot show before that
+  // sequence would expose the off-screen peek position for one frame.
+  const shown = await showPanelWindow({ focus: false })
+  // A system message can arrive while native positioning is in flight. It
+  // remains the higher-priority surface even if the panel just became visible.
+  if (needsAuth.value || currentSysMessage.value) {
+    if (shown) await hidePanelWindow()
+    return
+  }
+
+  if (shown) return
+  mascotStore.showMessage('收到新任务，任务卡暂时无法显示；请单击机器人重试', 'remind', true)
+}
+
+function queueTaskForPanel(event: TaskCreatedEvent) {
+  if (deferredTaskEvents.some((item) => item.eventId === event.eventId)) return
+  deferredTaskEvents.push(event)
+}
+
+async function deliverTasksWhenSystemMessagesFinish() {
+  if (
+    needsAuth.value
+    || currentSysMessage.value
+    || !panelTaskStateReady.value
+    || awaitingTaskDelivery
+    || isDeliveringDeferredTasks
+  ) return
+
+  const event = deferredTaskEvents[0]
+  if (!event) {
+    if (panelHasTask.value) await showTaskPanelWithFallback()
+    return
+  }
+
+  isDeliveringDeferredTasks = true
+  const delivery: PanelTaskDeliveryPayload = {
+    event,
+    sessionEpoch: taskSessionEpoch,
+  }
+  awaitingTaskDelivery = {
+    eventId: event.eventId,
+    sessionEpoch: taskSessionEpoch,
+  }
+  try {
+    await emitTo('panel', 'task-created', delivery)
+  } catch {
+    // Keep the event queued. Native emit can resolve even when a renderer is
+    // reloading, so the ACK timeout below is the only dequeue authority.
+    if (taskDeliveryFailureEventId !== event.eventId) {
+      taskDeliveryFailureEventId = event.eventId
+      mascotStore.showMessage('收到新任务，暂时无法打开任务卡；稍后将继续重试', 'remind', true)
+    }
+  } finally {
+    isDeliveringDeferredTasks = false
+  }
+
+  if (
+    awaitingTaskDelivery?.eventId !== event.eventId
+    || awaitingTaskDelivery.sessionEpoch !== delivery.sessionEpoch
+  ) {
+    void deliverTasksWhenSystemMessagesFinish()
+    return
+  }
+
+  window.clearTimeout(taskDeliveryRetryTimer)
+  taskDeliveryRetryTimer = window.setTimeout(() => {
+    taskDeliveryRetryTimer = undefined
+    if (
+      awaitingTaskDelivery?.eventId !== event.eventId
+      || awaitingTaskDelivery.sessionEpoch !== delivery.sessionEpoch
+      || taskSessionEpoch !== delivery.sessionEpoch
+    ) return
+
+    awaitingTaskDelivery = null
+    void deliverTasksWhenSystemMessagesFinish()
+  }, TASK_DELIVERY_ACK_TIMEOUT)
+}
+
+function handleTaskDelivered(payload: PanelTaskDeliveredPayload) {
+  if (
+    payload.sessionEpoch !== taskSessionEpoch
+    || awaitingTaskDelivery?.sessionEpoch !== payload.sessionEpoch
+    || awaitingTaskDelivery.eventId !== payload.eventId
+    || deferredTaskEvents[0]?.eventId !== payload.eventId
+  ) return
+
+  window.clearTimeout(taskDeliveryRetryTimer)
+  taskDeliveryRetryTimer = undefined
+  awaitingTaskDelivery = null
+  deferredTaskEvents.shift()
+  taskDeliveryFailureEventId = ''
+  void deliverTasksWhenSystemMessagesFinish()
+}
+
+function requestPanelTaskState() {
+  const payload: PanelTaskStateRequestPayload = { sessionEpoch: taskSessionEpoch }
+  void emitTo('panel', PANEL_TASK_STATE_REQUEST_EVENT, payload)
+}
+
+function handlePanelTaskReady() {
+  panelTaskStateReady.value = false
+  requestPanelTaskState()
+}
+
+function handlePanelTaskState(payload: PanelTaskStatePayload) {
+  if (payload.sessionEpoch !== taskSessionEpoch) return
+
+  panelTaskStateReady.value = true
+  panelHasTask.value = payload.hasTask
+  // The delivery coordinator is the only task-panel reveal authority. Calling
+  // show here as well races with ACK-driven delivery and can replay the native
+  // reveal animation two or three times for one incoming task.
+  void deliverTasksWhenSystemMessagesFinish()
+}
+
+watch(currentTask, () => publishPanelTaskState(), { flush: 'sync' })
 
 if (isSysMessagePreview) {
   const previewSubject = hasSysMessagePreviewLongContent
@@ -127,6 +290,51 @@ if (isSysMessagePreview) {
   }
 }
 
+if (isTaskPreview) {
+  if (hasTaskPreviewQueue) {
+    taskStore.pushTask({
+      eventId: 'design-preview-task-queued',
+      eventType: 'task.created',
+      timestamp: '2026-08-12 15:08:00',
+      payload: {
+        taskId: 'design-preview-task-queued',
+        title: '确认下一条任务切换状态',
+        content: '完成当前任务后，应立即显示这条任务，按钮保持可操作。',
+        deadline: '2026-08-13 10:00:00',
+        actions: [
+          { key: 'confirm', label: '完成' },
+          { key: 'openDetail', label: '查看详情' },
+        ],
+      },
+    })
+  }
+
+  taskStore.pushTask({
+    eventId: 'design-preview-task-current',
+    eventType: 'task.created',
+    timestamp: '2026-08-12 15:10:00',
+    payload: {
+      taskId: 'design-preview-task-current',
+      title: hasTaskPreviewLongContent
+        ? '研发项目月度评审任务即将到期请相关负责人逐项核对交付内容并确认所有风险处理结果'
+        : '确认研发项目月度评审材料',
+      content: hasTaskPreviewLongContent
+        ? '请逐项核对本月交付结果、风险清单、资源缺口、下阶段计划、会议材料、参会人员、演示设备以及需要管理层决策的事项。这是一段用于验证笔记本小高度和高 DPI 下正文滚动、错误提示与完整操作区的预览内容。'
+        : '请核对交付结果、风险清单和下阶段计划。',
+      deadline: '2026-08-12 18:30:00',
+      actions: [
+        { key: 'confirm', label: '管理员强制完成' },
+        { key: 'later', label: '稍后提醒' },
+        { key: 'openDetail', label: '任意查看文案' },
+      ],
+    },
+  })
+
+  if (hasTaskPreviewError && taskStore.currentTask) {
+    taskStore.currentTask.error = '操作失败：服务暂时不可用，请稍后重试。当前任务不会被移除。'
+  }
+}
+
 document.documentElement.dataset.window = windowMode
 document.body.dataset.window = windowMode
 
@@ -141,10 +349,12 @@ function showNextSysMessage() {
   if (currentSysMessage.value) {
     void emitTo('mascot', 'mascot-close-overlays', {})
     void hidePanelWindow()
+  } else {
+    void deliverTasksWhenSystemMessagesFinish()
   }
 }
 
-function showResolvedSysMessage(message: ResolvedSysMessage) {
+function showIncomingSysMessage(message: ResolvedSysMessage) {
   void emitTo('mascot', 'mascot-close-overlays', {})
 
   if (currentSysMessage.value) {
@@ -153,33 +363,32 @@ function showResolvedSysMessage(message: ResolvedSysMessage) {
     sysMessageActionError.value = ''
     currentSysMessage.value = message
   }
-  void showNotificationWindow()
+  // MascotWindow owns the native notification pipeline. It waits for Vue to
+  // paint and for the bounds command to succeed before showing the hidden HWND.
   void hidePanelWindow()
 }
 
-async function resolveQueuedSysMessages() {
-  if (isResolvingSysMessage.value) return
-
-  isResolvingSysMessage.value = true
-  const generation = sysMessageResolutionGeneration
-
-  while (sysMessageResolutionQueue.value.length && generation === sysMessageResolutionGeneration) {
-    const message = sysMessageResolutionQueue.value.shift()
-    if (!message) continue
-
-    let displayContent = getSysMessageFallback(message)
-    try {
-      displayContent = await resolveSysMessageContent(message)
-    } catch (error) {
-      console.warn('Failed to resolve sys_message content', error)
-    }
-
-    if (generation !== sysMessageResolutionGeneration) return
-    showResolvedSysMessage({ ...message, displayContent })
+function applyEnrichedSysMessage(key: string, displayContent: string) {
+  if (currentSysMessage.value?.dedupeKey === key) {
+    currentSysMessage.value = { ...currentSysMessage.value, displayContent }
+    return
   }
 
-  if (generation === sysMessageResolutionGeneration) {
-    isResolvingSysMessage.value = false
+  const index = sysMessageQueue.value.findIndex((item) => item.dedupeKey === key)
+  if (index >= 0) {
+    sysMessageQueue.value[index] = { ...sysMessageQueue.value[index], displayContent }
+  }
+}
+
+async function enrichSysMessage(message: SysMessageNotification, generation: number) {
+  try {
+    const displayContent = await resolveSysMessageContent(message)
+    if (generation !== sysMessageEnrichmentGeneration) return
+    applyEnrichedSysMessage(message.dedupeKey, displayContent)
+  } catch (error) {
+    // The readable fallback is already visible. Enrichment failure must not
+    // delay or remove either the current notification or queued messages.
+    console.warn('Failed to enrich sys_message content', error)
   }
 }
 
@@ -187,8 +396,11 @@ function pushSysMessage(message: SysMessageNotification) {
   if (recentSysMessageKeys.has(message.dedupeKey)) return
   rememberSysMessageKey(message.dedupeKey)
 
-  sysMessageResolutionQueue.value.push(message)
-  void resolveQueuedSysMessages()
+  const generation = sysMessageEnrichmentGeneration
+  showIncomingSysMessage({ ...message, displayContent: getSysMessageFallback(message) })
+  // Each message enriches independently, so one 12-second detail request can
+  // never block the first card or later cards behind it.
+  void enrichSysMessage(message, generation)
 }
 
 function hideCurrentSysMessage(message: SysMessageNotification) {
@@ -223,21 +435,44 @@ async function handleSysMessageRead(message: SysMessageNotification) {
   }
 }
 
-function handleSysMessageView(message: SysMessageNotification) {
+async function handleSysMessageView(message: SysMessageNotification) {
   if (sysMessageReadPendingKey.value) return
 
+  if (isSysMessagePreview) {
+    hideCurrentSysMessage(message)
+    return
+  }
+
   sysMessageActionError.value = ''
-  const detailId = message.bizId || message.id
-  storage.setLastSysMessageDetail({
-    messageId: message.id,
-    detailId,
-    bizType: message.bizType
-  })
-  hideCurrentSysMessage(message)
-  void sysMessageService.markRead(message).catch((error) => {
-    console.warn('Failed to mark viewed sys_message as read', error)
-  })
-  void openSysMessageDetail(message)
+  sysMessageReadPendingKey.value = message.dedupeKey
+  try {
+    const opened = await openSysMessageDetail(message)
+    if (!opened) {
+      sysMessageActionError.value = '未能打开详情，请检查默认浏览器后重试'
+      return
+    }
+
+    const detailId = message.bizId || message.id
+    storage.setLastSysMessageDetail({
+      messageId: message.id,
+      detailId,
+      bizType: message.bizType
+    })
+
+    try {
+      await sysMessageService.markRead(message)
+    } catch (error) {
+      console.warn('Failed to mark viewed sys_message as read', error)
+      sysMessageActionError.value = '详情已打开，但未能标记已读；可点击“知道了”重试'
+      return
+    }
+
+    hideCurrentSysMessage(message)
+  } finally {
+    if (sysMessageReadPendingKey.value === message.dedupeKey) {
+      sysMessageReadPendingKey.value = ''
+    }
+  }
 }
 
 function connectDesktopSockets(options: { force?: boolean } = {}) {
@@ -257,14 +492,24 @@ function clearDesktopSession(message: string, status: MascotStatus = 'remind') {
   sysMessageService.disconnect()
   userStore.clearSession()
   authPending.value = false
-  sysMessageResolutionGeneration += 1
+  sysMessageEnrichmentGeneration += 1
   currentSysMessage.value = null
   sysMessageQueue.value = []
-  sysMessageResolutionQueue.value = []
-  isResolvingSysMessage.value = false
   sysMessageReadPendingKey.value = ''
   sysMessageActionError.value = ''
   recentSysMessageKeys.clear()
+  taskSessionEpoch += 1
+  window.clearTimeout(taskDeliveryRetryTimer)
+  taskDeliveryRetryTimer = undefined
+  awaitingTaskDelivery = null
+  taskDeliveryFailureEventId = ''
+  deferredTaskEvents.length = 0
+  panelTaskStateReady.value = false
+  panelHasTask.value = false
+  storage.setTodoInputDraft('')
+  void hidePanelWindow()
+  void emitTo('panel', 'desktop-session-cleared', { sessionEpoch: taskSessionEpoch })
+  requestPanelTaskState()
   socketStatus.value = env.enableMock ? 'mock' : 'closed'
   stopSessionValidation()
   mascotStore.showMessage(message, status, true)
@@ -310,13 +555,21 @@ function startSessionValidation() {
   }, SESSION_VALIDATION_INTERVAL)
 }
 
-function startDesktopLogin() {
+async function startDesktopLogin() {
   const state = createDesktopAuthState()
   authPending.value = true
   authErrorMessage.value = ''
+  mascotStore.showMessage('正在打开网页登录...', 'thinking')
+  const opened = await openDesktopLogin(state)
+  if (!opened) {
+    authPending.value = false
+    authErrorMessage.value = '未能打开登录页面，请检查默认浏览器后重试。'
+    mascotStore.showMessage('登录页面打开失败，请重试', 'error', true)
+    return
+  }
+
   void hidePanelWindow()
-  mascotStore.showMessage('已打开网页登录', 'thinking', true)
-  void openDesktopLogin(state)
+  mascotStore.showMessage('登录页面已打开，请在浏览器完成登录', 'thinking', true)
 }
 
 function handleLogout() {
@@ -347,6 +600,23 @@ function handleDesktopAuthCallbackError(error: DesktopAuthCallbackError) {
 
 onMounted(async () => {
   if (windowMode === 'mascot') {
+    removePanelTaskDeliveredListener = await listen<PanelTaskDeliveredPayload>(
+      PANEL_TASK_DELIVERED_EVENT,
+      (event) => handleTaskDelivered(event.payload),
+    )
+    removePanelTaskReadyListener = await listen(
+      PANEL_TASK_READY_EVENT,
+      handlePanelTaskReady,
+    )
+    removePanelTaskStateListener = await listen<PanelTaskStatePayload>(
+      PANEL_TASK_STATE_EVENT,
+      (event) => handlePanelTaskState(event.payload),
+    )
+    // The panel also publishes immediately after installing this listener; the
+    // request closes the opposite startup ordering without assuming which
+    // WebView mounted first.
+    requestPanelTaskState()
+
     removeMascotMessageListener = await listen<{
       message: string
       status?: MascotStatus
@@ -356,9 +626,13 @@ onMounted(async () => {
     })
 
     removeTaskListener = websocketService.onTask((event) => {
+      if (needsAuth.value) return
       void emitTo('mascot', 'mascot-close-overlays', {})
-      void showPanelWindow()
-      void emitTo('panel', 'task-created', event)
+      queueTaskForPanel(event)
+      // Only the mascot WebView owns system-message state. It therefore keeps
+      // the original event until every message is dismissed, then delivers it
+      // to the panel WebView whose Pinia store is intentionally independent.
+      void deliverTasksWhenSystemMessagesFinish()
     })
     removeStatusListener = websocketService.onStatus((status) => {
       socketStatus.value = status
@@ -399,14 +673,45 @@ onMounted(async () => {
 
   if (windowMode === 'panel') {
     try {
-      removePanelTaskListener = await listen<TaskCreatedEvent>('task-created', (event) => {
-        taskStore.pushTask(event.payload)
+      removePanelTaskListener = await listen<PanelTaskDeliveryPayload>('task-created', async (event) => {
+        const delivery = event.payload
+        if (panelSessionEpoch.value !== delivery.sessionEpoch) return
+        // Store synchronously, then ask the mascot-side coordinator to reveal.
+        // The coordinator alone knows whether a system-message card is active.
+        taskStore.pushTask(delivery.event)
+        try {
+          const ack: PanelTaskDeliveredPayload = {
+            eventId: delivery.event.eventId,
+            sessionEpoch: delivery.sessionEpoch,
+          }
+          await emitTo('mascot', PANEL_TASK_DELIVERED_EVENT, ack)
+        } finally {
+          publishPanelTaskState(true)
+        }
       })
+      removePanelTaskStateRequestListener = await listen<PanelTaskStateRequestPayload>(
+        PANEL_TASK_STATE_REQUEST_EVENT,
+        (event) => {
+          if (!adoptPanelSessionEpoch(event.payload.sessionEpoch)) return
+          publishPanelTaskState()
+        },
+      )
+      removePanelSessionClearedListener = await listen<PanelTaskStateRequestPayload>(
+        'desktop-session-cleared',
+        (event) => {
+          if (!adoptPanelSessionEpoch(event.payload.sessionEpoch)) return
+          taskStore.clearTasks()
+          publishPanelTaskState()
+        },
+      )
+      void emitTo('mascot', PANEL_TASK_READY_EVENT, {})
       removeStatusListener = await listen<string>('socket-status', (event) => {
         socketStatus.value = event.payload
       })
     } catch {
       removePanelTaskListener = undefined
+      removePanelTaskStateRequestListener = undefined
+      removePanelSessionClearedListener = undefined
       removeStatusListener = undefined
     }
   }
@@ -428,11 +733,17 @@ onUnmounted(() => {
   removeTrayListener?.()
   removeTrayLogoutListener?.()
   removePanelTaskListener?.()
+  removePanelTaskDeliveredListener?.()
+  removePanelTaskReadyListener?.()
+  removePanelTaskStateListener?.()
+  removePanelTaskStateRequestListener?.()
+  removePanelSessionClearedListener?.()
   removeMascotMessageListener?.()
   removeSysMessageListener?.()
   removeDeepLinkListener?.()
   removeUnauthorizedListener?.()
   stopSessionValidation()
+  window.clearTimeout(taskDeliveryRetryTimer)
   if (windowMode === 'mascot') {
     websocketService.disconnect()
     sysMessageService.disconnect()

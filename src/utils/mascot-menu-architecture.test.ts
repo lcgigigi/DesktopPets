@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import appSource from '../App.vue?raw'
 import contextMenuSource from '../components/MascotContextMenu.vue?raw'
 import windowServiceSource from '../services/window.service.ts?raw'
@@ -7,6 +8,8 @@ import mascotWindowSource from '../views/MascotWindow.vue?raw'
 import capabilitiesSource from '../../src-tauri/capabilities/default.json?raw'
 import rustSource from '../../src-tauri/src/main.rs?raw'
 import tauriConfigSource from '../../src-tauri/tauri.conf.json?raw'
+
+const appStyles = readFileSync(new URL('../assets/styles/app.css', import.meta.url), 'utf8')
 
 function sourceBetween(source: string, startMarker: string, endMarker: string) {
   const start = source.indexOf(startMarker)
@@ -29,7 +32,7 @@ describe('mascot context menu architecture', () => {
       label: 'mascot-menu',
       url: 'index.html?window=mascot-menu',
       width: 192,
-      height: 64,
+      height: 76,
       decorations: false,
       transparent: true,
       backgroundColor: '#00000000',
@@ -45,7 +48,7 @@ describe('mascot context menu architecture', () => {
 
   it('keeps the placement payload restricted to above or below end to end', () => {
     expect(windowServiceSource).toMatch(
-      /interface MascotContextMenuPlacement\s*\{[\s\S]*?placement: 'above' \| 'below'[\s\S]*?tailX: number[\s\S]*?\}/
+      /interface MascotContextMenuPlacement\s*\{[\s\S]*?generation: number[\s\S]*?placement: 'above' \| 'below'[\s\S]*?tailX: number[\s\S]*?\}/
     )
     expect(mascotMenuWindowSource).toMatch(
       /const placement = ref<'above' \| 'below'>\(/
@@ -56,8 +59,8 @@ describe('mascot context menu architecture', () => {
     expect(mascotMenuWindowSource).toMatch(
       /listen<MascotContextMenuPlacement>\(\s*'mascot-context-menu-placement'/
     )
-    expect(mascotMenuWindowSource).toContain('placement.value = event.payload.placement')
-    expect(mascotMenuWindowSource).toContain('tailX.value = event.payload.tailX')
+    expect(mascotMenuWindowSource).toContain('placement.value = payload.placement')
+    expect(mascotMenuWindowSource).toContain('tailX.value = payload.tailX')
     expect(contextMenuSource).toContain("placement?: 'above' | 'below'")
     expect(contextMenuSource).toContain('tailX?: number')
     expect(contextMenuSource).toContain("placement === 'below' ? 'is-below' : 'is-above'")
@@ -65,7 +68,7 @@ describe('mascot context menu architecture', () => {
       /enum MascotContextMenuPlacement\s*\{\s*Above,\s*Below,\s*\}/
     )
     expect(rustSource).toMatch(
-      /struct MascotContextMenuPlacementPayload\s*\{[\s\S]*?placement: MascotContextMenuPlacement,[\s\S]*?tail_x: f64,[\s\S]*?\}/
+      /struct MascotContextMenuPlacementPayload\s*\{[\s\S]*?generation: u64,[\s\S]*?placement: MascotContextMenuPlacement,[\s\S]*?tail_x: f64,[\s\S]*?\}/
     )
     expect(rustSource).toMatch(
       /emit_to\(\s*"mascot-menu",\s*"mascot-context-menu-placement",\s*geometry\.payload/
@@ -93,22 +96,64 @@ describe('mascot context menu architecture', () => {
   it('positions the detached menu from the avatar using physical window bounds', () => {
     const nativeHandler = sourceBetween(
       rustSource,
-      'fn show_mascot_context_menu',
-      'fn hide_mascot_context_menu('
+      'fn prepare_mascot_context_menu_generation',
+      'fn schedule_mascot_context_menu_timeout'
     )
 
     expect(nativeHandler).toContain('mascot_client_origin_physical(')
     expect(nativeHandler).toContain('mascot_avatar_physical_rect(')
     expect(nativeHandler).toContain('mascot_context_menu_physical_geometry(')
     expect(nativeHandler).toContain('set_window_physical_bounds(')
-    expect(nativeHandler).toContain('PhysicalSize')
     expect(nativeHandler).toContain('work_area.position.x')
     expect(nativeHandler).toContain('work_area.size.width')
+    expect(nativeHandler).not.toContain('menu.show()')
+  })
+
+  it('waits for a generation-scoped frontend layout ACK before showing the HWND', () => {
+    const nativeAck = sourceBetween(
+      rustSource,
+      'fn ack_mascot_context_menu_layout',
+      'fn hide_mascot_context_menu('
+    )
+
+    expect(windowServiceSource).toContain("invoke<boolean>('show_mascot_context_menu')")
+    expect(windowServiceSource).toContain("invoke<boolean>('ack_mascot_context_menu_layout', { generation })")
+    expect(mascotMenuWindowSource).toContain(':key="menuGeneration"')
+    expect(mascotMenuWindowSource).toContain('await afterAnimationFrame()')
+    expect(mascotMenuWindowSource).toContain('await ackMascotContextMenuLayout(generation)')
+    expect(mascotMenuWindowSource).toContain('menuEntering.value = true')
+    expect(nativeAck).toContain('state.can_ack_layout(generation)')
+    expect(nativeAck).toContain('menu.show()')
+    expect(nativeAck).toContain('menu.set_focus()')
+    expect(nativeAck).toContain('state.mark_visible(generation)')
+    expect(rustSource).toContain('fn rollback_mascot_context_menu_generation')
+    expect(rustSource).toContain('fn expire_pending_show')
+  })
+
+  it('remounts and refocuses the safe first action on every opening', () => {
+    expect(mascotMenuWindowSource).toContain('menuGeneration.value = generation')
+    expect(mascotMenuWindowSource).toContain('A generation key remounts the menu')
+    expect(contextMenuSource).toContain("querySelector<HTMLButtonElement>('button')?.focus()")
+    expect(contextMenuSource).toContain('watch(() => props.entering')
+    expect(contextMenuSource).toContain("'is-entering': entering")
+    expect(appStyles).toMatch(/\.mascot-context-menu\s*\{[\s\S]*?opacity: 0;[\s\S]*?animation: none;/)
+    expect(appStyles).toMatch(/\.mascot-context-menu\.is-entering\s*\{[\s\S]*?animation:/)
+  })
+
+  it('keeps enough transparent native gutter for above and below shadows', () => {
+    expect(mascotMenuWindowSource).toContain(":y=\"placement === 'above' ? 8 : 14\"")
+    expect(rustSource).toContain('const MASCOT_CONTEXT_MENU_HEIGHT: f64 = 76.0;')
+    expect(rustSource).toContain('const MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM: f64 = 55.0;')
+    expect(rustSource).toContain('const MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP: f64 = 9.0;')
+    expect(appStyles).toContain('0 4px 12px rgba(31, 42, 68, 0.1)')
   })
 
   it('closes the detached menu from native focus loss and app lifecycle paths', () => {
     expect(rustSource).toMatch(
-      /get_webview_window\("mascot-menu"\)[\s\S]*?WindowEvent::Focused\(false\)[\s\S]*?hide_mascot_context_menu_window/
+      /WindowEvent::Focused\(false\)[\s\S]*?hide_context_menu_after_focus_moves_outside_app/
+    )
+    expect(rustSource).toMatch(
+      /fn hide_context_menu_after_focus_moves_outside_app[\s\S]*?window\.is_focused\(\)[\s\S]*?hide_mascot_context_menu_window/
     )
     expect(mascotMenuWindowSource).toContain("if (event.key === 'Escape') closeMenu()")
     expect(windowServiceSource).toContain("invoke('hide_mascot_context_menu')")
@@ -127,5 +172,19 @@ describe('mascot context menu architecture', () => {
         new RegExp(`fn ${command}\\b[\\s\\S]{0,900}?hide_mascot_context_menu_window\\(&app\\)`)
       )
     }
+  })
+
+  it('keeps all persistent HWNDs alive when Alt+F4 requests a close', () => {
+    const tauriConfig = JSON.parse(tauriConfigSource) as {
+      app: { windows: Array<{ label: string; closable?: boolean }> }
+    }
+
+    for (const label of ['mascot', 'panel', 'mascot-menu']) {
+      expect(tauriConfig.app.windows.find((window) => window.label === label)?.closable).toBe(false)
+    }
+    expect(rustSource.match(/tauri::WindowEvent::CloseRequested/g)).toHaveLength(3)
+    expect(rustSource.match(/api\.prevent_close\(\)/g)).toHaveLength(3)
+    expect(rustSource).toContain('hide_mascot_context_menu_window(&close_app)')
+    expect(rustSource).toContain('hide_panel_and_notify(&close_app)')
   })
 })

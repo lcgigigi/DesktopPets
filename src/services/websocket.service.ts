@@ -7,6 +7,7 @@ type StatusListener = (status: 'connecting' | 'connected' | 'reconnecting' | 'mo
 let socket: WebSocket | null = null
 let reconnectTimer: number | undefined
 let shouldReconnect = true
+let connectionGeneration = 0
 const taskListeners = new Set<TaskListener>()
 const statusListeners = new Set<StatusListener>()
 
@@ -44,9 +45,16 @@ export const websocketService = {
 
     shouldReconnect = true
     emitStatus('connecting')
-    socket = new WebSocket(env.wsUrl)
-    socket.addEventListener('open', () => emitStatus('connected'))
-    socket.addEventListener('message', (message) => {
+    const generation = ++connectionGeneration
+    const nextSocket = new WebSocket(env.wsUrl)
+    socket = nextSocket
+    const isCurrentConnection = () => socket === nextSocket && connectionGeneration === generation
+    nextSocket.addEventListener('open', () => {
+      if (!isCurrentConnection()) return
+      emitStatus('connected')
+    })
+    nextSocket.addEventListener('message', (message) => {
+      if (!isCurrentConnection()) return
       try {
         const event = JSON.parse(message.data) as TaskCreatedEvent
         if (event.eventType === 'task.created') {
@@ -56,20 +64,30 @@ export const websocketService = {
         console.warn('Invalid websocket message', error)
       }
     })
-    socket.addEventListener('close', () => {
+    nextSocket.addEventListener('close', () => {
+      if (!isCurrentConnection()) return
       socket = null
       if (!shouldReconnect) return
       emitStatus('reconnecting')
       window.clearTimeout(reconnectTimer)
-      reconnectTimer = window.setTimeout(() => websocketService.connect(), 3000)
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = undefined
+        if (connectionGeneration === generation && shouldReconnect) websocketService.connect()
+      }, 3000)
     })
-    socket.addEventListener('error', () => socket?.close())
+    nextSocket.addEventListener('error', () => {
+      if (!isCurrentConnection()) return
+      nextSocket.close()
+    })
   },
   disconnect() {
     shouldReconnect = false
+    connectionGeneration += 1
     emitStatus('closed')
     window.clearTimeout(reconnectTimer)
-    socket?.close()
+    reconnectTimer = undefined
+    const previousSocket = socket
     socket = null
+    previousSocket?.close()
   }
 }

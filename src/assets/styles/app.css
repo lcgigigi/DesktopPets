@@ -647,7 +647,12 @@
   /* An opaque surface avoids stale WebView2 blur/backdrop frames on Windows. */
   backdrop-filter: none;
   cursor: grab;
+  opacity: 0;
   transform-origin: 50% 100%;
+  animation: none;
+}
+
+.mascot-context-menu.is-entering {
   animation: mascot-context-menu-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -691,7 +696,7 @@
   border-top-left-radius: 2px;
 }
 
-.mascot-context-menu.is-below {
+.mascot-context-menu.is-below.is-entering {
   animation-name: mascot-context-menu-in-below;
 }
 
@@ -704,6 +709,13 @@
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mascot-context-menu.is-entering {
+    opacity: 1;
+    animation: none;
   }
 }
 
@@ -895,8 +907,6 @@
   cursor: grab;
   filter: none;
   overflow: visible;
-  transform-origin: 50% 82%;
-  transition: transform 260ms cubic-bezier(0.22, 0.8, 0.24, 1);
 }
 
 .mascot-window.is-dragging .mascot-avatar {
@@ -904,43 +914,16 @@
   filter: none;
 }
 
-.mascot-window.is-dragging .mascot-avatar.is-visual-running-right {
-  transform: translate3d(1px, 1px, 0) rotate(1.2deg) scaleY(0.99);
-}
-
-.mascot-window.is-dragging .mascot-avatar.is-visual-running-left {
-  transform: translate3d(-1px, 1px, 0) rotate(-1.2deg) scaleY(0.99);
-}
-
-.mascot-avatar.is-visual-revealing {
-  transform-origin: 68% 82%;
-  animation: mascot-reveal-settle 480ms cubic-bezier(0.2, 0.82, 0.24, 1) both;
-}
-
-.mascot-avatar.is-visual-revealing-left {
-  transform-origin: 32% 82%;
-  animation: mascot-reveal-settle-left 480ms cubic-bezier(0.2, 0.82, 0.24, 1) both;
-}
-
-.mascot-avatar.is-returning-from-run.is-returning-right {
-  animation: mascot-run-return-right 280ms cubic-bezier(0.22, 0.82, 0.24, 1) both;
-}
-
-.mascot-avatar.is-returning-from-run.is-returning-left {
-  animation: mascot-run-return-left 280ms cubic-bezier(0.22, 0.82, 0.24, 1) both;
-}
-
 .mascot-avatar:hover {
-  transform: none;
   filter: none;
 }
 
 .mascot-sprite-stage {
   position: relative;
   z-index: 1;
-  width: 90px;
-  /* Keep a shared 9px transparent floor below every pose. The base sprites
-     remain 75px tall; running cells carry the same gutter in their atlas. */
+  width: 92px;
+  /* Base/peek poses are 76px high with an 8px stage floor. Running uses the
+     complete 84px cell, whose 2x atlas includes a dedicated 16px floor. */
   height: 84px;
   display: block;
   overflow: visible;
@@ -950,8 +933,8 @@
 .mascot-sprite {
   position: absolute;
   inset: 0;
-  width: var(--sprite-display-width, 90px);
-  height: var(--sprite-display-height, 75px);
+  width: var(--sprite-display-width, 92px);
+  height: var(--sprite-display-height, 76px);
   display: block;
   background-position: 0 0;
   background-repeat: no-repeat;
@@ -965,85 +948,17 @@
   backface-visibility: hidden;
 }
 
-.mascot-sprite--base {
+.mascot-sprite--single {
   opacity: 1;
-  transform: translate3d(0, 0, 0) scale(1);
-  transition:
-    opacity 210ms ease 36ms,
-    transform 260ms cubic-bezier(0.22, 0.8, 0.24, 1);
-}
-
-.mascot-sprite-stage.is-running .mascot-sprite--base {
-  opacity: 0;
-  transform: translate3d(0, 2px, 0) scale(0.985);
-  transition-delay: 0ms;
-}
-
-.mascot-run-sprite {
-  position: absolute;
-  inset: 0;
-  display: block;
-  width: 90px;
-  height: 84px;
-  overflow: visible;
-  opacity: 1;
-  pointer-events: none;
-  transform: translate3d(0, 0, 0) scale(1);
-  transition:
-    opacity 180ms ease,
-    transform 260ms cubic-bezier(0.22, 0.8, 0.24, 1);
-  will-change: opacity, transform;
-}
-
-.mascot-run-sprite__frame {
-  position: absolute;
-  inset: 0;
-  display: block;
-  width: 90px;
-  height: 84px;
-  overflow: visible;
-  background-position: 0 var(--run-row-offset);
-  background-repeat: no-repeat;
-  image-rendering: auto;
-  pointer-events: none;
-  animation: mascot-run-sprite-play var(--run-cycle-duration) steps(72, jump-none) infinite;
-  transform: translateZ(0);
-  backface-visibility: hidden;
-  will-change: background-position;
-}
-
-.mascot-sprite-state-enter-active,
-.mascot-sprite-state-leave-active {
-  transition: opacity 140ms ease;
-}
-
-.mascot-sprite-state-enter-from,
-.mascot-sprite-state-leave-to {
-  opacity: 0;
-}
-
-.mascot-sprite-stage.is-returning .mascot-run-sprite {
-  opacity: 0;
-  transform: translate3d(0, 2px, 0) scale(0.985);
-}
-
-@keyframes mascot-run-sprite-play {
-  from {
-    background-position: 0 var(--run-row-offset);
-  }
-
-  to {
-    background-position: var(--run-last-frame-offset) var(--run-row-offset);
-  }
 }
 
 @keyframes mascot-sprite-idle {
   0%,
-  38% {
+  45% {
     background-position: 0 var(--sprite-row-offset);
   }
 
-  74%,
+  75%,
   100% {
     background-position: var(--sprite-end-offset) var(--sprite-row-offset);
   }
@@ -1056,62 +971,6 @@
 
   to {
     background-position: var(--sprite-end-offset) var(--sprite-row-offset);
-  }
-}
-
-@keyframes mascot-reveal-settle {
-  0% {
-    transform: translate3d(3px, 1px, 0) rotate(1deg) scale(0.985);
-  }
-
-  72% {
-    transform: translate3d(-1px, 0, 0) rotate(-0.35deg) scale(1.012);
-  }
-
-  100% {
-    transform: translate3d(0, 0, 0) rotate(0) scale(1);
-  }
-}
-
-@keyframes mascot-reveal-settle-left {
-  0% {
-    transform: translate3d(-3px, 1px, 0) rotate(-1deg) scale(0.985);
-  }
-
-  72% {
-    transform: translate3d(1px, 0, 0) rotate(0.35deg) scale(1.012);
-  }
-
-  100% {
-    transform: translate3d(0, 0, 0) rotate(0) scale(1);
-  }
-}
-
-@keyframes mascot-run-return-right {
-  0% {
-    transform: translate3d(1px, 1px, 0) rotate(1.2deg) scaleY(0.99);
-  }
-
-  72% {
-    transform: translate3d(-0.5px, -0.5px, 0) rotate(-0.3deg) scale(1.006);
-  }
-
-  100% {
-    transform: translate3d(0, 0, 0) rotate(0) scale(1);
-  }
-}
-
-@keyframes mascot-run-return-left {
-  0% {
-    transform: translate3d(-1px, 1px, 0) rotate(-1.2deg) scaleY(0.99);
-  }
-
-  72% {
-    transform: translate3d(0.5px, -0.5px, 0) rotate(0.3deg) scale(1.006);
-  }
-
-  100% {
-    transform: translate3d(0, 0, 0) rotate(0) scale(1);
   }
 }
 
@@ -2192,11 +2051,347 @@
   pointer-events: none;
 }
 
+/* Task/prompt content is constrained by the native 380 x 240 panel. Keep
+   controls fixed and make only variable text regions scroll. */
+.pet-prompt .todo-input {
+  grid-template-areas: "field send";
+  grid-template-rows: auto;
+}
+
+.pet-prompt .todo-input.has-error {
+  grid-template-areas:
+    "field send"
+    "error error";
+  grid-template-rows: auto minmax(24px, auto);
+  border-radius: 20px;
+}
+
+.pet-prompt .todo-input textarea {
+  grid-area: field;
+}
+
+.pet-prompt .todo-input__send {
+  grid-area: send;
+  width: 40px;
+  height: 40px;
+}
+
+.pet-prompt .todo-input:focus-within {
+  border-color: rgba(79, 128, 255, 0.72);
+  box-shadow: 0 0 0 3px rgba(79, 128, 255, 0.18);
+}
+
+.todo-input__error {
+  grid-area: error;
+  max-height: 36px;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: #b42332;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+}
+
+.pet-prompt.has-task {
+  min-height: 0;
+}
+
+.pet-prompt.has-task .task-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid rgba(110, 139, 198, 0.18);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 12px 28px rgba(37, 57, 94, 0.14);
+  overflow: hidden;
+}
+
+.task-card__header,
+.task-card__kind,
+.task-card__meta,
+.task-card__actions,
+.task-card__action {
+  display: flex;
+  align-items: center;
+}
+
+.task-card__header {
+  min-width: 0;
+  flex: 0 0 auto;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-card__kind {
+  flex: 0 0 auto;
+  gap: 6px;
+  color: #416fbf;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 20px;
+}
+
+.task-card__kind svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.task-card__meta {
+  min-width: 0;
+  justify-content: flex-end;
+  gap: 6px;
+  overflow: hidden;
+  color: #74829a;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.task-card__queue-count {
+  flex: 0 0 auto;
+  color: #4f80d7;
+}
+
+.task-card__deadline {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-card__body {
+  min-height: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.pet-prompt.has-task .task-card h2 {
+  max-height: 42px;
+  flex: 0 1 auto;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: #152140;
+  font-size: 16px;
+  font-weight: 850;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+}
+
+.pet-prompt.has-task .task-card__description {
+  min-height: 20px;
+  max-height: none;
+  flex: 1 1 auto;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: #5f6d84;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 19px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  scrollbar-width: thin;
+}
+
+.pet-prompt.has-task .task-card__description--empty {
+  color: #8c97a8;
+}
+
+.pet-prompt.has-task .task-card__error {
+  max-height: 34px;
+  flex: 0 0 auto;
+  margin: 6px 0 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: #c63f50 !important;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 16px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+}
+
+.pet-prompt.has-task .task-card__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pet-prompt.has-task .task-card__actions.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.pet-prompt.has-task .task-card__action {
+  min-width: 0;
+  min-height: 40px;
+  height: auto;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid rgba(91, 124, 183, 0.14);
+  border-radius: 10px;
+  background: #edf3ff;
+  color: #4774c6;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.pet-prompt.has-task .task-card__action--confirm {
+  border-color: rgba(35, 164, 120, 0.16);
+  background: #e4f7ef;
+  color: #198d68;
+}
+
+.pet-prompt.has-task .task-card__action svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.pet-prompt.has-task .task-card__action:disabled {
+  opacity: 0.58;
+  cursor: wait;
+  transform: none;
+}
+
+/* At high Windows scale factors the available notification height is small.
+   Preserve headers/errors/actions and let title/body regions scroll instead. */
+.mascot-window.is-notifying.has-expanded-notification .sys-message-tip,
+.mascot-window.is-notifying.has-expanded-notification .auth-login-tip {
+  min-height: 0;
+  flex-shrink: 1;
+}
+
+.sys-message-tip__card {
+  min-height: 0;
+}
+
+.sys-message-tip__body {
+  min-height: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sys-message-tip__body h2 {
+  display: block;
+  max-height: 50px;
+  flex: 0 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-line-clamp: unset;
+  scrollbar-width: thin;
+}
+
+.sys-message-tip__summary-shell {
+  min-height: 20px;
+  display: flex;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.sys-message-tip__body .sys-message-tip__summary,
+.sys-message-tip.has-action-error .sys-message-tip__summary {
+  max-height: none;
+  flex: 1 1 auto;
+}
+
+.sys-message-tip__error {
+  display: block;
+  max-height: 48px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-line-clamp: unset;
+  scrollbar-width: thin;
+}
+
+.auth-login-tip {
+  max-height: inherit;
+  min-height: 0;
+}
+
+.auth-login-tip__body {
+  flex: 1 1 auto;
+}
+
+.auth-login-tip__body p {
+  display: block;
+  max-height: none;
+  overflow-y: auto;
+  -webkit-line-clamp: unset;
+  scrollbar-width: thin;
+}
+
+.auth-login-tip.has-error {
+  border-color: rgba(196, 63, 80, 0.3);
+}
+
+.auth-login-tip.has-error .auth-login-tip__body p {
+  color: #9d2e3c;
+}
+
+.auth-login-tip__button {
+  flex-basis: 40px;
+  min-height: 40px;
+}
+
+@media (max-height: 440px) {
+  .sys-message-tip__body h2 {
+    max-height: 25px;
+    -webkit-line-clamp: unset;
+  }
+
+  .sys-message-tip__summary,
+  .sys-message-tip.has-action-error .sys-message-tip__summary {
+    max-height: none;
+  }
+
+  .sys-message-tip__error {
+    max-height: 32px;
+    -webkit-line-clamp: unset;
+  }
+
+  .sys-message-tip__button {
+    min-height: 40px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mascot-sprite,
-  .mascot-sprite--base,
-  .mascot-run-sprite,
-  .mascot-run-sprite__frame,
   .mascot-avatar,
   .mascot-bubble,
   .auth-login-tip,
@@ -2213,8 +2408,6 @@
   }
 
   .mascot-overlay-leave-active,
-  .mascot-sprite-state-enter-active,
-  .mascot-sprite-state-leave-active,
   .mascot-context-menu__item,
   .auth-login-tip__button,
   .sys-message-tip__button,
@@ -2227,8 +2420,8 @@
     filter: none !important;
   }
 
-  .mascot-avatar.is-visual-peeking .mascot-sprite--base,
-  .mascot-avatar.is-visual-peeking-left .mascot-sprite--base {
+  .mascot-avatar.is-visual-peeking .mascot-sprite,
+  .mascot-avatar.is-visual-peeking-left .mascot-sprite {
     background-position: var(--sprite-end-offset) var(--sprite-row-offset) !important;
   }
 }

@@ -1,21 +1,41 @@
 #!/usr/bin/env python3
-"""Audit every runtime mascot frame at its final on-screen display size."""
+"""Audit every runtime mascot frame and its production playback relationships."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageStat
 
 
 VISIBLE_ALPHA_THRESHOLD = 12
 CONTACT_COLUMNS = 24
+SUPPORTED_WINDOWS_SCALES = (1.25, 1.5, 1.75, 2.0)
+RUN_MIN_SHARPNESS_RATIO = 0.94
+RUN_MAX_ADJACENT_RMS = 45.0
+RUN_MAX_ANCHOR_STEP_PX = 1.0
+RUN_MAX_DIRECTION_ANCHOR_DELTA_PX = 3.0
+PEEK_MAX_ADJACENT_RMS = 60.0
+PEEK_MAX_ANCHOR_STEP_PX = 1.0
+MAX_BASELINE_VARIATION_PX = 1
+
+
+@dataclass(frozen=True)
+class SequenceSpec:
+    name: str
+    row: int
+    frames: int
+    duration_ms: int
+    loops: bool
 
 
 @dataclass(frozen=True)
@@ -26,6 +46,8 @@ class AtlasSpec:
     columns: int
     rows: int
     display_cell: tuple[int, int]
+    sequences: tuple[SequenceSpec, ...]
+    require_all_unique: bool = False
 
     @property
     def frame_count(self) -> int:
@@ -43,23 +65,42 @@ ATLAS_SPECS = (
         source_cell=(384, 320),
         columns=12,
         rows=10,
-        display_cell=(90, 75),
-    ),
-    AtlasSpec(
-        atlas_id="motion",
-        relative_path=Path("src/assets/mascot/xiaoli-motion-spritesheet.webp"),
-        source_cell=(384, 320),
-        columns=24,
-        rows=4,
-        display_cell=(90, 75),
+        display_cell=(92, 76),
+        sequences=(
+            SequenceSpec("idle", 0, 12, 3000, True),
+            SequenceSpec("thinking", 2, 12, 1000, True),
+            SequenceSpec("waiting", 3, 6, 500, True),
+            SequenceSpec("remind", 4, 12, 1000, True),
+            SequenceSpec("success", 5, 6, 500, True),
+            SequenceSpec("error", 6, 6, 500, True),
+            SequenceSpec("cooling-office", 9, 6, 500, True),
+        ),
     ),
     AtlasSpec(
         atlas_id="running",
         relative_path=Path("src/assets/mascot/xiaoli-running-spritesheet.webp"),
-        source_cell=(132, 122),
-        columns=72,
+        source_cell=(184, 168),
+        columns=24,
         rows=2,
-        display_cell=(90, 84),
+        display_cell=(92, 84),
+        sequences=(
+            SequenceSpec("running-right", 0, 24, 1440, True),
+            SequenceSpec("running-left", 1, 24, 1440, True),
+        ),
+        require_all_unique=True,
+    ),
+    AtlasSpec(
+        atlas_id="peek",
+        relative_path=Path("src/assets/mascot/xiaoli-peek-spritesheet.webp"),
+        source_cell=(184, 152),
+        columns=12,
+        rows=2,
+        display_cell=(92, 76),
+        sequences=(
+            SequenceSpec("peeking-right", 0, 12, 560, False),
+            SequenceSpec("peeking-left", 1, 12, 560, False),
+        ),
+        require_all_unique=True,
     ),
 )
 
@@ -70,21 +111,65 @@ def parse_args() -> argparse.Namespace:
         "--output",
         required=True,
         type=Path,
-        help="Directory for report.json and the light/dark contact sheets.",
+        help="Directory for the JSON report, contact sheets and acceptance GIFs.",
     )
     return parser.parse_args()
 
 
-def visible_bbox(alpha: Image.Image) -> tuple[int, int, int, int] | None:
-    mask = alpha.point(
+def visible_mask(alpha: Image.Image) -> Image.Image:
+    return alpha.point(
         lambda value: 255 if value > VISIBLE_ALPHA_THRESHOLD else 0,
         mode="L",
     )
-    return mask.getbbox()
+
+
+def visible_bbox(alpha: Image.Image) -> tuple[int, int, int, int] | None:
+    return visible_mask(alpha).getbbox()
 
 
 def visible_pixel_count(alpha: Image.Image) -> int:
-    return sum(alpha.histogram()[VISIBLE_ALPHA_THRESHOLD + 1 :])
+    return visible_mask(alpha).histogram()[255]
+
+
+def alpha_centroid(alpha: Image.Image) -> tuple[float, float] | None:
+    pixels = alpha.load()
+    total = 0
+    weighted_x = 0
+    weighted_y = 0
+    for y in range(alpha.height):
+        for x in range(alpha.width):
+            value = pixels[x, y]
+            if value <= VISIBLE_ALPHA_THRESHOLD:
+                continue
+            total += value
+            weighted_x += x * value
+            weighted_y += y * value
+    if total == 0:
+        return None
+    return weighted_x / total, weighted_y / total
+
+
+def matte(frame: Image.Image, background: tuple[int, int, int, int]) -> Image.Image:
+    output = Image.new("RGBA", frame.size, background)
+    output.alpha_composite(frame)
+    return output.convert("RGB")
+
+
+def rms_delta(first: Image.Image, second: Image.Image) -> float:
+    difference = ImageChops.difference(
+        matte(first, (238, 238, 238, 255)),
+        matte(second, (238, 238, 238, 255)),
+    )
+    channel_rms = ImageStat.Stat(difference).rms
+    return math.sqrt(sum(value * value for value in channel_rms) / len(channel_rms))
+
+
+def sharpness_score(frame: Image.Image) -> float:
+    grayscale = matte(frame, (238, 238, 238, 255)).convert("L")
+    blurred = grayscale.filter(ImageFilter.GaussianBlur(1))
+    high_frequency = ImageChops.difference(grayscale, blurred)
+    stats = ImageStat.Stat(high_frequency)
+    return math.sqrt(stats.mean[0] ** 2 + stats.var[0])
 
 
 def bbox_report(
@@ -93,7 +178,6 @@ def bbox_report(
 ) -> tuple[dict[str, int] | None, dict[str, int] | None]:
     if bbox is None:
         return None, None
-
     left, top, right, bottom = bbox
     width, height = cell_size
     return (
@@ -159,6 +243,7 @@ def audit_atlas(
                     target_bbox = visible_bbox(target_alpha)
                     target_bbox_json, margins = bbox_report(target_bbox, spec.display_cell)
                     source_bbox_json, _ = bbox_report(source_bbox, spec.source_cell)
+                    centroid = alpha_centroid(target_alpha)
                     frame_errors: list[str] = []
 
                     if source_bbox is None:
@@ -184,19 +269,24 @@ def audit_atlas(
                             "target_bbox": target_bbox_json,
                             "target_edge_margins": margins,
                             "target_visible_pixels": visible_pixel_count(target_alpha),
+                            "target_centroid": (
+                                {"x": round(centroid[0], 4), "y": round(centroid[1], 4)}
+                                if centroid is not None else None
+                            ),
+                            "target_sharpness": round(sharpness_score(target), 4),
                             "target_rgba_sha256": digest,
                             "errors": frame_errors,
                         }
                     )
                     errors.extend(f"{identity}: {error}" for error in frame_errors)
 
-    duplicate_groups = [
-        identities
-        for identities in hashes.values()
-        if len(identities) > 1
-    ]
+    duplicate_groups = [identities for identities in hashes.values() if len(identities) > 1]
     duplicate_groups.sort(key=lambda identities: identities[0])
     duplicate_frame_count = sum(len(group) - 1 for group in duplicate_groups)
+    if spec.require_all_unique and duplicate_frame_count:
+        errors.append(
+            f"{spec.atlas_id}: runtime atlas contains {duplicate_frame_count} duplicate frames"
+        )
 
     report: dict[str, Any] = {
         "id": spec.atlas_id,
@@ -205,6 +295,10 @@ def audit_atlas(
         "expected_size": list(spec.expected_size),
         "source_cell": list(spec.source_cell),
         "display_cell": list(spec.display_cell),
+        "source_density": [
+            spec.source_cell[0] / spec.display_cell[0],
+            spec.source_cell[1] / spec.display_cell[1],
+        ],
         "grid": {"columns": spec.columns, "rows": spec.rows},
         "expected_frames": spec.frame_count,
         "checked_frames": len(frame_reports),
@@ -212,11 +306,216 @@ def audit_atlas(
         "failed_frames": sum(frame["status"] == "fail" for frame in frame_reports),
         "unique_target_frames": len(hashes),
         "duplicate_target_frames": duplicate_frame_count,
-        "duplicates_are_informational": True,
+        "duplicates_are_informational": not spec.require_all_unique,
         "duplicate_groups": duplicate_groups,
         "frames": frame_reports,
     }
     return report, frame_images, errors
+
+
+def sequence_metrics(
+    spec: AtlasSpec,
+    sequence: SequenceSpec,
+    frames: dict[tuple[int, int], Image.Image],
+) -> dict[str, Any]:
+    images = [frames[(sequence.row, column)] for column in range(sequence.frames)]
+    centroids = [alpha_centroid(image.getchannel("A")) for image in images]
+    if any(centroid is None for centroid in centroids):
+        raise ValueError(f"{sequence.name}: empty frame reached sequence metrics")
+    resolved_centroids = [centroid for centroid in centroids if centroid is not None]
+    bboxes = [visible_bbox(image.getchannel("A")) for image in images]
+    if any(bbox is None for bbox in bboxes):
+        raise ValueError(f"{sequence.name}: empty frame reached baseline metrics")
+    resolved_bboxes = [bbox for bbox in bboxes if bbox is not None]
+    adjacent_rms = [rms_delta(images[index], images[index + 1]) for index in range(len(images) - 1)]
+    horizontal_anchor_steps = [
+        abs(resolved_centroids[index][0] - resolved_centroids[index + 1][0])
+        for index in range(len(resolved_centroids) - 1)
+    ]
+    sharpness = [sharpness_score(image) for image in images]
+    seam_rms = rms_delta(images[-1], images[0]) if sequence.loops else None
+    return {
+        "name": sequence.name,
+        "row": sequence.row,
+        "frames": sequence.frames,
+        "duration_ms": sequence.duration_ms,
+        "authored_pose_rate_fps": round(sequence.frames / sequence.duration_ms * 1000, 4),
+        "adjacent_rms": [round(value, 4) for value in adjacent_rms],
+        "max_adjacent_rms": round(max(adjacent_rms, default=0), 4),
+        "median_adjacent_rms": round(median(adjacent_rms), 4) if adjacent_rms else 0,
+        "seam_rms": round(seam_rms, 4) if seam_rms is not None else None,
+        "max_anchor_step_px": round(max(horizontal_anchor_steps, default=0), 4),
+        "baseline_range": [
+            min(bbox[3] for bbox in resolved_bboxes),
+            max(bbox[3] for bbox in resolved_bboxes),
+        ],
+        "sharpness": [round(value, 4) for value in sharpness],
+        "min_to_median_sharpness_ratio": round(min(sharpness) / median(sharpness), 4),
+        "centroids": [
+            {"x": round(centroid[0], 4), "y": round(centroid[1], 4)}
+            for centroid in resolved_centroids
+        ],
+    }
+
+
+def smootherstep(progress: float) -> float:
+    return progress ** 3 * (progress * (progress * 6 - 15) + 10)
+
+
+def ease_out_quart(progress: float) -> float:
+    return 1 - (1 - progress) ** 4
+
+
+def native_peek_travel(project_root: Path) -> float:
+    source = (project_root / "src-tauri/src/main.rs").read_text(encoding="utf-8")
+
+    def constant(name: str) -> float:
+        match = re.search(rf"const {name}: f64 = ([0-9.]+);", source)
+        if match is None:
+            raise ValueError(f"missing Rust geometry constant {name}")
+        return float(match.group(1))
+
+    return constant("MASCOT_WIDTH") + constant("MASCOT_REST_RIGHT_MARGIN") - constant(
+        "MASCOT_PEEK_VISIBLE_WIDTH"
+    )
+
+
+def world_trajectory(
+    centroids: list[dict[str, float]],
+    travel: float,
+    side: str,
+    reveal: bool,
+) -> list[float]:
+    ordered = list(reversed(centroids)) if reveal else centroids
+    direction = 1 if side == "right" else -1
+    if reveal:
+        direction *= -1
+    easing = ease_out_quart if reveal else smootherstep
+    count = len(ordered)
+    return [
+        direction * travel * easing((index + 0.5) / count) + centroid["x"]
+        for index, centroid in enumerate(ordered)
+    ]
+
+
+def validate_temporal_quality(
+    project_root: Path,
+    reports: list[dict[str, Any]],
+    all_frames: dict[str, dict[tuple[int, int], Image.Image]],
+) -> tuple[dict[str, Any], list[str]]:
+    errors: list[str] = []
+    report_by_id = {report["id"]: report for report in reports}
+    spec_by_id = {spec.atlas_id: spec for spec in ATLAS_SPECS}
+    metrics: dict[str, list[dict[str, Any]]] = {}
+    for atlas_id, spec in spec_by_id.items():
+        if len(all_frames.get(atlas_id, {})) != spec.frame_count:
+            continue
+        metrics[atlas_id] = [
+            sequence_metrics(spec, sequence, all_frames[atlas_id])
+            for sequence in spec.sequences
+        ]
+
+    for scale in SUPPORTED_WINDOWS_SCALES:
+        for logical_dimension in (92, 76, 84):
+            physical = logical_dimension * scale
+            if not physical.is_integer():
+                errors.append(
+                    f"DPI contract: {logical_dimension}px at {scale:.2f}x is fractional ({physical})"
+                )
+
+    running_metrics = metrics.get("running", [])
+    for sequence in running_metrics:
+        if sequence["min_to_median_sharpness_ratio"] < RUN_MIN_SHARPNESS_RATIO:
+            errors.append(
+                f"{sequence['name']}: sharpness ratio "
+                f"{sequence['min_to_median_sharpness_ratio']} < {RUN_MIN_SHARPNESS_RATIO}"
+            )
+        if sequence["max_adjacent_rms"] > RUN_MAX_ADJACENT_RMS:
+            errors.append(
+                f"{sequence['name']}: adjacent RMS {sequence['max_adjacent_rms']} "
+                f"> {RUN_MAX_ADJACENT_RMS}"
+            )
+        if sequence["max_anchor_step_px"] > RUN_MAX_ANCHOR_STEP_PX:
+            errors.append(
+                f"{sequence['name']}: anchor step {sequence['max_anchor_step_px']}px "
+                f"> {RUN_MAX_ANCHOR_STEP_PX}px"
+            )
+        baseline_range = sequence["baseline_range"]
+        if baseline_range[1] - baseline_range[0] > MAX_BASELINE_VARIATION_PX:
+            errors.append(f"{sequence['name']}: baseline varies by more than 1px")
+
+    direction_anchor_deltas: list[float] = []
+    if len(running_metrics) == 2:
+        direction_anchor_deltas = [
+            abs(right["x"] - left["x"])
+            for right, left in zip(
+                running_metrics[0]["centroids"],
+                running_metrics[1]["centroids"],
+                strict=True,
+            )
+        ]
+        if max(direction_anchor_deltas) > RUN_MAX_DIRECTION_ANCHOR_DELTA_PX:
+            errors.append(
+                f"running directions: same-phase anchor delta "
+                f"{max(direction_anchor_deltas):.4f}px > {RUN_MAX_DIRECTION_ANCHOR_DELTA_PX}px"
+            )
+
+    peek_metrics = metrics.get("peek", [])
+    for sequence in peek_metrics:
+        if sequence["max_adjacent_rms"] > PEEK_MAX_ADJACENT_RMS:
+            errors.append(
+                f"{sequence['name']}: adjacent RMS {sequence['max_adjacent_rms']} "
+                f"> {PEEK_MAX_ADJACENT_RMS}"
+            )
+        if sequence["max_anchor_step_px"] > PEEK_MAX_ANCHOR_STEP_PX:
+            errors.append(
+                f"{sequence['name']}: anchor step {sequence['max_anchor_step_px']}px "
+                f"> {PEEK_MAX_ANCHOR_STEP_PX}px"
+            )
+        baseline_range = sequence["baseline_range"]
+        if baseline_range[1] - baseline_range[0] > MAX_BASELINE_VARIATION_PX:
+            errors.append(f"{sequence['name']}: baseline varies by more than 1px")
+
+    travel = native_peek_travel(project_root)
+    trajectories: dict[str, list[float]] = {}
+    if len(peek_metrics) == 2:
+        for index, side in enumerate(("right", "left")):
+            for reveal in (False, True):
+                name = f"{'reveal' if reveal else 'peek'}-{side}"
+                trajectory = world_trajectory(peek_metrics[index]["centroids"], travel, side, reveal)
+                trajectories[name] = [round(value, 4) for value in trajectory]
+                deltas = [trajectory[i + 1] - trajectory[i] for i in range(len(trajectory) - 1)]
+                expected_sign = -1 if (side == "left") ^ reveal else 1
+                if any(delta * expected_sign < -0.05 for delta in deltas):
+                    errors.append(f"{name}: world-space trajectory reverses direction")
+
+    for atlas_id in ("running", "peek"):
+        density = report_by_id.get(atlas_id, {}).get("source_density")
+        if density != [2.0, 2.0]:
+            errors.append(f"{atlas_id}: runtime atlas is not exact 2x density ({density})")
+
+    return (
+        {
+            "thresholds": {
+                "run_min_sharpness_ratio": RUN_MIN_SHARPNESS_RATIO,
+                "run_max_adjacent_rms": RUN_MAX_ADJACENT_RMS,
+                "run_max_anchor_step_px": RUN_MAX_ANCHOR_STEP_PX,
+                "run_max_direction_anchor_delta_px": RUN_MAX_DIRECTION_ANCHOR_DELTA_PX,
+                "peek_max_adjacent_rms": PEEK_MAX_ADJACENT_RMS,
+                "peek_max_anchor_step_px": PEEK_MAX_ANCHOR_STEP_PX,
+                "max_baseline_variation_px": MAX_BASELINE_VARIATION_PX,
+            },
+            "supported_windows_scales": list(SUPPORTED_WINDOWS_SCALES),
+            "native_peek_travel_logical_px": travel,
+            "same_phase_running_anchor_deltas": [
+                round(value, 4) for value in direction_anchor_deltas
+            ],
+            "world_trajectories": trajectories,
+            "sequences": metrics,
+            "errors": errors,
+        },
+        errors,
+    )
 
 
 def load_contact_font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
@@ -235,7 +534,7 @@ def load_contact_font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont
 def contact_sheet_height() -> int:
     height = 62
     for spec in ATLAS_SPECS:
-        lane_count = spec.rows * ((spec.columns + CONTACT_COLUMNS - 1) // CONTACT_COLUMNS)
+        lane_count = spec.rows * math.ceil(spec.columns / CONTACT_COLUMNS)
         height += 32 + lane_count * (spec.display_cell[1] + 28)
     return height + 18
 
@@ -265,12 +564,7 @@ def render_contact_sheet(
     label_width = 176
     cell_gap = 2
     max_cell_width = max(spec.display_cell[0] for spec in ATLAS_SPECS)
-    width = (
-        padding * 2
-        + label_width
-        + CONTACT_COLUMNS * max_cell_width
-        + (CONTACT_COLUMNS - 1) * cell_gap
-    )
+    width = padding * 2 + label_width + CONTACT_COLUMNS * max_cell_width + 23 * cell_gap
     sheet = Image.new("RGBA", (width, contact_sheet_height()), background)
     draw = ImageDraw.Draw(sheet)
     title_font = load_contact_font(22)
@@ -279,26 +573,23 @@ def render_contact_sheet(
     frame_font = load_contact_font(10)
 
     status = "PASS" if ok else "FAIL"
+    checked = sum(spec.frame_count for spec in ATLAS_SPECS)
     draw.text(
         (padding, 14),
-        f"Mascot frame audit - 360 cells - {status} - {theme} background",
+        f"Mascot production frame audit - {checked} cells - {status} - {theme}",
         fill=primary,
         font=title_font,
     )
     draw.text(
         (padding, 42),
-        "Rendered at final logical sizes: main/motion 90x75, running 90x84",
+        "Final logical sizes: main/peek 92x76, running 92x84; runtime motion atlases 2x",
         fill=secondary,
         font=label_font,
     )
     y = 62
 
     for spec in ATLAS_SPECS:
-        draw.rounded_rectangle(
-            (padding, y, width - padding, y + 25),
-            radius=7,
-            fill=section,
-        )
+        draw.rounded_rectangle((padding, y, width - padding, y + 25), radius=7, fill=section)
         draw.text(
             (padding + 9, y + 4),
             (
@@ -311,7 +602,6 @@ def render_contact_sheet(
         )
         y += 32
         frames = all_frames.get(spec.atlas_id, {})
-
         for row in range(spec.rows):
             for segment_start in range(0, spec.columns, CONTACT_COLUMNS):
                 segment_end = min(segment_start + CONTACT_COLUMNS, spec.columns)
@@ -322,15 +612,9 @@ def render_contact_sheet(
                     font=label_font,
                     spacing=3,
                 )
-
                 for lane_column, column in enumerate(range(segment_start, segment_end)):
                     x = padding + label_width + lane_column * (max_cell_width + cell_gap)
-                    draw.text(
-                        (x + 2, y),
-                        f"{column:02d}",
-                        fill=secondary,
-                        font=frame_font,
-                    )
+                    draw.text((x + 2, y), f"{column:02d}", fill=secondary, font=frame_font)
                     cell_top = y + 17
                     cell_right = x + spec.display_cell[0]
                     cell_bottom = cell_top + spec.display_cell[1]
@@ -341,15 +625,55 @@ def render_contact_sheet(
                         width=1,
                     )
                     frame = frames.get((row, column))
-                    if frame is None:
-                        draw.line((x, cell_top, cell_right - 1, cell_bottom - 1), fill=(220, 50, 65, 255), width=2)
-                        draw.line((cell_right - 1, cell_top, x, cell_bottom - 1), fill=(220, 50, 65, 255), width=2)
-                    else:
+                    if frame is not None:
                         sheet.alpha_composite(frame, (x, cell_top))
-
                 y += spec.display_cell[1] + 28
 
     sheet.convert("RGB").save(output_path, format="PNG", optimize=True)
+
+
+def render_gif(
+    output_path: Path,
+    frames: list[Image.Image],
+    durations: int | list[int],
+    theme: str,
+) -> None:
+    background = (247, 249, 252, 255) if theme == "light" else (24, 29, 38, 255)
+    rendered: list[Image.Image] = []
+    for frame in frames:
+        canvas = Image.new("RGBA", frame.size, background)
+        canvas.alpha_composite(frame)
+        rendered.append(canvas.resize((frame.width * 2, frame.height * 2), Image.Resampling.LANCZOS))
+    rendered[0].save(
+        output_path,
+        format="GIF",
+        save_all=True,
+        append_images=rendered[1:],
+        duration=durations,
+        loop=0,
+        disposal=2,
+        optimize=False,
+    )
+
+
+def render_acceptance_gifs(
+    output_dir: Path,
+    all_frames: dict[str, dict[tuple[int, int], Image.Image]],
+) -> dict[str, str]:
+    outputs: dict[str, str] = {}
+    for row, direction in ((0, "right"), (1, "left")):
+        running = [all_frames["running"][(row, column)] for column in range(24)]
+        peeking = [all_frames["peek"][(row, column)] for column in range(12)]
+        peek_reveal = peeking + [peeking[-1]] + list(reversed(peeking))
+        peek_durations = [47] * 12 + [320] + [40] * 12
+        for theme in ("light", "dark"):
+            run_name = f"running-{direction}-{theme}.gif"
+            peek_name = f"peek-reveal-{direction}-{theme}.gif"
+            render_gif(output_dir / run_name, running, 60, theme)
+            render_gif(output_dir / peek_name, peek_reveal, peek_durations, theme)
+            outputs[f"running_{direction}_{theme}"] = run_name
+            outputs[f"peek_reveal_{direction}_{theme}"] = peek_name
+    return outputs
 
 
 def main() -> int:
@@ -369,18 +693,26 @@ def main() -> int:
         all_frames[spec.atlas_id] = images
         errors.extend(atlas_errors)
 
+    temporal_quality, temporal_errors = validate_temporal_quality(
+        project_root,
+        atlas_reports,
+        all_frames,
+    )
+    errors.extend(temporal_errors)
     expected_frames = sum(spec.frame_count for spec in ATLAS_SPECS)
     checked_frames = sum(atlas["checked_frames"] for atlas in atlas_reports)
     passed_frames = sum(atlas["passed_frames"] for atlas in atlas_reports)
     failed_frames = sum(atlas["failed_frames"] for atlas in atlas_reports)
     ok = not errors and checked_frames == expected_frames and passed_frames == expected_frames
+
     light_sheet = output_dir / "contact-sheet-light.png"
     dark_sheet = output_dir / "contact-sheet-dark.png"
     render_contact_sheet(light_sheet, "light", all_frames, ok)
     render_contact_sheet(dark_sheet, "dark", all_frames, ok)
+    gifs = render_acceptance_gifs(output_dir, all_frames) if checked_frames == expected_frames else {}
 
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "ok": ok,
         "project_root": str(project_root),
@@ -395,30 +727,28 @@ def main() -> int:
             "checked_frames": checked_frames,
             "passed_frames": passed_frames,
             "failed_frames": failed_frames,
-            "duplicate_frames_are_informational": True,
+            "temporal_quality_passed": not temporal_errors,
         },
-        "contact_sheets": {
-            "light": light_sheet.name,
-            "dark": dark_sheet.name,
-        },
+        "contact_sheets": {"light": light_sheet.name, "dark": dark_sheet.name},
+        "acceptance_gifs": gifs,
+        "temporal_quality": temporal_quality,
         "atlases": atlas_reports,
         "errors": errors,
     }
     report_path = output_dir / "report.json"
-    report_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     print(
-        f"{'PASS' if ok else 'FAIL'}: {passed_frames}/{expected_frames} mascot frames; "
-        f"report={report_path}"
+        f"{'PASS' if ok else 'FAIL'}: {passed_frames}/{expected_frames} runtime mascot frames; "
+        f"temporal={'PASS' if not temporal_errors else 'FAIL'}; report={report_path}"
     )
     print(f"light_contact_sheet={light_sheet}")
     print(f"dark_contact_sheet={dark_sheet}")
+    for name, path in gifs.items():
+        print(f"{name}={output_dir / path}")
     if errors:
         for error in errors:
-            print(f"ERROR: {error}")
+            print(error)
     return 0 if ok else 1
 
 

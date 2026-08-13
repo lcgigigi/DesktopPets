@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 
-defineProps<{
+const props = defineProps<{
   x: number
   y: number
   width: number
   placement?: 'above' | 'below'
   tailX?: number
+  entering?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -16,6 +17,10 @@ const emit = defineEmits<{
 }>()
 
 const menu = ref<HTMLElement | null>(null)
+
+function focusSafeAction() {
+  void nextTick(() => menu.value?.querySelector<HTMLButtonElement>('button')?.focus())
+}
 
 function handleHide() {
   emit('close')
@@ -48,7 +53,13 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 onMounted(() => {
-  void nextTick(() => menu.value?.querySelector<HTMLButtonElement>('button')?.focus())
+  focusSafeAction()
+})
+
+// The component mounts while its native window is still hidden. Refocus once
+// native show/focus has ACKed so every opening reliably starts on “隐藏”.
+watch(() => props.entering, (entering) => {
+  if (entering) focusSafeAction()
 })
 </script>
 
@@ -56,7 +67,10 @@ onMounted(() => {
   <nav
     ref="menu"
     class="mascot-context-menu"
-    :class="placement === 'below' ? 'is-below' : 'is-above'"
+    :class="[
+      placement === 'below' ? 'is-below' : 'is-above',
+      { 'is-entering': entering }
+    ]"
     :style="{
       left: `${x}px`,
       top: `${y}px`,

@@ -314,9 +314,10 @@ export const sysMessageService = {
   async markRead(message: SysMessageNotification) {
     if (message.msgStatus === 1) return true
 
-    await request.put<unknown, boolean>('/sys-message/read', {
+    const markedRead = await request.put<unknown, boolean>('/sys-message/read', {
       ids: [normalizeRequestId(message.rawId)],
     })
+    if (markedRead !== true) throw new Error('服务端未确认消息已读')
     message.msgStatus = 1
     return true
   },

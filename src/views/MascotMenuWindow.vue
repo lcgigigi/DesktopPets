@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { onMounted, onUnmounted, ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import MascotContextMenu from '../components/MascotContextMenu.vue'
 import {
   exitAssistant,
+  ackMascotContextMenuLayout,
   hideAssistant,
   hideMascotContextMenu,
   setMascotContextMenuReady,
@@ -15,9 +16,14 @@ const previewPlacement = previewParams?.get('placement')
 const placement = ref<'above' | 'below'>(previewPlacement === 'below' ? 'below' : 'above')
 const requestedTailX = Number(previewParams?.get('tailX'))
 const tailX = ref(Number.isFinite(requestedTailX) ? requestedTailX : 84)
+const isPlacementPreview = import.meta.env.DEV && previewParams.has('placement')
+const menuGeneration = ref<number | null>(isPlacementPreview ? 0 : null)
+const menuEntering = ref(isPlacementPreview)
 let removePlacementListener: UnlistenFn | undefined
 
 function closeMenu() {
+  menuGeneration.value = null
+  menuEntering.value = false
   void hideMascotContextMenu()
 }
 
@@ -33,13 +39,40 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') closeMenu()
 }
 
+function afterAnimationFrame() {
+  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+}
+
+async function applyPlacement(payload: MascotContextMenuPlacement) {
+  const generation = payload.generation
+  placement.value = payload.placement
+  tailX.value = payload.tailX
+  menuEntering.value = false
+  // A generation key remounts the menu, which replays its focus initialization
+  // and guarantees that every opening starts safely on “隐藏”.
+  menuGeneration.value = generation
+  await nextTick()
+  await afterAnimationFrame()
+  await afterAnimationFrame()
+  if (menuGeneration.value !== generation) return
+
+  const shown = await ackMascotContextMenuLayout(generation)
+  if (menuGeneration.value !== generation) return
+  if (!shown) {
+    menuGeneration.value = null
+    return
+  }
+  // The native HWND is visible only after ACK succeeds. Starting the CSS
+  // animation now ensures it is observable instead of running while hidden.
+  menuEntering.value = true
+}
+
 onMounted(async () => {
   window.addEventListener('keydown', handleKeydown)
   removePlacementListener = await listen<MascotContextMenuPlacement>(
     'mascot-context-menu-placement',
     (event) => {
-      placement.value = event.payload.placement
-      tailX.value = event.payload.tailX
+      void applyPlacement(event.payload)
     }
   )
   await setMascotContextMenuReady()
@@ -60,11 +93,14 @@ onUnmounted(() => {
     @contextmenu.prevent
   >
     <MascotContextMenu
+      v-if="menuGeneration !== null"
+      :key="menuGeneration"
       :x="12"
-      :y="placement === 'above' ? 4 : 14"
+      :y="placement === 'above' ? 8 : 14"
       :width="168"
       :placement="placement"
       :tail-x="tailX"
+      :entering="menuEntering"
       @hide="handleHide"
       @exit="handleExit"
       @close="closeMenu"
