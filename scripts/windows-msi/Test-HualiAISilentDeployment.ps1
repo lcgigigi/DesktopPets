@@ -93,10 +93,10 @@ function Get-HualiProcesses {
 function Stop-HualiProcesses {
   Get-HualiProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
   $deadline = [DateTime]::UtcNow.AddSeconds(10)
-  while ((Get-HualiProcesses).Count -gt 0 -and [DateTime]::UtcNow -lt $deadline) {
+  while (@(Get-HualiProcesses).Count -gt 0 -and [DateTime]::UtcNow -lt $deadline) {
     Start-Sleep -Milliseconds 100
   }
-  if ((Get-HualiProcesses).Count -gt 0) {
+  if (@(Get-HualiProcesses).Count -gt 0) {
     throw '无法停止华力 AI 桌面助手进程。'
   }
 }
@@ -104,7 +104,7 @@ function Stop-HualiProcesses {
 function Assert-NoHualiProcesses {
   param([Parameter(Mandatory = $true)][string]$Stage)
 
-  $processes = Get-HualiProcesses
+  $processes = @(Get-HualiProcesses)
   if ($processes.Count -gt 0) {
     throw "$Stage 后仍有 $($processes.Count) 个华力 AI 桌面助手进程。"
   }
@@ -113,7 +113,7 @@ function Assert-NoHualiProcesses {
 function Assert-InstalledState {
   param([Parameter(Mandatory = $true)][string]$Version)
 
-  $products = Get-InstalledProducts
+  $products = @(Get-InstalledProducts)
   if ($products.Count -ne 1) {
     throw "安装登记数量错误：实际=$($products.Count)，预期=1。"
   }
@@ -152,7 +152,7 @@ function Assert-UninstalledState {
     [string]$FormerExecutablePath = ''
   )
 
-  $products = Get-InstalledProducts
+  $products = @(Get-InstalledProducts)
   if ($products.Count -ne 0) {
     throw "$Stage 后仍存在 $($products.Count) 条 Windows Installer 产品登记。"
   }
@@ -544,7 +544,7 @@ try {
 
   if ($ValidateDefaultLaunch) {
     $currentSessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
-    $interactiveSessions = Get-InteractiveExplorerSessions
+    $interactiveSessions = @(Get-InteractiveExplorerSessions)
     if ($interactiveSessions.Count -gt 0 -and $currentSessionId -notin $interactiveSessions) {
       throw "当前验收进程在会话 $currentSessionId，Explorer 位于其他会话；无法可靠截图和识别默认启动窗口。"
     }
@@ -606,7 +606,7 @@ try {
   }
 
   if ($RunVisualSmoke) {
-    $visualInteractiveSessions = Get-InteractiveExplorerSessions
+    $visualInteractiveSessions = @(Get-InteractiveExplorerSessions)
     $visualSessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
     if ($visualSessionId -notin $visualInteractiveSessions) {
       throw "当前 Windows runner 会话 $visualSessionId 没有 Explorer 交互桌面，无法执行真实窗口截图、鼠标交互和 DPI 视觉门禁；本次发布验收明确失败。"
@@ -626,7 +626,7 @@ try {
     }
   }
 
-  $finalProducts = Get-InstalledProducts
+  $finalProducts = @(Get-InstalledProducts)
   if ($finalProducts.Count -eq 1) {
     Invoke-UninstallProduct `
       -ProductCode ([string]$finalProducts[0].PSChildName) `
