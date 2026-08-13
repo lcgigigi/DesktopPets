@@ -125,6 +125,26 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     expect(source).not.toMatch(/TopMost\s*=\s*(?:\$true|true)/i)
   })
 
+  it('compiles the backdrop against the actual Drawing and WinForms assembly locations', () => {
+    const source = normalizedPowerShell()
+    const drawingLoad = source.indexOf('Add-Type -AssemblyName System.Drawing')
+    const formsLoad = source.indexOf('Add-Type -AssemblyName System.Windows.Forms')
+    const references = source.indexOf('$backdropReferencedAssemblies = @(')
+    const backdropDefinition = source.slice(source.indexOf('public sealed class HualiVisualSmokeBackdrop'))
+    const backdropAddTypeEnd = backdropDefinition.indexOf('\nfunction Get-WindowSnapshot')
+    const backdropAddType = backdropDefinition.slice(0, backdropAddTypeEnd)
+
+    expect(drawingLoad).toBeGreaterThanOrEqual(0)
+    expect(formsLoad).toBeGreaterThan(drawingLoad)
+    expect(references).toBeGreaterThan(formsLoad)
+    expect(source).toMatch(
+      /\$backdropReferencedAssemblies = @\(\s*\[Drawing\.Bitmap\]\.Assembly\.Location\s*\[Drawing\.Rectangle\]\.Assembly\.Location\s*\[Windows\.Forms\.Form\]\.Assembly\.Location\s*\) \| Sort-Object -Unique/,
+    )
+    expect(backdropDefinition).toContain('public sealed class HualiVisualSmokeBackdrop')
+    expect(backdropAddTypeEnd).toBeGreaterThanOrEqual(0)
+    expect(backdropAddType).toContain("'@ -ReferencedAssemblies $backdropReferencedAssemblies")
+  })
+
   it('shows and verifies the backdrop before the baseline and application startup', () => {
     const source = normalizedPowerShell()
     expect(source).toMatch(

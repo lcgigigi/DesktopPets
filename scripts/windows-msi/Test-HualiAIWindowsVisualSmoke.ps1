@@ -141,6 +141,12 @@ if (-not [HualiVisualSmokeNative]::EnablePerMonitorV2()) {
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
+$backdropReferencedAssemblies = @(
+  [Drawing.Bitmap].Assembly.Location
+  [Drawing.Rectangle].Assembly.Location
+  [Windows.Forms.Form].Assembly.Location
+) | Sort-Object -Unique
+
 # Keep the visual evidence independent from whatever the interactive runner is
 # drawing behind the product. The workflow host is pwsh (normally MTA), so the
 # WinForms message loop lives on its own STA thread. This is an ordinary-z-order
@@ -300,10 +306,7 @@ public sealed class HualiVisualSmokeBackdrop
         }
     }
 }
-'@ -ReferencedAssemblies @(
-  [Drawing.Bitmap].Assembly.Location,
-  [Windows.Forms.Form].Assembly.Location
-)
+'@ -ReferencedAssemblies $backdropReferencedAssemblies
 
 function Get-WindowSnapshot {
   param([Parameter(Mandatory = $true)][Diagnostics.Process]$Process)
