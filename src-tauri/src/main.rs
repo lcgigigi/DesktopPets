@@ -34,6 +34,7 @@ const MASCOT_REVEAL_ANIMATION_DURATION_MS: u64 = 480;
 const MASCOT_DOCK_ANIMATION_FRAME_MS: u64 = 12;
 // WebView2 can report a fractional logical position after a DPI-aware resize.
 // Treat that sub-pixel drift as resize noise instead of a user drag.
+#[cfg(any(not(windows), test))]
 const MASCOT_NOTIFICATION_DRAG_EPSILON: f64 = 1.0;
 const MASCOT_CONTEXT_MENU_WIDTH: f64 = 192.0;
 const MASCOT_CONTEXT_MENU_HEIGHT: f64 = 76.0;
@@ -71,14 +72,20 @@ impl MascotDockMotion {
     }
 }
 
+#[cfg(not(windows))]
 #[derive(Clone, Copy)]
 struct MascotNotificationLayout {
     restore_position: LogicalPosition<f64>,
     expanded_position: LogicalPosition<f64>,
 }
 
+#[cfg(not(windows))]
 #[derive(Clone, Default)]
 struct MascotNotificationLayoutState(Arc<Mutex<Option<MascotNotificationLayout>>>);
+
+#[cfg(windows)]
+#[derive(Clone, Default)]
+struct MascotNotificationLayoutState;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct MascotContextMenuStatus {
@@ -459,9 +466,10 @@ fn show_window_without_activation(window: &tauri::WebviewWindow) -> Result<(), S
             )
         };
         if shown == 0 {
-            return Err("failed to show native window without activation".to_string());
+            Err("failed to show native window without activation".to_string())
+        } else {
+            Ok(())
         }
-        return Ok(());
     }
 
     #[cfg(not(windows))]
@@ -638,6 +646,7 @@ fn current_mascot_dock_side(window: &tauri::WebviewWindow, width: f64) -> Option
     ))
 }
 
+#[cfg(not(windows))]
 fn clamp_position_to_work_area(
     window: &tauri::WebviewWindow,
     position: LogicalPosition<f64>,
@@ -653,6 +662,7 @@ fn clamp_position_to_work_area(
     clamp_position_to_rect(position, width, height, work_pos, work_size)
 }
 
+#[cfg(not(windows))]
 fn fit_notification_size_to_work_area(
     window: &tauri::WebviewWindow,
     width: f64,
@@ -760,16 +770,16 @@ mod mascot_position_tests {
         mascot_avatar_physical_rect, mascot_bottom_right_position,
         mascot_context_menu_physical_geometry, mascot_dock_x, nearest_dock_side,
         notification_drag_delta, notification_physical_geometry, panel_physical_geometry,
-        peeked_dock_side, target_outer_dimension, LogicalPosition, LogicalSize,
-        MascotContextMenuPlacement, MascotContextMenuState, MascotDockSide, PanelActivityState,
-        PanelLayoutState, PhysicalPosition, PhysicalRect, PhysicalSize, MASCOT_AVATAR_HEIGHT,
-        MASCOT_AVATAR_WIDTH, MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM,
-        MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP, MASCOT_CONTEXT_MENU_GAP, MASCOT_CONTEXT_MENU_HEIGHT,
-        MASCOT_CONTEXT_MENU_TAIL_MAX, MASCOT_CONTEXT_MENU_TAIL_MIN, MASCOT_CONTEXT_MENU_WIDTH,
-        MASCOT_HEIGHT, MASCOT_MESSAGE_HEIGHT, MASCOT_MESSAGE_WIDTH,
-        MASCOT_NOTIFICATION_BOTTOM_PADDING, MASCOT_NOTIFICATION_HEIGHT, MASCOT_NOTIFICATION_WIDTH,
-        MASCOT_PEEK_VISIBLE_WIDTH, MASCOT_REST_BOTTOM_MARGIN, MASCOT_REST_RIGHT_MARGIN,
-        MASCOT_WIDTH, PANEL_COMPACT_HEIGHT, PANEL_MAX_HEIGHT, SCREEN_MARGIN,
+        peeked_dock_side, LogicalPosition, LogicalSize, MascotContextMenuPlacement,
+        MascotContextMenuState, MascotDockSide, PanelActivityState, PanelLayoutState,
+        PhysicalPosition, PhysicalRect, PhysicalSize, MASCOT_AVATAR_HEIGHT, MASCOT_AVATAR_WIDTH,
+        MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM, MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP,
+        MASCOT_CONTEXT_MENU_GAP, MASCOT_CONTEXT_MENU_HEIGHT, MASCOT_CONTEXT_MENU_TAIL_MAX,
+        MASCOT_CONTEXT_MENU_TAIL_MIN, MASCOT_CONTEXT_MENU_WIDTH, MASCOT_HEIGHT,
+        MASCOT_MESSAGE_HEIGHT, MASCOT_MESSAGE_WIDTH, MASCOT_NOTIFICATION_BOTTOM_PADDING,
+        MASCOT_NOTIFICATION_HEIGHT, MASCOT_NOTIFICATION_WIDTH, MASCOT_PEEK_VISIBLE_WIDTH,
+        MASCOT_REST_BOTTOM_MARGIN, MASCOT_REST_RIGHT_MARGIN, MASCOT_WIDTH, PANEL_COMPACT_HEIGHT,
+        PANEL_MAX_HEIGHT, SCREEN_MARGIN,
     };
 
     #[test]
@@ -1195,33 +1205,6 @@ mod mascot_position_tests {
             compact_position.y + compact_offset.y,
             collapsed_position.y + collapsed_offset.y
         );
-    }
-
-    #[test]
-    fn atomic_windows_resize_preserves_the_non_client_frame_size() {
-        assert_eq!(target_outer_dimension(168.0, 1.25, 416, 400), 226);
-        assert_eq!(target_outer_dimension(144.0, 1.25, 616, 600), 196);
-        assert_eq!(target_outer_dimension(168.0, 1.0, 168, 168), 168);
-    }
-
-    #[test]
-    fn compact_overlay_has_exact_physical_bounds_across_supported_windows_dpi_scales() {
-        for (scale, expected_width, expected_height) in [
-            (1.0, 240, 176),
-            (1.25, 300, 220),
-            (1.5, 360, 264),
-            (1.75, 420, 308),
-            (2.0, 480, 352),
-        ] {
-            assert_eq!(
-                target_outer_dimension(MASCOT_MESSAGE_WIDTH, scale, 100, 100),
-                expected_width
-            );
-            assert_eq!(
-                target_outer_dimension(MASCOT_MESSAGE_HEIGHT, scale, 100, 100),
-                expected_height
-            );
-        }
     }
 
     #[test]
@@ -1656,6 +1639,7 @@ fn align_window_to_avatar(
     }
 }
 
+#[cfg(any(not(windows), test))]
 fn notification_drag_delta(
     current_position: Option<LogicalPosition<f64>>,
     expanded_position: LogicalPosition<f64>,
@@ -1680,57 +1664,13 @@ fn notification_drag_delta(
     }
 }
 
-#[cfg(any(windows, test))]
-fn target_outer_dimension(
-    logical_inner_size: f64,
-    scale: f64,
-    current_outer_size: u32,
-    current_inner_size: u32,
-) -> i32 {
-    let frame_size = current_outer_size.saturating_sub(current_inner_size) as i64;
-    let target_inner_size = (logical_inner_size * scale).round() as i64;
-    (target_inner_size + frame_size).clamp(1, i32::MAX as i64) as i32
-}
-
+#[cfg(not(windows))]
 fn set_window_bounds(
     window: &tauri::WebviewWindow,
     position: Option<LogicalPosition<f64>>,
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    #[cfg(windows)]
-    if let (Some(position), Ok(hwnd)) = (position, window.hwnd()) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
-        };
-
-        let scale = window.scale_factor().unwrap_or(1.0);
-        let current_outer_size = window.outer_size().ok();
-        let current_inner_size = window.inner_size().ok();
-        let outer_width = current_outer_size
-            .zip(current_inner_size)
-            .map(|(outer, inner)| target_outer_dimension(width, scale, outer.width, inner.width))
-            .unwrap_or_else(|| (width * scale).round() as i32);
-        let outer_height = current_outer_size
-            .zip(current_inner_size)
-            .map(|(outer, inner)| target_outer_dimension(height, scale, outer.height, inner.height))
-            .unwrap_or_else(|| (height * scale).round() as i32);
-        let updated = unsafe {
-            SetWindowPos(
-                hwnd.0,
-                std::ptr::null_mut(),
-                (position.x * scale).round() as i32,
-                (position.y * scale).round() as i32,
-                outer_width,
-                outer_height,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
-            )
-        };
-        if updated != 0 {
-            return Ok(());
-        }
-    }
-
     window
         .set_size(Size::Logical(LogicalSize { width, height }))
         .map_err(|error| format!("failed to set logical window size: {error}"))?;
@@ -1781,16 +1721,13 @@ fn set_window_physical_bounds(
 fn resize_mascot_for_notification(
     window: &tauri::WebviewWindow,
     motion: &MascotDockMotion,
-    layout_state: &MascotNotificationLayoutState,
+    _layout_state: &MascotNotificationLayoutState,
     visible: bool,
     compact: bool,
     _reveal: bool,
     _reduced_motion: bool,
 ) -> Result<(), String> {
     motion.cancel();
-    if let Ok(mut layout) = layout_state.0.lock() {
-        *layout = None;
-    }
     let geometry = notification_physical_geometry_for_mascot(window, visible, compact)?;
     // The target monitor's DPI owns both coordinates and size. One physical
     // SetWindowPos prevents the intermediate white/clipped frame produced by
@@ -2005,7 +1942,7 @@ fn place_panel_near_mascot(
         let geometry = panel_physical_geometry_near_mascot(mascot, requested_height)?;
         // The target monitor's scale determines both size and position. Never
         // consult the hidden panel's stale DPI after a 125% <-> 200% move.
-        return set_window_physical_bounds(panel, geometry.position, geometry.size);
+        set_window_physical_bounds(panel, geometry.position, geometry.size)
     }
 
     #[cfg(not(windows))]
@@ -2373,12 +2310,13 @@ fn mascot_client_origin_physical(
             .map_err(|error| format!("failed to access mascot HWND: {error}"))?;
         let mut point = POINT { x: 0, y: 0 };
         if unsafe { ClientToScreen(hwnd.0, &mut point) } != 0 {
-            return Ok(PhysicalPosition {
+            Ok(PhysicalPosition {
                 x: point.x,
                 y: point.y,
-            });
+            })
+        } else {
+            Err("failed to convert mascot client origin to screen coordinates".to_string())
         }
-        return Err("failed to convert mascot client origin to screen coordinates".to_string());
     }
 
     #[cfg(not(windows))]
