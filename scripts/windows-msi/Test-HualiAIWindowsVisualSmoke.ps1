@@ -571,6 +571,12 @@ $report = [ordered]@{
   executable = $resolvedExecutable
   startedAt = [DateTime]::UtcNow.ToString('o')
   dpiAwareness = 'PerMonitorAwareV2'
+  # Hosted Windows Server images commonly disable client-area animations,
+  # which correctly maps WebView2 to prefers-reduced-motion. The visual gate
+  # launches only its child process with Chromium's explicit non-reduced-motion
+  # test switch so sprite progression is exercised without changing the user's
+  # system-wide accessibility preference.
+  webViewMotionOverride = '--force-prefers-no-reduced-motion'
   ok = $false
   failure = $null
   checks = [ordered]@{}
@@ -581,7 +587,30 @@ try {
   $virtualScreen = [Windows.Forms.SystemInformation]::VirtualScreen
   [HualiVisualSmokeNative]::SetCursorPos($virtualScreen.Left + 8, $virtualScreen.Top + 8) | Out-Null
   $baselinePath = Save-ScreenCapture -FileName '00-background-baseline.png'
-  $process = Start-Process -FilePath $resolvedExecutable -PassThru
+  $previousWebViewArguments = [Environment]::GetEnvironmentVariable(
+    'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
+    [EnvironmentVariableTarget]::Process
+  )
+  $motionOverride = '--force-prefers-no-reduced-motion'
+  $visualWebViewArguments = if ([string]::IsNullOrWhiteSpace($previousWebViewArguments)) {
+    $motionOverride
+  } else {
+    "$previousWebViewArguments $motionOverride"
+  }
+  [Environment]::SetEnvironmentVariable(
+    'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
+    $visualWebViewArguments,
+    [EnvironmentVariableTarget]::Process
+  )
+  try {
+    $process = Start-Process -FilePath $resolvedExecutable -PassThru
+  } finally {
+    [Environment]::SetEnvironmentVariable(
+      'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
+      $previousWebViewArguments,
+      [EnvironmentVariableTarget]::Process
+    )
+  }
   $startupWindows = Wait-ForWindows -Process $process -Condition {
     param($windows)
     $null -ne (Find-MascotWindow -Windows $windows)
