@@ -567,6 +567,28 @@ function Get-AvatarClickPoint {
   }
 }
 
+function Remove-VisualSmokeDataDirectory {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  # WebView2 browser processes can outlive their host HWND briefly. Retry only
+  # this child PID's dedicated temp directory; never terminate shared WebView2
+  # processes or delete the product's normal user-data directory.
+  for ($attempt = 1; $attempt -le 40; $attempt++) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+      return
+    }
+    try {
+      Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+      return
+    } catch {
+      if ($attempt -eq 40) {
+        throw
+      }
+      Start-Sleep -Milliseconds 250
+    }
+  }
+}
+
 $report = [ordered]@{
   executable = $resolvedExecutable
   startedAt = [DateTime]::UtcNow.ToString('o')
@@ -579,8 +601,9 @@ $report = [ordered]@{
   # maps it to fixed browser arguments; no arbitrary arguments cross this API.
   motionValidation = [ordered]@{
     mode = 'programmatic-webview2-options'
-    isolatedDataDirectory = $true
-    requested = $true
+    requested = $false
+    isolatedDataDirectoryConfigured = $false
+    isolatedDataDirectoryRemoved = $false
     animationProgressionObserved = $false
   }
   ok = $false
@@ -588,6 +611,9 @@ $report = [ordered]@{
   checks = [ordered]@{}
 }
 $process = $null
+$visualSmokeDataDirectory = $null
+$visualFailure = $null
+$cleanupFailure = $null
 
 try {
   $virtualScreen = [Windows.Forms.SystemInformation]::VirtualScreen
@@ -604,6 +630,10 @@ try {
   )
   try {
     $process = Start-Process -FilePath $resolvedExecutable -PassThru
+    $visualSmokeDataDirectory = Join-Path `
+      ([IO.Path]::GetTempPath()) `
+      "huali-ai-visual-smoke-$($process.Id)"
+    $report.motionValidation.requested = $true
   } finally {
     [Environment]::SetEnvironmentVariable(
       'HUALI_AI_VISUAL_SMOKE_FORCE_MOTION',
@@ -615,6 +645,10 @@ try {
     param($windows)
     $null -ne (Find-MascotWindow -Windows $windows)
   }
+  if (-not (Test-Path -LiteralPath $visualSmokeDataDirectory -PathType Container)) {
+    throw "WebView2 未使用独立的视觉验收数据目录：$visualSmokeDataDirectory"
+  }
+  $report.motionValidation.isolatedDataDirectoryConfigured = $true
   $mascotBefore = Find-MascotWindow -Windows $startupWindows
   $mascotHandle = [long]$mascotBefore.Handle
   # Every other visible startup HWND is a WebView2/helper surface. The menu is
@@ -857,15 +891,49 @@ try {
     # The primary assertion remains authoritative if screen capture itself is
     # unavailable (for example after an interactive desktop disconnect).
   }
-  throw $visualFailure
 } finally {
-  if ($process -and -not $process.HasExited) {
-    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-    $process.WaitForExit(5000) | Out-Null
+  try {
+    if ($process -and -not $process.HasExited) {
+      Stop-Process -Id $process.Id -Force -ErrorAction Stop
+      if (-not $process.WaitForExit(5000)) {
+        throw "视觉验收结束后，机器人进程 $($process.Id) 未在 5 秒内退出。"
+      }
+      $process.Refresh()
+      if (-not $process.HasExited) {
+        throw "视觉验收结束后，机器人进程 $($process.Id) 仍在运行。"
+      }
+    }
+  } catch {
+    $cleanupFailure = $_
+    $report.ok = $false
+    if (-not $report.failure) {
+      $report.failure = $_.Exception.Message
+    }
+  }
+  if ($visualSmokeDataDirectory) {
+    try {
+      Remove-VisualSmokeDataDirectory -Path $visualSmokeDataDirectory
+      $report.motionValidation.isolatedDataDirectoryRemoved = $true
+    } catch {
+      if (-not $cleanupFailure) {
+        $cleanupFailure = $_
+      }
+      $report.ok = $false
+      if (-not $report.failure) {
+        $report.failure = $_.Exception.Message
+      }
+    }
   }
   $report.completedAt = [DateTime]::UtcNow.ToString('o')
   $reportPath = Join-Path $resolvedOutput 'visual-smoke-report.json'
   $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding UTF8
+}
+
+if ($visualFailure) {
+  throw $visualFailure
+}
+if ($cleanupFailure) {
+  throw $cleanupFailure
 }
 
 Write-Host "Windows 真实窗口视觉冒烟测试通过：$resolvedOutput"

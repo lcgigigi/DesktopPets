@@ -3268,22 +3268,26 @@ fn main() {
     // Tauri's context is important here: elevated WebView2 hosts can ignore the
     // similarly named machine/process browser-argument environment override.
     #[cfg(windows)]
+    let visual_smoke_force_motion = matches!(
+        std::env::var("HUALI_AI_VISUAL_SMOKE_FORCE_MOTION").as_deref(),
+        Ok("1")
+    );
+    #[cfg(windows)]
     let context = {
         let mut context = tauri::generate_context!();
-        if matches!(
-            std::env::var("HUALI_AI_VISUAL_SMOKE_FORCE_MOTION").as_deref(),
-            Ok("1")
-        ) {
+        if visual_smoke_force_motion {
             const VISUAL_SMOKE_BROWSER_ARGS: &str =
                 "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
                  --autoplay-policy=no-user-gesture-required \
                  --force-prefers-no-reduced-motion";
-            let visual_smoke_data_directory =
-                PathBuf::from(format!("huali-ai-visual-smoke-{}", std::process::id()));
 
             for window in &mut context.config_mut().app.windows {
+                // Tauri's config accepts only a relative data_directory and
+                // resolves it below each window label. Build these three windows
+                // in setup instead, where WebviewWindowBuilder can apply one
+                // shared absolute UDF to every WebView2 environment.
+                window.create = false;
                 window.additional_browser_args = Some(VISUAL_SMOKE_BROWSER_ARGS.to_owned());
-                window.data_directory = Some(visual_smoke_data_directory.clone());
             }
         }
         context
@@ -3346,7 +3350,19 @@ fn main() {
             open_or_focus_web_url,
             take_desktop_auth_callback
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            #[cfg(windows)]
+            if visual_smoke_force_motion {
+                let visual_smoke_data_directory = std::env::temp_dir()
+                    .join(format!("huali-ai-visual-smoke-{}", std::process::id()));
+                let window_configs = app.config().app.windows.clone();
+                for window_config in window_configs {
+                    tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)?
+                        .data_directory(visual_smoke_data_directory.clone())
+                        .build()?;
+                }
+            }
+
             let startup_args = std::env::args().collect::<Vec<_>>();
             app.state::<PendingDesktopAuthCallback>()
                 .capture(&startup_args);
