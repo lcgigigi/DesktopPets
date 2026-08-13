@@ -139,6 +139,42 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     expect(source).not.toMatch(/TopMost\s*=\s*(?:\$true|true)/i)
   })
 
+  it('pulses above the foreground without activation before returning to normal z-order', () => {
+    const source = normalizedPowerShell()
+    const classStart = source.indexOf('public sealed class HualiVisualSmokeBackdrop')
+    const classEnd = source.indexOf("'@ -ReferencedAssemblies $backdropReferencedAssemblies", classStart)
+    const backdropClass = source.slice(classStart, classEnd)
+    const shownStart = backdropClass.indexOf('backdrop.Shown += delegate')
+    const shownEnd = backdropClass.indexOf('\n                };', shownStart)
+    const shown = backdropClass.slice(shownStart, shownEnd)
+
+    expect(classStart).toBeGreaterThanOrEqual(0)
+    expect(classEnd).toBeGreaterThan(classStart)
+    expect(backdropClass).toMatch(
+      /\[DllImport\("user32\.dll", SetLastError = true\)\][\s\S]*?private static extern bool SetWindowPos\(/,
+    )
+    expect(backdropClass).toContain('private static readonly IntPtr HwndTopmost = new IntPtr(-1);')
+    expect(backdropClass).toContain('private static readonly IntPtr HwndNotTopmost = new IntPtr(-2);')
+    expect(backdropClass).toContain('private const uint SwpNoSize = 0x0001;')
+    expect(backdropClass).toContain('private const uint SwpNoMove = 0x0002;')
+    expect(backdropClass).toContain('private const uint SwpNoActivate = 0x0010;')
+    expect(shownStart).toBeGreaterThanOrEqual(0)
+    expect(shownEnd).toBeGreaterThan(shownStart)
+    expect(shown).toContain('uint zOrderFlags = SwpNoSize | SwpNoMove | SwpNoActivate;')
+
+    const topmostPulse = shown.indexOf('HwndTopmost')
+    const normalBandPulse = shown.indexOf('HwndNotTopmost')
+    const refresh = shown.indexOf('backdrop.Refresh();')
+    const ready = shown.indexOf('ready.Set();')
+
+    expect(topmostPulse).toBeGreaterThanOrEqual(0)
+    expect(normalBandPulse).toBeGreaterThan(topmostPulse)
+    expect(refresh).toBeGreaterThan(normalBandPulse)
+    expect(ready).toBeGreaterThan(refresh)
+    expect(backdropClass).toContain('backdrop.TopMost = false;')
+    expect(backdropClass).not.toMatch(/TopMost\s*=\s*true/i)
+  })
+
   it('uses complete Core reference-pack inputs and runtime Desktop assembly locations', () => {
     const source = normalizedPowerShell()
     const drawingLoad = source.indexOf('Add-Type -AssemblyName System.Drawing')
@@ -161,10 +197,15 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     expect(coreBranch).toMatch(
       /\$powerShellReferenceAssemblies = @\(\s*Get-ChildItem -LiteralPath \$powerShellReferenceDirectory -Filter '\*\.dll' -File \|\s*ForEach-Object \{ \$_\.FullName \}\s*\)/,
     )
-    expect(coreBranch).toContain(
-      "$windowsDesktopDirectory 'System.Windows.Forms.Primitives.dll'",
+    expect(coreBranch).toMatch(
+      /\$windowsDesktopDirectory = \[IO\.Path\]::GetDirectoryName\(\s*\[Windows\.Forms\.Form\]\.Assembly\.Location\s*\)/,
     )
-    expect(coreBranch).toContain("$windowsDesktopDirectory 'System.Private.Windows.Core.dll'")
+    expect(coreBranch).toContain(
+      "Join-Path $windowsDesktopDirectory 'System.Windows.Forms.Primitives.dll'",
+    )
+    expect(coreBranch).toContain(
+      "Join-Path $windowsDesktopDirectory 'System.Private.Windows.Core.dll'",
+    )
     expect(coreBranch).toMatch(
       /foreach \(\$windowsDesktopReference in \$windowsDesktopReferenceAssemblies\) \{[\s\S]*?Test-Path -LiteralPath \$windowsDesktopReference -PathType Leaf/,
     )

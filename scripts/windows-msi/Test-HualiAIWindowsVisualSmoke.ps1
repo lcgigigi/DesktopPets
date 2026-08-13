@@ -212,6 +212,11 @@ using System.Windows.Forms;
 public sealed class HualiVisualSmokeBackdrop
 {
     private static readonly IntPtr PerMonitorAwareV2 = new IntPtr(-4);
+    private static readonly IntPtr HwndTopmost = new IntPtr(-1);
+    private static readonly IntPtr HwndNotTopmost = new IntPtr(-2);
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpNoMove = 0x0002;
+    private const uint SwpNoActivate = 0x0010;
 
     private readonly Rectangle bounds;
     private readonly Color color;
@@ -223,6 +228,18 @@ public sealed class HualiVisualSmokeBackdrop
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(
+        IntPtr hWnd,
+        IntPtr hWndInsertAfter,
+        int x,
+        int y,
+        int width,
+        int height,
+        uint flags
+    );
 
     public HualiVisualSmokeBackdrop(Rectangle bounds, int red, int green, int blue)
     {
@@ -308,6 +325,41 @@ public sealed class HualiVisualSmokeBackdrop
                 backdrop.Bounds = bounds;
                 backdrop.Shown += delegate
                 {
+                    // Raise above an already-foreground terminal, then return
+                    // to the top of the normal window band. The product starts
+                    // afterwards in the always-on-top band, so its mascot/menu
+                    // remain above this controlled test surface.
+                    uint zOrderFlags = SwpNoSize | SwpNoMove | SwpNoActivate;
+                    if (!SetWindowPos(
+                        backdrop.Handle,
+                        HwndTopmost,
+                        0,
+                        0,
+                        0,
+                        0,
+                        zOrderFlags
+                    ))
+                    {
+                        throw new Win32Exception(
+                            Marshal.GetLastWin32Error(),
+                            "Unable to raise the visual-smoke backdrop."
+                        );
+                    }
+                    if (!SetWindowPos(
+                        backdrop.Handle,
+                        HwndNotTopmost,
+                        0,
+                        0,
+                        0,
+                        0,
+                        zOrderFlags
+                    ))
+                    {
+                        throw new Win32Exception(
+                            Marshal.GetLastWin32Error(),
+                            "Unable to return the visual-smoke backdrop to the normal band."
+                        );
+                    }
                     backdrop.Refresh();
                     backdrop.Update();
                     ready.Set();
