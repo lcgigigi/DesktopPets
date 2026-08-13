@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import deploymentSmokeSource from '../../scripts/windows-msi/Test-HualiAISilentDeployment.ps1?raw'
 import visualSmokeSource from '../../scripts/windows-msi/Test-HualiAIWindowsVisualSmoke.ps1?raw'
+import rustSource from '../../src-tauri/src/main.rs?raw'
 
 describe('Windows administrator deployment smoke contracts', () => {
   it('keeps zero, one and many PowerShell results array-shaped under StrictMode', () => {
@@ -18,14 +19,31 @@ describe('Windows administrator deployment smoke contracts', () => {
     )
   })
 
-  it('forces motion only for the visual child process and restores the host environment', () => {
+  it('uses isolated programmatic WebView2 options only for the visual child process', () => {
     const normalized = visualSmokeSource.replace(/\r\n?/g, '\n')
 
-    expect(normalized).toContain("webViewMotionOverride = '--force-prefers-no-reduced-motion'")
-    expect(normalized).toContain("'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'")
-    expect(normalized).toContain('$visualWebViewArguments')
+    expect(normalized).toContain("mode = 'programmatic-webview2-options'")
+    expect(normalized).toContain('animationProgressionObserved = $false')
+    expect(normalized).toContain('$report.motionValidation.animationProgressionObserved = $true')
+    expect(normalized).toContain("'HUALI_AI_VISUAL_SMOKE_FORCE_MOTION'")
+    expect(normalized).toContain('$previousVisualSmokeMotion')
     expect(normalized).toMatch(
-      /SetEnvironmentVariable\([\s\S]*?\$visualWebViewArguments[\s\S]*?Start-Process[\s\S]*?finally\s*\{[\s\S]*?SetEnvironmentVariable\([\s\S]*?\$previousWebViewArguments/
+      /SetEnvironmentVariable\([\s\S]*?'1'[\s\S]*?Start-Process[\s\S]*?finally\s*\{[\s\S]*?SetEnvironmentVariable\([\s\S]*?\$previousVisualSmokeMotion/
     )
+    expect(normalized.match(/EnvironmentVariableTarget]::Process/g)).toHaveLength(3)
+    expect(normalized).not.toContain('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS')
+    expect(normalized).not.toContain('--force-prefers-no-reduced-motion')
+
+    const nativeMain = rustSource.replace(/\r\n?/g, '\n')
+    expect(nativeMain).toContain('std::env::var("HUALI_AI_VISUAL_SMOKE_FORCE_MOTION")')
+    expect(nativeMain).toMatch(/\.as_deref\(\),\s*Ok\("1"\)/)
+    expect(nativeMain).toContain('--force-prefers-no-reduced-motion')
+    expect(nativeMain).toContain('--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection')
+    expect(nativeMain).toContain('--autoplay-policy=no-user-gesture-required')
+    expect(nativeMain).toContain('window.additional_browser_args = Some(')
+    expect(nativeMain).toContain('window.data_directory = Some(')
+    expect(nativeMain).toContain('huali-ai-visual-smoke-{}')
+    expect(nativeMain).toContain('.run(context)')
+    expect(nativeMain).not.toContain('.run(tauri::generate_context!())')
   })
 })

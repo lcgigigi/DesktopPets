@@ -3261,6 +3261,36 @@ fn main() {
         persist_startup_desktop_auth_callback(&callback_url);
     }
 
+    // Windows Server runners commonly expose the OS reduced-motion preference
+    // to WebView2. Keep the product's accessibility behavior unchanged, while
+    // allowing the isolated visual release gate to exercise real sprite
+    // progression through WebView2's programmatic environment options. Using
+    // Tauri's context is important here: elevated WebView2 hosts can ignore the
+    // similarly named machine/process browser-argument environment override.
+    #[cfg(windows)]
+    let context = {
+        let mut context = tauri::generate_context!();
+        if matches!(
+            std::env::var("HUALI_AI_VISUAL_SMOKE_FORCE_MOTION").as_deref(),
+            Ok("1")
+        ) {
+            const VISUAL_SMOKE_BROWSER_ARGS: &str =
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+                 --autoplay-policy=no-user-gesture-required \
+                 --force-prefers-no-reduced-motion";
+            let visual_smoke_data_directory =
+                PathBuf::from(format!("huali-ai-visual-smoke-{}", std::process::id()));
+
+            for window in &mut context.config_mut().app.windows {
+                window.additional_browser_args = Some(VISUAL_SMOKE_BROWSER_ARGS.to_owned());
+                window.data_directory = Some(visual_smoke_data_directory.clone());
+            }
+        }
+        context
+    };
+    #[cfg(not(windows))]
+    let context = tauri::generate_context!();
+
     let pending_desktop_auth = PendingDesktopAuthCallback::default();
     let single_instance_desktop_auth = pending_desktop_auth.clone();
 
@@ -3430,6 +3460,6 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running huali ai mascot");
 }

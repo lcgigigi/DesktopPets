@@ -573,10 +573,16 @@ $report = [ordered]@{
   dpiAwareness = 'PerMonitorAwareV2'
   # Hosted Windows Server images commonly disable client-area animations,
   # which correctly maps WebView2 to prefers-reduced-motion. The visual gate
-  # launches only its child process with Chromium's explicit non-reduced-motion
-  # test switch so sprite progression is exercised without changing the user's
-  # system-wide accessibility preference.
-  webViewMotionOverride = '--force-prefers-no-reduced-motion'
+  # asks this child to use Tauri/WebView2's programmatic, isolated test options
+  # so sprite progression is exercised without changing the user's system-wide
+  # accessibility preference. The child accepts only the exact value "1" and
+  # maps it to fixed browser arguments; no arbitrary arguments cross this API.
+  motionValidation = [ordered]@{
+    mode = 'programmatic-webview2-options'
+    isolatedDataDirectory = $true
+    requested = $true
+    animationProgressionObserved = $false
+  }
   ok = $false
   failure = $null
   checks = [ordered]@{}
@@ -587,27 +593,21 @@ try {
   $virtualScreen = [Windows.Forms.SystemInformation]::VirtualScreen
   [HualiVisualSmokeNative]::SetCursorPos($virtualScreen.Left + 8, $virtualScreen.Top + 8) | Out-Null
   $baselinePath = Save-ScreenCapture -FileName '00-background-baseline.png'
-  $previousWebViewArguments = [Environment]::GetEnvironmentVariable(
-    'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
+  $previousVisualSmokeMotion = [Environment]::GetEnvironmentVariable(
+    'HUALI_AI_VISUAL_SMOKE_FORCE_MOTION',
     [EnvironmentVariableTarget]::Process
   )
-  $motionOverride = '--force-prefers-no-reduced-motion'
-  $visualWebViewArguments = if ([string]::IsNullOrWhiteSpace($previousWebViewArguments)) {
-    $motionOverride
-  } else {
-    "$previousWebViewArguments $motionOverride"
-  }
   [Environment]::SetEnvironmentVariable(
-    'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
-    $visualWebViewArguments,
+    'HUALI_AI_VISUAL_SMOKE_FORCE_MOTION',
+    '1',
     [EnvironmentVariableTarget]::Process
   )
   try {
     $process = Start-Process -FilePath $resolvedExecutable -PassThru
   } finally {
     [Environment]::SetEnvironmentVariable(
-      'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
-      $previousWebViewArguments,
+      'HUALI_AI_VISUAL_SMOKE_FORCE_MOTION',
+      $previousVisualSmokeMotion,
       [EnvironmentVariableTarget]::Process
     )
   }
@@ -677,6 +677,7 @@ try {
   if ($uniqueAnimationFrames -lt 3) {
     throw "Windows WebView2 动画未正常前进：29 次采样仅 $uniqueAnimationFrames 个不同画面。"
   }
+  $report.motionValidation.animationProgressionObserved = $true
   if ($maximumPerimeterDifference -gt 12) {
     throw "机器人透明外缘与桌面差异过大（$maximumPerimeterDifference），可能出现白色底框。"
   }
