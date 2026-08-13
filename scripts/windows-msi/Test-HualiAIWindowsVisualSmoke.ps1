@@ -55,6 +55,38 @@ public static class HualiVisualSmokeNative
         public uint Flags;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int X;
+        public int Y;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct INPUTUNION
+    {
+        [FieldOffset(0)]
+        public MOUSEINPUT Mouse;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint Type;
+        public INPUTUNION Union;
+    }
+
     private static readonly IntPtr PerMonitorAwareV2 = new IntPtr(-4);
 
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
@@ -96,7 +128,13 @@ public static class HualiVisualSmokeNative
     public static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
 
     [DllImport("user32.dll")]
-    public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+    private static extern IntPtr WindowFromPoint(POINT point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint inputCount, INPUT[] inputs, int inputSize);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SetWindowPos(
@@ -139,6 +177,32 @@ public static class HualiVisualSmokeNative
             GetThreadDpiAwarenessContext(),
             PerMonitorAwareV2
         );
+    }
+
+    public static long RootWindowFromPoint(int x, int y)
+    {
+        var target = WindowFromPoint(new POINT { X = x, Y = y });
+        return target == IntPtr.Zero ? 0 : GetAncestor(target, 2).ToInt64();
+    }
+
+    public static uint SendMouseClick(bool rightButton)
+    {
+        var down = rightButton ? 0x0008u : 0x0002u;
+        var up = rightButton ? 0x0010u : 0x0004u;
+        var inputs = new[]
+        {
+            new INPUT
+            {
+                Type = 0,
+                Union = new INPUTUNION { Mouse = new MOUSEINPUT { Flags = down } }
+            },
+            new INPUT
+            {
+                Type = 0,
+                Union = new INPUTUNION { Mouse = new MOUSEINPUT { Flags = up } }
+            }
+        };
+        return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
     }
 }
 '@
@@ -949,19 +1013,24 @@ function Invoke-MouseClick {
   param(
     [Parameter(Mandatory = $true)][int]$X,
     [Parameter(Mandatory = $true)][int]$Y,
-    [ValidateSet('Left', 'Right')][string]$Button = 'Left'
+    [ValidateSet('Left', 'Right')][string]$Button = 'Left',
+    [long]$ExpectedRootHandle = 0
   )
 
   if (-not [HualiVisualSmokeNative]::SetCursorPos($X, $Y)) {
     throw "无法将鼠标移到 $X,$Y。"
   }
   Start-Sleep -Milliseconds 80
-  if ($Button -eq 'Right') {
-    [HualiVisualSmokeNative]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero)
-    [HualiVisualSmokeNative]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)
-  } else {
-    [HualiVisualSmokeNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    [HualiVisualSmokeNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+  if ($ExpectedRootHandle -ne 0) {
+    $actualRootHandle = [HualiVisualSmokeNative]::RootWindowFromPoint($X, $Y)
+    if ($actualRootHandle -ne $ExpectedRootHandle) {
+      throw "鼠标位置 $X,$Y 未命中机器人窗口：实际 HWND=$actualRootHandle，预期 HWND=$ExpectedRootHandle。"
+    }
+  }
+  $sentInputCount = [HualiVisualSmokeNative]::SendMouseClick($Button -eq 'Right')
+  if ($sentInputCount -ne 2) {
+    $lastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "Windows 鼠标输入注入不完整：已发送=$sentInputCount，期望=2，Win32=$lastError。"
   }
 }
 
@@ -1218,7 +1287,20 @@ try {
   $report.motionValidation.animationProgressionObserved = $true
 
   $avatarPoint = Get-AvatarClickPoint -MascotWindow $mascotBefore -Scale $scale
-  Invoke-MouseClick -X $avatarPoint.X -Y $avatarPoint.Y -Button Right
+  # Notifications deliberately appear without stealing focus. Give the first
+  # click to the WebView, then send the real context click before the 280 ms
+  # single-click timer fires; the context handler cancels that timer.
+  Invoke-MouseClick `
+    -X $avatarPoint.X `
+    -Y $avatarPoint.Y `
+    -Button Left `
+    -ExpectedRootHandle $mascotHandle
+  Start-Sleep -Milliseconds 100
+  Invoke-MouseClick `
+    -X $avatarPoint.X `
+    -Y $avatarPoint.Y `
+    -Button Right `
+    -ExpectedRootHandle $mascotHandle
   $menuOpenWindows = Wait-ForWindows -Process $process -Condition {
     param($windows)
     $null -ne (Find-WindowByLogicalSize `
@@ -1361,7 +1443,17 @@ try {
   if ($topDpi -lt 96) { $topDpi = 96 }
   $topScale = $topDpi / 96.0
   $topAvatarPoint = Get-AvatarClickPoint -MascotWindow $topEdgeMascot -Scale $topScale
-  Invoke-MouseClick -X $topAvatarPoint.X -Y $topAvatarPoint.Y -Button Right
+  Invoke-MouseClick `
+    -X $topAvatarPoint.X `
+    -Y $topAvatarPoint.Y `
+    -Button Left `
+    -ExpectedRootHandle $mascotHandle
+  Start-Sleep -Milliseconds 100
+  Invoke-MouseClick `
+    -X $topAvatarPoint.X `
+    -Y $topAvatarPoint.Y `
+    -Button Right `
+    -ExpectedRootHandle $mascotHandle
   $belowWindows = Wait-ForWindows -Process $process -Condition {
     param($windows)
     $null -ne (Find-WindowByHandle -Windows $windows -Handle $menuHandle)
