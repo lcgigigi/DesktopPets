@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import unsignedV1039WorkflowSource from '../../.github/workflows/build-windows-msi-unsigned-v1039.yml?raw'
 import visualSmokeSource from '../../scripts/windows-msi/Test-HualiAIWindowsVisualSmoke.ps1?raw'
 
 const FRAME_WIDTH = 120
@@ -113,6 +114,19 @@ function normalizedPowerShell() {
   return visualSmokeSource.replace(/\r\n?/g, '\n')
 }
 
+function normalizedWorkflow() {
+  return unsignedV1039WorkflowSource.replace(/\r\n?/g, '\n')
+}
+
+function getWorkflowStep(source: string, name: string) {
+  const start = source.indexOf(`      - name: ${name}`)
+  const nextStep = source.indexOf('\n      - name:', start + 1)
+  return {
+    start,
+    source: source.slice(start, nextStep === -1 ? source.length : nextStep),
+  }
+}
+
 describe('Windows visual-smoke fixed backdrop contract', () => {
   it('uses a normal-z-order fixed RGB backdrop on a dedicated STA UI thread', () => {
     const source = normalizedPowerShell()
@@ -125,24 +139,49 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     expect(source).not.toMatch(/TopMost\s*=\s*(?:\$true|true)/i)
   })
 
-  it('compiles the backdrop against the actual Drawing and WinForms assembly locations', () => {
+  it('uses complete Core reference-pack inputs and runtime Desktop assembly locations', () => {
     const source = normalizedPowerShell()
     const drawingLoad = source.indexOf('Add-Type -AssemblyName System.Drawing')
     const formsLoad = source.indexOf('Add-Type -AssemblyName System.Windows.Forms')
-    const references = source.indexOf('$backdropReferencedAssemblies = @(')
+    const coreStart = source.indexOf("if ($PSVersionTable.PSEdition -eq 'Core') {")
+    const desktopStart = source.indexOf('} else {', coreStart)
+    const backdropTypeStart = source.indexOf("Add-Type -TypeDefinition @'", desktopStart)
+    const coreBranch = source.slice(coreStart, desktopStart)
+    const desktopBranch = source.slice(desktopStart, backdropTypeStart)
     const backdropDefinition = source.slice(source.indexOf('public sealed class HualiVisualSmokeBackdrop'))
     const backdropAddTypeEnd = backdropDefinition.indexOf('\nfunction Get-WindowSnapshot')
     const backdropAddType = backdropDefinition.slice(0, backdropAddTypeEnd)
 
     expect(drawingLoad).toBeGreaterThanOrEqual(0)
     expect(formsLoad).toBeGreaterThan(drawingLoad)
-    expect(references).toBeGreaterThan(formsLoad)
-    expect(source).toMatch(
+    expect(coreStart).toBeGreaterThan(formsLoad)
+    expect(desktopStart).toBeGreaterThan(coreStart)
+    expect(backdropTypeStart).toBeGreaterThan(desktopStart)
+    expect(coreBranch).toContain("$powerShellReferenceDirectory = Join-Path $PSHOME 'ref'")
+    expect(coreBranch).toMatch(
+      /\$powerShellReferenceAssemblies = @\(\s*Get-ChildItem -LiteralPath \$powerShellReferenceDirectory -Filter '\*\.dll' -File \|\s*ForEach-Object \{ \$_\.FullName \}\s*\)/,
+    )
+    expect(coreBranch).toContain(
+      "$windowsDesktopDirectory 'System.Windows.Forms.Primitives.dll'",
+    )
+    expect(coreBranch).toContain("$windowsDesktopDirectory 'System.Private.Windows.Core.dll'")
+    expect(coreBranch).toMatch(
+      /foreach \(\$windowsDesktopReference in \$windowsDesktopReferenceAssemblies\) \{[\s\S]*?Test-Path -LiteralPath \$windowsDesktopReference -PathType Leaf/,
+    )
+    expect(coreBranch).toMatch(
+      /\$backdropReferencedAssemblies = @\(\s*\$powerShellReferenceAssemblies\s*\[Drawing\.Bitmap\]\.Assembly\.Location\s*\[Windows\.Forms\.Form\]\.Assembly\.Location\s*\$windowsDesktopReferenceAssemblies\s*\) \| Sort-Object -Unique/,
+    )
+    expect(coreBranch).not.toContain('[Drawing.Rectangle].Assembly.Location')
+    expect(desktopBranch).toMatch(
       /\$backdropReferencedAssemblies = @\(\s*\[Drawing\.Bitmap\]\.Assembly\.Location\s*\[Drawing\.Rectangle\]\.Assembly\.Location\s*\[Windows\.Forms\.Form\]\.Assembly\.Location\s*\) \| Sort-Object -Unique/,
     )
     expect(backdropDefinition).toContain('public sealed class HualiVisualSmokeBackdrop')
     expect(backdropAddTypeEnd).toBeGreaterThanOrEqual(0)
     expect(backdropAddType).toContain("'@ -ReferencedAssemblies $backdropReferencedAssemblies")
+    expect(source).toMatch(/param\([\s\S]*?\[switch\]\$CompileBackdropOnly[\s\S]*?\)/)
+    expect(backdropAddType).toMatch(
+      /if \(\$CompileBackdropOnly\) \{[\s\S]*?\[HualiVisualSmokeBackdrop\]::new\([\s\S]*?\)[\s\S]*?return\s*\}/,
+    )
   })
 
   it('shows and verifies the backdrop before the baseline and application startup', () => {
@@ -226,6 +265,29 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     expect(fourEdgeStart).toBeGreaterThan(animationLoopEnd)
     expect(fourEdgeEnd).toBeGreaterThan(fourEdgeStart)
     expect(execution.slice(fourEdgeStart, fourEdgeEnd)).toContain('-IncludeTop')
+  })
+})
+
+describe('Windows v1.0.39 workflow visual-gate compiler contract', () => {
+  it('compiles the gate in PowerShell 7 and 5.1 before Node and Rust setup', () => {
+    const workflow = normalizedWorkflow()
+    const powerShell7 = getWorkflowStep(workflow, 'Compile visual gate with PowerShell 7')
+    const windowsPowerShell = getWorkflowStep(
+      workflow,
+      'Compile visual gate with Windows PowerShell 5.1',
+    )
+    const nodeSetup = getWorkflowStep(workflow, 'Set up Node.js')
+    const rustSetup = getWorkflowStep(workflow, 'Set up stable Rust MSVC')
+    const compileCommand = '& .\\scripts\\windows-msi\\Test-HualiAIWindowsVisualSmoke.ps1 -CompileBackdropOnly'
+
+    expect(powerShell7.start).toBeGreaterThanOrEqual(0)
+    expect(windowsPowerShell.start).toBeGreaterThan(powerShell7.start)
+    expect(nodeSetup.start).toBeGreaterThan(windowsPowerShell.start)
+    expect(rustSetup.start).toBeGreaterThan(nodeSetup.start)
+    expect(powerShell7.source).toMatch(/\n\s+shell: pwsh\s*\n/)
+    expect(windowsPowerShell.source).toMatch(/\n\s+shell: powershell\s*\n/)
+    expect(powerShell7.source).toContain(compileCommand)
+    expect(windowsPowerShell.source).toContain(compileCommand)
   })
 })
 

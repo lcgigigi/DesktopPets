@@ -36,6 +36,16 @@ jobs:
             -LiteralPath .\artifacts\windows-deployment-smoke\workflow-run.json `
             -Encoding UTF8
 
+      - name: Compile visual gate with PowerShell 7
+        shell: pwsh
+        run: |
+          & .\scripts\windows-msi\Test-HualiAIWindowsVisualSmoke.ps1 -CompileBackdropOnly
+
+      - name: Compile visual gate with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          & .\scripts\windows-msi\Test-HualiAIWindowsVisualSmoke.ps1 -CompileBackdropOnly
+
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:

@@ -1,10 +1,10 @@
 ﻿[CmdletBinding()]
 param(
-  [Parameter(Mandatory = $true)]
   [string]$ExecutablePath,
 
-  [Parameter(Mandatory = $true)]
-  [string]$OutputDirectory
+  [string]$OutputDirectory,
+
+  [switch]$CompileBackdropOnly
 )
 
 Set-StrictMode -Version Latest
@@ -14,9 +14,18 @@ if ($env:OS -ne 'Windows_NT') {
   throw '该脚本只能在 Windows 上运行。'
 }
 
-$resolvedExecutable = (Resolve-Path -LiteralPath $ExecutablePath).Path
-$resolvedOutput = [IO.Path]::GetFullPath($OutputDirectory)
-New-Item -ItemType Directory -Path $resolvedOutput -Force | Out-Null
+if (-not $CompileBackdropOnly) {
+  if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
+    throw '必须提供待测程序路径。'
+  }
+  if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    throw '必须提供视觉证据输出目录。'
+  }
+
+  $resolvedExecutable = (Resolve-Path -LiteralPath $ExecutablePath).Path
+  $resolvedOutput = [IO.Path]::GetFullPath($OutputDirectory)
+  New-Item -ItemType Directory -Path $resolvedOutput -Force | Out-Null
+}
 
 # Establish one physical-coordinate system before loading WinForms or querying
 # any HWND. Windows otherwise virtualizes some coordinates for powershell.exe at
@@ -141,11 +150,51 @@ if (-not [HualiVisualSmokeNative]::EnablePerMonitorV2()) {
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
-$backdropReferencedAssemblies = @(
-  [Drawing.Bitmap].Assembly.Location
-  [Drawing.Rectangle].Assembly.Location
-  [Windows.Forms.Form].Assembly.Location
-) | Sort-Object -Unique
+if ($PSVersionTable.PSEdition -eq 'Core') {
+  # Supplying -ReferencedAssemblies replaces PowerShell 7's default .NET
+  # reference set. Use the exact reference pack shipped with this pwsh so
+  # threading, interop and component-model facades stay compatible with its
+  # current .NET runtime, then add the Windows Desktop implementation
+  # assemblies that are not part of Microsoft.NETCore.App.
+  $powerShellReferenceDirectory = Join-Path $PSHOME 'ref'
+  if (-not (Test-Path -LiteralPath $powerShellReferenceDirectory -PathType Container)) {
+    throw "PowerShell 参考程序集目录不存在：$powerShellReferenceDirectory"
+  }
+  $powerShellReferenceAssemblies = @(
+    Get-ChildItem -LiteralPath $powerShellReferenceDirectory -Filter '*.dll' -File |
+      ForEach-Object { $_.FullName }
+  )
+  if ($powerShellReferenceAssemblies.Count -eq 0) {
+    throw "PowerShell 参考程序集目录为空：$powerShellReferenceDirectory"
+  }
+  $windowsDesktopDirectory = [IO.Path]::GetDirectoryName(
+    [Windows.Forms.Form].Assembly.Location
+  )
+  $windowsDesktopReferenceAssemblies = @(
+    Join-Path $windowsDesktopDirectory 'System.Windows.Forms.Primitives.dll'
+    Join-Path $windowsDesktopDirectory 'System.Private.Windows.Core.dll'
+  )
+  foreach ($windowsDesktopReference in $windowsDesktopReferenceAssemblies) {
+    if (-not (Test-Path -LiteralPath $windowsDesktopReference -PathType Leaf)) {
+      throw "Windows Desktop 参考程序集不存在：$windowsDesktopReference"
+    }
+  }
+  $backdropReferencedAssemblies = @(
+    $powerShellReferenceAssemblies
+    [Drawing.Bitmap].Assembly.Location
+    [Windows.Forms.Form].Assembly.Location
+    $windowsDesktopReferenceAssemblies
+  ) | Sort-Object -Unique
+} else {
+  # Windows PowerShell 5.1 compiles against the .NET Framework defaults;
+  # Bitmap and Rectangle can resolve to the same System.Drawing assembly, so
+  # keep the paths runtime-derived and de-duplicated.
+  $backdropReferencedAssemblies = @(
+    [Drawing.Bitmap].Assembly.Location
+    [Drawing.Rectangle].Assembly.Location
+    [Windows.Forms.Form].Assembly.Location
+  ) | Sort-Object -Unique
+}
 
 # Keep the visual evidence independent from whatever the interactive runner is
 # drawing behind the product. The workflow host is pwsh (normally MTA), so the
@@ -307,6 +356,22 @@ public sealed class HualiVisualSmokeBackdrop
     }
 }
 '@ -ReferencedAssemblies $backdropReferencedAssemblies
+
+if ($CompileBackdropOnly) {
+  # Construct the exact compiled type as a runtime binding probe without
+  # creating an HWND. The real visual run exercises Start/CloseAndWait later.
+  $compileProbe = [HualiVisualSmokeBackdrop]::new(
+    [Drawing.Rectangle]::new(0, 0, 1, 1),
+    92,
+    107,
+    122
+  )
+  if (-not $compileProbe) {
+    throw 'Windows 视觉背景窗编译探针未能实例化。'
+  }
+  Write-Host "Windows 视觉背景窗编译通过：PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
+  return
+}
 
 function Get-WindowSnapshot {
   param([Parameter(Mandatory = $true)][Diagnostics.Process]$Process)
