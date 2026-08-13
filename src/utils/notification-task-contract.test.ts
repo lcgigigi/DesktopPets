@@ -13,11 +13,15 @@ import rustSource from '../../src-tauri/src/main.rs?raw'
 const appStyles = readFileSync(new URL('../assets/styles/app.css', import.meta.url), 'utf8')
 
 function section(source: string, startMarker: string, endMarker: string) {
-  const start = source.indexOf(startMarker)
-  const end = source.indexOf(endMarker, start + startMarker.length)
+  // Git can materialize raw source imports with CRLF on the Windows release
+  // runner. Normalize only for contract extraction so the same assertions run
+  // identically on macOS and Windows without weakening their source ordering.
+  const normalizedSource = source.replace(/\r\n?/g, '\n')
+  const start = normalizedSource.indexOf(startMarker)
+  const end = normalizedSource.indexOf(endMarker, start + startMarker.length)
   expect(start, `missing section start: ${startMarker}`).toBeGreaterThanOrEqual(0)
   expect(end, `missing section end: ${endMarker}`).toBeGreaterThan(start)
-  return source.slice(start, end)
+  return normalizedSource.slice(start, end)
 }
 
 function normalize(source: string) {
