@@ -19,6 +19,7 @@ const tailX = ref(Number.isFinite(requestedTailX) ? requestedTailX : 84)
 const isPlacementPreview = import.meta.env.DEV && previewParams.has('placement')
 const menuGeneration = ref<number | null>(isPlacementPreview ? 0 : null)
 const menuEntering = ref(isPlacementPreview)
+const menuWindow = ref<HTMLElement | null>(null)
 let removePlacementListener: UnlistenFn | undefined
 
 function closeMenu() {
@@ -39,10 +40,6 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') closeMenu()
 }
 
-function afterAnimationFrame() {
-  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
-}
-
 async function applyPlacement(payload: MascotContextMenuPlacement) {
   const generation = payload.generation
   placement.value = payload.placement
@@ -52,8 +49,15 @@ async function applyPlacement(payload: MascotContextMenuPlacement) {
   // and guarantees that every opening starts safely on “隐藏”.
   menuGeneration.value = generation
   await nextTick()
-  await afterAnimationFrame()
-  await afterAnimationFrame()
+  // Windows suspends requestAnimationFrame for a fully hidden WebView2 HWND.
+  // Reading layout after Vue's DOM flush proves that placement/tail styles are
+  // committed without waiting for a frame that cannot run until native show.
+  const menuWindowElement = menuWindow.value
+  if (!menuWindowElement) {
+    closeMenu()
+    return
+  }
+  menuWindowElement.getBoundingClientRect()
   if (menuGeneration.value !== generation) return
 
   const shown = await ackMascotContextMenuLayout(generation)
@@ -86,6 +90,7 @@ onUnmounted(() => {
 
 <template>
   <section
+    ref="menuWindow"
     class="mascot-menu-window"
     :class="`is-${placement}`"
     aria-label="机器人右键菜单窗口"
