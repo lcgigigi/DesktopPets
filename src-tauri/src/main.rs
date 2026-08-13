@@ -87,6 +87,18 @@ struct MascotNotificationLayoutState(Arc<Mutex<Option<MascotNotificationLayout>>
 #[derive(Clone, Default)]
 struct MascotNotificationLayoutState;
 
+fn mascot_notification_layout_state() -> MascotNotificationLayoutState {
+    #[cfg(windows)]
+    {
+        MascotNotificationLayoutState
+    }
+
+    #[cfg(not(windows))]
+    {
+        MascotNotificationLayoutState::default()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct MascotContextMenuStatus {
     ready: bool,
@@ -3277,7 +3289,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(InitialMascotPlacement::default())
         .manage(MascotDockMotion::default())
-        .manage(MascotNotificationLayoutState::default())
+        .manage(mascot_notification_layout_state())
         .manage(MascotContextMenuState::default())
         .manage(MascotDragMonitor::default())
         .manage(PanelActivityState::default())
