@@ -162,6 +162,14 @@ impl MascotContextMenuState {
             .unwrap_or(false)
     }
 
+    #[cfg(windows)]
+    fn is_ready(&self) -> bool {
+        self.status
+            .lock()
+            .map(|status| status.ready)
+            .unwrap_or(false)
+    }
+
     fn mark_awaiting_layout_ack(&self, generation: u64) -> bool {
         let Ok(mut status) = self.status.lock() else {
             return false;
@@ -2439,7 +2447,11 @@ fn hide_mascot_context_menu_native_window(app: &tauri::AppHandle) {
         .state::<MascotContextMenuState>()
         .release_any_cursor_passthrough();
     if let Some(menu) = app.get_webview_window("mascot-menu") {
-        let _ = menu.hide();
+        // Keep a failed hide click-through. A transparent topmost menu surface
+        // must never start intercepting the desktop when it could not close.
+        if menu.hide().is_ok() {
+            let _ = menu.set_ignore_cursor_events(false);
+        }
     }
 }
 
@@ -2477,6 +2489,18 @@ fn hide_mascot_context_menu_window(app: &tauri::AppHandle) {
         return;
     };
     let _ = state.request_hide();
+    // On Windows the transparent menu HWND is shown off-screen briefly so its
+    // WebView2 renderer can mount and publish ready. Hiding it before that IPC
+    // arrives suspends navigation and makes the first real right-click wait
+    // forever. Logical hide still wins; the warm-up surface remains off-screen
+    // and click-through until ready closes it.
+    #[cfg(windows)]
+    if !state.is_ready() {
+        let _ = set_mascot_cursor_passthrough(app, false);
+        let _ = state.release_any_cursor_passthrough();
+        let _ = emit_mascot_context_menu_visibility(app, false);
+        return;
+    }
     hide_mascot_context_menu_native_window(app);
     let _ = emit_mascot_context_menu_visibility(app, false);
 }
@@ -2589,10 +2613,13 @@ fn show_mascot_context_menu(
         .lock()
         .map_err(|_| "mascot context menu transition is unavailable".to_string())?;
     let generation = state.request_show()?;
-    hide_mascot_context_menu_native_window(&app);
     if state.can_prepare(generation) {
+        hide_mascot_context_menu_native_window(&app);
         match prepare_mascot_context_menu_generation(&app, state.inner(), generation) {
-            Ok(true) => {}
+            Ok(true) => {
+                schedule_mascot_context_menu_timeout(app, state.inner().clone(), generation);
+                return Ok(true);
+            }
             Ok(false) => {
                 rollback_mascot_context_menu_generation(&app, state.inner(), generation);
                 return Ok(false);
@@ -2603,7 +2630,8 @@ fn show_mascot_context_menu(
             }
         }
     }
-    schedule_mascot_context_menu_timeout(app, state.inner().clone(), generation);
+    // The Windows warm-up WebView will prepare this generation from its ready
+    // command. Do not start the layout timeout until placement was emitted.
     Ok(true)
 }
 
@@ -2643,6 +2671,12 @@ fn ack_mascot_context_menu_layout(
         rollback_mascot_context_menu_generation(&app, state.inner(), generation);
         return Err(format!("failed to show mascot context menu: {error}"));
     }
+    if let Err(error) = menu.set_ignore_cursor_events(false) {
+        rollback_mascot_context_menu_generation(&app, state.inner(), generation);
+        return Err(format!(
+            "failed to restore mascot context menu hit testing: {error}"
+        ));
+    }
     if let Err(error) = menu.set_focus() {
         rollback_mascot_context_menu_generation(&app, state.inner(), generation);
         return Err(format!("failed to focus mascot context menu: {error}"));
@@ -2676,10 +2710,19 @@ fn set_mascot_context_menu_ready(
         .lock()
         .map_err(|_| "mascot context menu transition is unavailable".to_string())?;
     let Some(generation) = state.mark_ready()? else {
+        if let Some(menu) = app.get_webview_window("mascot-menu") {
+            menu.hide()
+                .map_err(|error| format!("failed to finish menu warm-up hide: {error}"))?;
+            menu.set_ignore_cursor_events(false)
+                .map_err(|error| format!("failed to finish menu warm-up hit testing: {error}"))?;
+        }
         return Ok(true);
     };
     match prepare_mascot_context_menu_generation(&app, state.inner(), generation) {
-        Ok(true) => Ok(true),
+        Ok(true) => {
+            schedule_mascot_context_menu_timeout(app, state.inner().clone(), generation);
+            Ok(true)
+        }
         Ok(false) => {
             rollback_mascot_context_menu_generation(&app, state.inner(), generation);
             Ok(false)
@@ -3418,6 +3461,18 @@ fn main() {
                     }
                     _ => {}
                 });
+                #[cfg(windows)]
+                {
+                    // A WebView2 hosted by a never-visible HWND may postpone
+                    // navigation indefinitely. Warm it up fully transparent,
+                    // click-through and off-screen; its ready IPC immediately
+                    // hides it before any user interaction can occur.
+                    window.set_ignore_cursor_events(true)?;
+                    window.set_position(Position::Physical(PhysicalPosition::new(
+                        -32_000, -32_000,
+                    )))?;
+                    show_window_without_activation(&window).map_err(std::io::Error::other)?;
+                }
             }
 
             let open = MenuItem::with_id(app, "open_workbench", "打开工作台", true, None::<&str>)?;

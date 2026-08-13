@@ -126,10 +126,14 @@ describe('mascot context menu architecture', () => {
     expect(mascotMenuWindowSource).toContain('menuEntering.value = true')
     expect(nativeAck).toContain('state.can_ack_layout(generation)')
     expect(nativeAck).toContain('menu.show()')
+    expect(nativeAck).toContain('menu.set_ignore_cursor_events(false)')
     expect(nativeAck).toContain('menu.set_focus()')
     expect(nativeAck).toContain('state.mark_visible(generation)')
     expect(rustSource).toContain('fn rollback_mascot_context_menu_generation')
     expect(rustSource).toContain('fn expire_pending_show')
+    expect(rustSource).toContain('A WebView2 hosted by a never-visible HWND')
+    expect(rustSource).toContain('window.set_ignore_cursor_events(true)')
+    expect(rustSource).toContain('show_window_without_activation(&window)')
   })
 
   it('remounts and refocuses the safe first action on every opening', () => {

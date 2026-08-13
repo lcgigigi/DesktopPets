@@ -566,6 +566,23 @@ function Find-WindowByLogicalSize {
   } | Select-Object -First 1
 }
 
+function Test-WindowOwnLogicalSize {
+  param(
+    [Parameter(Mandatory = $true)]$Window,
+    [Parameter(Mandatory = $true)][double]$LogicalWidth,
+    [Parameter(Mandatory = $true)][double]$LogicalHeight,
+    [int]$Tolerance = 3
+  )
+
+  $windowDpi = [HualiVisualSmokeNative]::GetDpiForWindow([IntPtr][long]$Window.Handle)
+  if ($windowDpi -lt 96) { $windowDpi = 96 }
+  $windowScale = $windowDpi / 96.0
+  return (
+    [Math]::Abs(($Window.Width / $windowScale) - $LogicalWidth) -le $Tolerance -and
+    [Math]::Abs(($Window.Height / $windowScale) - $LogicalHeight) -le $Tolerance
+  )
+}
+
 function Find-MascotWindow {
   param([Parameter(Mandatory = $true)]$Windows)
 
@@ -1186,7 +1203,13 @@ try {
   # handles prevents a helper from ever being promoted to the menu identity.
   $menuExcludedHandles = @($mascotHandle) + @(
     $startupWindows |
-      Where-Object { [long]$_.Handle -ne $mascotHandle } |
+      Where-Object {
+        [long]$_.Handle -ne $mascotHandle -and
+        -not (Test-WindowOwnLogicalSize `
+          -Window $_ `
+          -LogicalWidth 192 `
+          -LogicalHeight 76)
+      } |
       ForEach-Object { [long]$_.Handle }
   )
   Start-Sleep -Milliseconds 800
