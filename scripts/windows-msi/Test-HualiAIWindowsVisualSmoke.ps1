@@ -141,6 +141,170 @@ if (-not [HualiVisualSmokeNative]::EnablePerMonitorV2()) {
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
+# Keep the visual evidence independent from whatever the interactive runner is
+# drawing behind the product. The workflow host is pwsh (normally MTA), so the
+# WinForms message loop lives on its own STA thread. This is an ordinary-z-order
+# window: the product's always-on-top mascot and menu remain above it, while an
+# external click can still take focus from the menu and verify dismissal.
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Drawing;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Windows.Forms;
+
+public sealed class HualiVisualSmokeBackdrop
+{
+    private static readonly IntPtr PerMonitorAwareV2 = new IntPtr(-4);
+
+    private readonly Rectangle bounds;
+    private readonly Color color;
+    private readonly ManualResetEventSlim ready = new ManualResetEventSlim(false);
+    private readonly ManualResetEventSlim stopRequested = new ManualResetEventSlim(false);
+    private Thread thread;
+    private Form form;
+    private Exception failure;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+
+    public HualiVisualSmokeBackdrop(Rectangle bounds, int red, int green, int blue)
+    {
+        this.bounds = bounds;
+        this.color = Color.FromArgb(red, green, blue);
+    }
+
+    public void Start()
+    {
+        if (thread != null)
+        {
+            throw new InvalidOperationException("The visual-smoke backdrop was already started.");
+        }
+
+        thread = new Thread(Run);
+        thread.Name = "Huali visual-smoke backdrop";
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        if (!ready.Wait(TimeSpan.FromSeconds(5)))
+        {
+            throw new TimeoutException("The visual-smoke backdrop did not become ready in five seconds.");
+        }
+        ThrowIfFailed();
+    }
+
+    public void CloseAndWait()
+    {
+        Thread currentThread = thread;
+        if (currentThread == null)
+        {
+            return;
+        }
+
+        stopRequested.Set();
+        Form currentForm = form;
+        if (currentForm != null && currentForm.IsHandleCreated && !currentForm.IsDisposed)
+        {
+            try
+            {
+                currentForm.BeginInvoke(new Action(currentForm.Close));
+            }
+            catch (InvalidOperationException)
+            {
+                // The UI thread may already be finishing. Join below is the
+                // authoritative proof that no backdrop HWND remains.
+            }
+        }
+
+        if (!currentThread.Join(TimeSpan.FromSeconds(5)))
+        {
+            throw new TimeoutException("The visual-smoke backdrop did not close in five seconds.");
+        }
+        ThrowIfFailed();
+    }
+
+    private void Run()
+    {
+        try
+        {
+            if (SetThreadDpiAwarenessContext(PerMonitorAwareV2) == IntPtr.Zero)
+            {
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "Unable to set the backdrop UI thread to Per-Monitor-V2 DPI awareness."
+                );
+            }
+
+            using (Form backdrop = new Form())
+            {
+                form = backdrop;
+                backdrop.AutoScaleMode = AutoScaleMode.None;
+                backdrop.BackColor = color;
+                backdrop.ControlBox = false;
+                backdrop.FormBorderStyle = FormBorderStyle.None;
+                backdrop.MaximizeBox = false;
+                backdrop.MinimizeBox = false;
+                backdrop.ShowInTaskbar = false;
+                backdrop.StartPosition = FormStartPosition.Manual;
+                backdrop.Text = "Huali AI visual-smoke backdrop";
+                backdrop.TopMost = false;
+                backdrop.Bounds = bounds;
+                backdrop.Shown += delegate
+                {
+                    backdrop.Refresh();
+                    backdrop.Update();
+                    ready.Set();
+                    if (stopRequested.IsSet)
+                    {
+                        backdrop.BeginInvoke(new Action(backdrop.Close));
+                    }
+                };
+                if (stopRequested.IsSet)
+                {
+                    ready.Set();
+                    return;
+                }
+                using (System.Windows.Forms.Timer stopTimer = new System.Windows.Forms.Timer())
+                {
+                    stopTimer.Interval = 50;
+                    stopTimer.Tick += delegate
+                    {
+                        if (stopRequested.IsSet && !backdrop.IsDisposed)
+                        {
+                            backdrop.Close();
+                        }
+                    };
+                    stopTimer.Start();
+                    Application.Run(backdrop);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+            ready.Set();
+        }
+        finally
+        {
+            form = null;
+        }
+    }
+
+    private void ThrowIfFailed()
+    {
+        if (failure != null)
+        {
+            throw new InvalidOperationException("The visual-smoke backdrop failed.", failure);
+        }
+    }
+}
+'@ -ReferencedAssemblies @(
+  [Drawing.Bitmap].Assembly.Location,
+  [Windows.Forms.Form].Assembly.Location
+)
+
 function Get-WindowSnapshot {
   param([Parameter(Mandatory = $true)][Diagnostics.Process]$Process)
 
@@ -330,42 +494,185 @@ function Save-RegionCapture {
   }
 }
 
-function Get-TransparentPerimeterDifference {
+function Get-FixedBackdropRegionMetrics {
   param(
-    [Parameter(Mandatory = $true)][string]$BaselinePath,
-    [Parameter(Mandatory = $true)][string]$FramePath,
+    [Parameter(Mandatory = $true)][string]$ImagePath,
     [Parameter(Mandatory = $true)]$Region,
-    [int]$Border = 4
+    [Parameter(Mandatory = $true)][int]$ExpectedRed,
+    [Parameter(Mandatory = $true)][int]$ExpectedGreen,
+    [Parameter(Mandatory = $true)][int]$ExpectedBlue,
+    [int]$ChannelTolerance = 3
   )
 
   $virtualScreen = [Windows.Forms.SystemInformation]::VirtualScreen
-  $baseline = [Drawing.Bitmap]::FromFile($BaselinePath)
-  $frame = [Drawing.Bitmap]::FromFile($FramePath)
+  $image = [Drawing.Bitmap]::FromFile($ImagePath)
   try {
-    [long]$difference = 0
-    [long]$samples = 0
+    [long]$redTotal = 0
+    [long]$greenTotal = 0
+    [long]$blueTotal = 0
+    [long]$channelDifference = 0
+    [long]$matchingPixels = 0
+    [long]$sampledPixels = 0
     for ($y = 0; $y -lt $Region.Height; $y++) {
       for ($x = 0; $x -lt $Region.Width; $x++) {
-        if ($x -ge $Border -and $x -lt ($Region.Width - $Border) -and
-            $y -ge $Border -and $y -lt ($Region.Height - $Border)) {
-          continue
-        }
-        $baselinePixel = $baseline.GetPixel(
+        $pixel = $image.GetPixel(
           $Region.Left - $virtualScreen.Left + $x,
           $Region.Top - $virtualScreen.Top + $y
         )
-        $framePixel = $frame.GetPixel($x, $y)
-        $difference += [Math]::Abs([int]$baselinePixel.R - [int]$framePixel.R)
-        $difference += [Math]::Abs([int]$baselinePixel.G - [int]$framePixel.G)
-        $difference += [Math]::Abs([int]$baselinePixel.B - [int]$framePixel.B)
-        $samples += 3
+        $redDifference = [Math]::Abs([int]$pixel.R - $ExpectedRed)
+        $greenDifference = [Math]::Abs([int]$pixel.G - $ExpectedGreen)
+        $blueDifference = [Math]::Abs([int]$pixel.B - $ExpectedBlue)
+        $redTotal += $pixel.R
+        $greenTotal += $pixel.G
+        $blueTotal += $pixel.B
+        $channelDifference += $redDifference + $greenDifference + $blueDifference
+        if ($redDifference -le $ChannelTolerance -and
+            $greenDifference -le $ChannelTolerance -and
+            $blueDifference -le $ChannelTolerance) {
+          $matchingPixels++
+        }
+        $sampledPixels++
       }
     }
-    if ($samples -eq 0) { throw '透明外缘检查没有采样到像素。' }
-    return [Math]::Round($difference / $samples, 3)
+    if ($sampledPixels -eq 0) { throw '固定测试背景检查没有采样到像素。' }
+    return [ordered]@{
+      sampledPixels = $sampledPixels
+      matchingPixels = $matchingPixels
+      matchingFraction = [Math]::Round($matchingPixels / $sampledPixels, 6)
+      meanChannelDifference = [Math]::Round($channelDifference / ($sampledPixels * 3), 3)
+      observedMeanRgb = @(
+        [Math]::Round($redTotal / $sampledPixels, 2),
+        [Math]::Round($greenTotal / $sampledPixels, 2),
+        [Math]::Round($blueTotal / $sampledPixels, 2)
+      )
+    }
   } finally {
-    $baseline.Dispose()
+    $image.Dispose()
+  }
+}
+
+function Assert-FixedBackdropRegion {
+  param(
+    [Parameter(Mandatory = $true)]$Metrics,
+    [Parameter(Mandatory = $true)][string]$Stage
+  )
+
+  if ($Metrics.matchingFraction -lt 0.99 -or $Metrics.meanChannelDifference -gt 3) {
+    throw "$Stage 的固定测试背景未覆盖或尚未稳定：匹配率=$($Metrics.matchingFraction)，通道平均差=$($Metrics.meanChannelDifference)。"
+  }
+}
+
+function Get-TransparentEdgeMetrics {
+  param(
+    [Parameter(Mandatory = $true)][string]$FramePath,
+    [Parameter(Mandatory = $true)][int]$ExpectedRed,
+    [Parameter(Mandatory = $true)][int]$ExpectedGreen,
+    [Parameter(Mandatory = $true)][int]$ExpectedBlue,
+    [Parameter(Mandatory = $true)][int]$Border,
+    [switch]$IncludeTop,
+    [int]$ChannelTolerance = 3
+  )
+
+  $frame = [Drawing.Bitmap]::FromFile($FramePath)
+  try {
+    if ($Border -le 0 -or $Border * 2 -ge $frame.Width -or $Border * 2 -ge $frame.Height) {
+      throw "透明外缘宽度无效：$Border，截图=$($frame.Width)x$($frame.Height)。"
+    }
+
+    [long]$channelDifference = 0
+    [long]$matchingPixels = 0
+    [long]$nearWhitePixels = 0
+    [long]$sampledPixels = 0
+    $edgeSamples = [ordered]@{ left = 0; right = 0; bottom = 0; top = 0 }
+    $edgeMatches = [ordered]@{ left = 0; right = 0; bottom = 0; top = 0 }
+
+    for ($y = 0; $y -lt $frame.Height; $y++) {
+      for ($x = 0; $x -lt $frame.Width; $x++) {
+        # When a login/system card is expanded, its legitimate lower border can
+        # touch the top of the 120x104 avatar crop. Exclude the complete top
+        # strip at this stage (scaled by Border), while retaining both sides and
+        # the bottom. A second four-edge check runs after the menu hides cards.
+        $onLeft = $x -lt $Border -and ($IncludeTop -or $y -ge $Border)
+        $onRight = $x -ge ($frame.Width - $Border) -and ($IncludeTop -or $y -ge $Border)
+        $onBottom = $y -ge ($frame.Height - $Border)
+        $onTop = $IncludeTop -and $y -lt $Border
+        if (-not ($onLeft -or $onRight -or $onBottom -or $onTop)) {
+          continue
+        }
+
+        $pixel = $frame.GetPixel($x, $y)
+        $redDifference = [Math]::Abs([int]$pixel.R - $ExpectedRed)
+        $greenDifference = [Math]::Abs([int]$pixel.G - $ExpectedGreen)
+        $blueDifference = [Math]::Abs([int]$pixel.B - $ExpectedBlue)
+        $matches = $redDifference -le $ChannelTolerance -and
+          $greenDifference -le $ChannelTolerance -and
+          $blueDifference -le $ChannelTolerance
+        $channelDifference += $redDifference + $greenDifference + $blueDifference
+        $sampledPixels++
+        if ($matches) { $matchingPixels++ }
+        if ($pixel.R -ge 245 -and $pixel.G -ge 245 -and $pixel.B -ge 245) {
+          $nearWhitePixels++
+        }
+
+        if ($onLeft) {
+          $edgeSamples['left']++
+          if ($matches) { $edgeMatches['left']++ }
+        }
+        if ($onRight) {
+          $edgeSamples['right']++
+          if ($matches) { $edgeMatches['right']++ }
+        }
+        if ($onBottom) {
+          $edgeSamples['bottom']++
+          if ($matches) { $edgeMatches['bottom']++ }
+        }
+        if ($onTop) {
+          $edgeSamples['top']++
+          if ($matches) { $edgeMatches['top']++ }
+        }
+      }
+    }
+
+    if ($sampledPixels -eq 0) { throw '机器人透明外缘检查没有采样到像素。' }
+    $edgeMatchingFractions = [ordered]@{}
+    foreach ($edgeName in @('left', 'right', 'bottom', 'top')) {
+      if ($edgeSamples[$edgeName] -gt 0) {
+        $edgeMatchingFractions[$edgeName] = [Math]::Round(
+          $edgeMatches[$edgeName] / $edgeSamples[$edgeName],
+          6
+        )
+      }
+    }
+    return [ordered]@{
+      sampledPixels = $sampledPixels
+      matchingPixels = $matchingPixels
+      matchingFraction = [Math]::Round($matchingPixels / $sampledPixels, 6)
+      changedPixelRatio = [Math]::Round(($sampledPixels - $matchingPixels) / $sampledPixels, 6)
+      meanChannelDifference = [Math]::Round($channelDifference / ($sampledPixels * 3), 3)
+      nearWhitePixels = $nearWhitePixels
+      includedTop = [bool]$IncludeTop
+      edgeMatchingFractions = $edgeMatchingFractions
+    }
+  } finally {
     $frame.Dispose()
+  }
+}
+
+function Assert-TransparentEdgeMetrics {
+  param(
+    [Parameter(Mandatory = $true)]$Metrics,
+    [Parameter(Mandatory = $true)][string]$Stage
+  )
+
+  $weakEdges = @(
+    $Metrics.edgeMatchingFractions.GetEnumerator() |
+      Where-Object { [double]$_.Value -lt 0.95 } |
+      ForEach-Object { "$($_.Key)=$($_.Value)" }
+  )
+  if ($Metrics.matchingFraction -lt 0.98 -or
+      $Metrics.meanChannelDifference -gt 3 -or
+      $weakEdges.Count -gt 0) {
+    throw "$Stage 检测到不透明底色或白框：整体匹配率=$($Metrics.matchingFraction)，通道平均差=$($Metrics.meanChannelDifference)，异常边=$($weakEdges -join ',')。"
   }
 }
 
@@ -606,11 +913,19 @@ $report = [ordered]@{
     isolatedDataDirectoryRemoved = $false
     animationProgressionObserved = $false
   }
+  backdrop = [ordered]@{
+    expectedRgb = @(92, 107, 122)
+    shown = $false
+    backgroundVerified = $false
+    baselineMetrics = $null
+    disposed = $false
+  }
   ok = $false
   failure = $null
   checks = [ordered]@{}
 }
 $process = $null
+$backdrop = $null
 $visualSmokeDataDirectory = $null
 $visualFailure = $null
 $cleanupFailure = $null
@@ -618,7 +933,33 @@ $cleanupFailure = $null
 try {
   $virtualScreen = [Windows.Forms.SystemInformation]::VirtualScreen
   [HualiVisualSmokeNative]::SetCursorPos($virtualScreen.Left + 8, $virtualScreen.Top + 8) | Out-Null
+  $backdrop = [HualiVisualSmokeBackdrop]::new(
+    $virtualScreen,
+    [int]$report.backdrop.expectedRgb[0],
+    [int]$report.backdrop.expectedRgb[1],
+    [int]$report.backdrop.expectedRgb[2]
+  )
+  $backdrop.Start()
+  $report.backdrop.shown = $true
+  Start-Sleep -Milliseconds 200
   $baselinePath = Save-ScreenCapture -FileName '00-background-baseline.png'
+  $backdropProbeSize = 32
+  $primaryScreenBounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+  $backdropProbe = [pscustomobject]@{
+    Left = $primaryScreenBounds.Left + [int](($primaryScreenBounds.Width - $backdropProbeSize) / 2)
+    Top = $primaryScreenBounds.Top + [int](($primaryScreenBounds.Height - $backdropProbeSize) / 2)
+    Width = $backdropProbeSize
+    Height = $backdropProbeSize
+  }
+  $backdropBaselineMetrics = Get-FixedBackdropRegionMetrics `
+    -ImagePath $baselinePath `
+    -Region $backdropProbe `
+    -ExpectedRed $report.backdrop.expectedRgb[0] `
+    -ExpectedGreen $report.backdrop.expectedRgb[1] `
+    -ExpectedBlue $report.backdrop.expectedRgb[2]
+  $report.backdrop.baselineMetrics = $backdropBaselineMetrics
+  Assert-FixedBackdropRegion -Metrics $backdropBaselineMetrics -Stage '视觉验收基线'
+  $report.backdrop.backgroundVerified = $true
   $previousVisualSmokeMotion = [Environment]::GetEnvironmentVariable(
     'HUALI_AI_VISUAL_SMOKE_FORCE_MOTION',
     [EnvironmentVariableTarget]::Process
@@ -693,34 +1034,68 @@ try {
     Width = $animationRegionWidth
     Height = $animationRegionHeight
   }
+  $animationBaselineMetrics = Get-FixedBackdropRegionMetrics `
+    -ImagePath $baselinePath `
+    -Region $animationRegion `
+    -ExpectedRed $report.backdrop.expectedRgb[0] `
+    -ExpectedGreen $report.backdrop.expectedRgb[1] `
+    -ExpectedBlue $report.backdrop.expectedRgb[2]
+  $report.backdrop.animationRegionMetrics = $animationBaselineMetrics
+  Assert-FixedBackdropRegion `
+    -Metrics $animationBaselineMetrics `
+    -Stage '机器人所在区域的视觉验收基线'
   $animationHashes = @()
-  $perimeterDifferences = @()
+  $edgeBorder = [Math]::Max(2, [int][Math]::Round(4 * $scale))
+  $animationTransparencyFrames = @()
+  $animationCheck = [ordered]@{
+    samples = 0
+    uniqueFrames = 0
+    dpi = $dpi
+    transparencyFrames = $animationTransparencyFrames
+    minimumMatchingFraction = $null
+    maximumMeanChannelDifference = $null
+  }
+  $report.checks.animation = $animationCheck
   for ($frameIndex = 1; $frameIndex -le 29; $frameIndex++) {
     $framePath = Save-RegionCapture `
       -Region $animationRegion `
       -FileName ('animation\idle-{0:d2}.png' -f $frameIndex)
     $animationHashes += (Get-FileHash -LiteralPath $framePath -Algorithm SHA256).Hash
-    $perimeterDifferences += Get-TransparentPerimeterDifference `
-      -BaselinePath $baselinePath `
+    $frameTransparency = Get-TransparentEdgeMetrics `
       -FramePath $framePath `
-      -Region $animationRegion
+      -ExpectedRed $report.backdrop.expectedRgb[0] `
+      -ExpectedGreen $report.backdrop.expectedRgb[1] `
+      -ExpectedBlue $report.backdrop.expectedRgb[2] `
+      -Border $edgeBorder
+    $animationTransparencyFrames += [ordered]@{
+      frame = $frameIndex
+      metrics = $frameTransparency
+    }
+    $animationCheck['transparencyFrames'] = $animationTransparencyFrames
+    $animationCheck['samples'] = $animationHashes.Count
+    # Assert every captured frame so a one-frame WebView2/DWM white flash can
+    # never be hidden by an average, percentile or later clean frame.
+    Assert-TransparentEdgeMetrics `
+      -Metrics $frameTransparency `
+      -Stage "机器人空闲动画第 $frameIndex 帧三边透明外缘"
     Start-Sleep -Milliseconds 100
   }
   $uniqueAnimationFrames = @($animationHashes | Select-Object -Unique).Count
-  $maximumPerimeterDifference = ($perimeterDifferences | Measure-Object -Maximum).Maximum
+  $animationCheck['uniqueFrames'] = $uniqueAnimationFrames
+  $animationCheck['minimumMatchingFraction'] = (
+    $animationTransparencyFrames |
+      ForEach-Object { $_.metrics.matchingFraction } |
+      Measure-Object -Minimum
+  ).Minimum
+  $animationCheck['maximumMeanChannelDifference'] = (
+    $animationTransparencyFrames |
+      ForEach-Object { $_.metrics.meanChannelDifference } |
+      Measure-Object -Maximum
+  ).Maximum
   if ($uniqueAnimationFrames -lt 3) {
     throw "Windows WebView2 动画未正常前进：29 次采样仅 $uniqueAnimationFrames 个不同画面。"
   }
   $report.motionValidation.animationProgressionObserved = $true
-  if ($maximumPerimeterDifference -gt 12) {
-    throw "机器人透明外缘与桌面差异过大（$maximumPerimeterDifference），可能出现白色底框。"
-  }
-  $report.checks.animation = [ordered]@{
-    samples = $animationHashes.Count
-    uniqueFrames = $uniqueAnimationFrames
-    dpi = $dpi
-    transparentPerimeterMaximumMeanDifference = $maximumPerimeterDifference
-  }
 
   $avatarPoint = Get-AvatarClickPoint -MascotWindow $mascotBefore -Scale $scale
   Invoke-MouseClick -X $avatarPoint.X -Y $avatarPoint.Y -Button Right
@@ -761,12 +1136,41 @@ try {
     -Scale $menuScale `
     -Label '上方右键菜单'
   Assert-RectUnchanged -Before $mascotBefore -After $mascotWithMenu -Stage '右键打开菜单'
+  $menuAvatarRegion = [pscustomobject]@{
+    Left = [int](($mascotWithMenu.Left + $mascotWithMenu.Right - $animationRegionWidth) / 2)
+    Top = [int]($mascotWithMenu.Bottom - $animationRegionHeight)
+    Width = $animationRegionWidth
+    Height = $animationRegionHeight
+  }
+  $menuAvatarTransparencyPath = Save-RegionCapture `
+    -Region $menuAvatarRegion `
+    -FileName 'animation\transparency-menu-open-four-edges.png'
+  $menuAvatarTransparency = Get-TransparentEdgeMetrics `
+    -FramePath $menuAvatarTransparencyPath `
+    -ExpectedRed $report.backdrop.expectedRgb[0] `
+    -ExpectedGreen $report.backdrop.expectedRgb[1] `
+    -ExpectedBlue $report.backdrop.expectedRgb[2] `
+    -Border $edgeBorder `
+    -IncludeTop
+  $report.checks.transparencyMenuOpen = $menuAvatarTransparency
+  Assert-TransparentEdgeMetrics `
+    -Metrics $menuAvatarTransparency `
+    -Stage '菜单打开且提示卡隐藏后的机器人四边透明外缘'
   $avatarTop = $mascotWithMenu.Bottom - [int][Math]::Round(96 * $scale)
   $menuAboveVisibleBottom = $menuAbove.Top + [int][Math]::Round(55 * $menuScale)
   $expectedAboveVisibleBottom = $avatarTop - [int][Math]::Round(18 * $menuScale)
   if ([Math]::Abs($menuAboveVisibleBottom - $expectedAboveVisibleBottom) -gt 2) {
     throw "机器人处于常规位置时，右键菜单可见尾端间距错误：实际=$menuAboveVisibleBottom，预期=$expectedAboveVisibleBottom。"
   }
+  $menuAboveBackdropMetrics = Get-FixedBackdropRegionMetrics `
+    -ImagePath $baselinePath `
+    -Region $menuAbove `
+    -ExpectedRed $report.backdrop.expectedRgb[0] `
+    -ExpectedGreen $report.backdrop.expectedRgb[1] `
+    -ExpectedBlue $report.backdrop.expectedRgb[2]
+  Assert-FixedBackdropRegion `
+    -Metrics $menuAboveBackdropMetrics `
+    -Stage '上方菜单所在区域的视觉验收基线'
   $menuAboveCapture = Save-RegionCapture `
     -Region $menuAbove `
     -FileName '02-context-menu-above-window.png'
@@ -781,11 +1185,15 @@ try {
     mascot = $mascotWithMenu
     menu = $menuAbove
     positionStable = $true
+    backdropMetrics = $menuAboveBackdropMetrics
     visual = $menuAboveVisual
   }
   Save-ScreenCapture -FileName '03-context-menu-above-full-screen.png' | Out-Null
 
-  Invoke-MouseClick -X ($virtualScreen.Left + 12) -Y ($virtualScreen.Top + 12)
+  $dismissWorkArea = Get-MonitorWorkArea -WindowHandle $mascotHandle
+  Invoke-MouseClick `
+    -X ($dismissWorkArea.Left + 12) `
+    -Y ($dismissWorkArea.Top + 12)
   $menuClosedWindows = Wait-ForWindows -Process $process -Condition {
     param($windows)
     $null -eq (Find-WindowByHandle -Windows $windows -Handle $menuHandle)
@@ -861,6 +1269,15 @@ try {
   if ([Math]::Abs($menuBelowVisibleTop - $expectedBelowVisibleTop) -gt 2) {
     throw "机器人靠近屏幕顶部时，右键菜单下翻间距错误：实际=$menuBelowVisibleTop，预期=$expectedBelowVisibleTop。"
   }
+  $menuBelowBackdropMetrics = Get-FixedBackdropRegionMetrics `
+    -ImagePath $baselinePath `
+    -Region $menuBelow `
+    -ExpectedRed $report.backdrop.expectedRgb[0] `
+    -ExpectedGreen $report.backdrop.expectedRgb[1] `
+    -ExpectedBlue $report.backdrop.expectedRgb[2]
+  Assert-FixedBackdropRegion `
+    -Metrics $menuBelowBackdropMetrics `
+    -Stage '下方菜单所在区域的视觉验收基线'
   $menuBelowCapture = Save-RegionCapture `
     -Region $menuBelow `
     -FileName '05-context-menu-below-window.png'
@@ -876,6 +1293,7 @@ try {
     menu = $menuBelow
     flippedBelow = $true
     positionStable = $true
+    backdropMetrics = $menuBelowBackdropMetrics
     visual = $menuBelowVisual
   }
   Save-ScreenCapture -FileName '06-context-menu-below-top-edge-full-screen.png' | Out-Null
@@ -908,6 +1326,20 @@ try {
     $report.ok = $false
     if (-not $report.failure) {
       $report.failure = $_.Exception.Message
+    }
+  }
+  if ($backdrop) {
+    try {
+      $backdrop.CloseAndWait()
+      $report.backdrop.disposed = $true
+    } catch {
+      if (-not $cleanupFailure) {
+        $cleanupFailure = $_
+      }
+      $report.ok = $false
+      if (-not $report.failure) {
+        $report.failure = $_.Exception.Message
+      }
     }
   }
   if ($visualSmokeDataDirectory) {
