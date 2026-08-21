@@ -45,10 +45,19 @@ const MASCOT_CONTEXT_MENU_NAV_LEFT: f64 = 12.0;
 const MASCOT_CONTEXT_MENU_TAIL_MIN: f64 = 18.0;
 const MASCOT_CONTEXT_MENU_TAIL_MAX: f64 = 174.0;
 const MASCOT_CONTEXT_MENU_LAYOUT_ACK_TIMEOUT_MS: u64 = 1200;
+#[cfg(any(windows, test))]
+const MASCOT_SYSTEM_NOTIFICATION_WIDTH: f64 = 320.0;
+#[cfg(any(windows, test))]
+const MASCOT_SYSTEM_NOTIFICATION_HEIGHT: f64 = 320.0;
+#[cfg(any(windows, test))]
+const MASCOT_SYSTEM_NOTIFICATION_GAP: f64 = 8.0;
+#[cfg(any(windows, test))]
+const MASCOT_SYSTEM_NOTIFICATION_MARGIN: f64 = 8.0;
 const DESKTOP_AUTH_CALLBACK_PREFIX: &str = "huali-ai-mascot://auth-callback";
 const DESKTOP_AUTH_CALLBACK_FILE: &str = "huali-ai-mascot-auth-callback.tmp";
 const PANEL_VISIBILITY_EVENT: &str = "huali:panel-visibility";
 const MASCOT_CONTEXT_MENU_VISIBILITY_EVENT: &str = "mascot-context-menu-visibility";
+const MASCOT_SYSTEM_NOTIFICATION_READY_EVENT: &str = "mascot-system-notification-ready";
 const MASCOT_NATIVE_REVEALED_EVENT: &str = "mascot-native-revealed";
 
 #[derive(Clone, Default)]
@@ -56,6 +65,19 @@ struct PendingDesktopAuthCallback(Arc<Mutex<Option<NativeDesktopAuthCallback>>>)
 
 #[derive(Clone, Default)]
 struct MascotDockMotion(Arc<AtomicU64>);
+
+#[derive(Clone, Default)]
+struct MascotSystemNotificationState(Arc<AtomicBool>);
+
+impl MascotSystemNotificationState {
+    fn mark_ready(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    fn is_ready(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
 
 #[derive(Clone)]
 struct InitialMascotPlacement(Arc<AtomicBool>);
@@ -135,7 +157,6 @@ struct MascotContextMenuStatus {
     visible: bool,
     awaiting_layout_ack: bool,
     generation: u64,
-    cursor_passthrough_generation: Option<u64>,
 }
 
 #[derive(Clone, Default)]
@@ -236,41 +257,6 @@ impl MascotContextMenuState {
         status.awaiting_layout_ack = false;
         status.visible = true;
         true
-    }
-
-    fn claim_cursor_passthrough(&self, generation: u64) -> bool {
-        let Ok(mut status) = self.status.lock() else {
-            return false;
-        };
-        if !status.ready
-            || !status.desired_visible
-            || !status.awaiting_layout_ack
-            || status.generation != generation
-        {
-            return false;
-        }
-        status.cursor_passthrough_generation = Some(generation);
-        true
-    }
-
-    fn release_cursor_passthrough(&self, generation: u64) -> Result<bool, String> {
-        let mut status = self
-            .status
-            .lock()
-            .map_err(|_| "mascot context menu state is unavailable".to_string())?;
-        if status.cursor_passthrough_generation != Some(generation) {
-            return Ok(false);
-        }
-        status.cursor_passthrough_generation = None;
-        Ok(true)
-    }
-
-    fn release_any_cursor_passthrough(&self) -> Result<bool, String> {
-        let mut status = self
-            .status
-            .lock()
-            .map_err(|_| "mascot context menu state is unavailable".to_string())?;
-        Ok(status.cursor_passthrough_generation.take().is_some())
     }
 
     fn cancel_generation(&self, generation: u64) -> bool {
@@ -871,16 +857,19 @@ mod mascot_position_tests {
         mascot_avatar_physical_rect, mascot_bottom_right_position,
         mascot_context_menu_physical_geometry, mascot_dock_physical_target, mascot_dock_x,
         nearest_dock_side, notification_drag_delta, notification_physical_geometry,
-        panel_physical_geometry, peeked_dock_side, LogicalPosition, LogicalSize,
-        MascotContextMenuPlacement, MascotContextMenuState, MascotDockSide, PanelActivityState,
-        PanelLayoutState, PhysicalPosition, PhysicalRect, PhysicalSize, MASCOT_AVATAR_HEIGHT,
-        MASCOT_AVATAR_WIDTH, MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM,
-        MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP, MASCOT_CONTEXT_MENU_GAP, MASCOT_CONTEXT_MENU_HEIGHT,
-        MASCOT_CONTEXT_MENU_TAIL_MAX, MASCOT_CONTEXT_MENU_TAIL_MIN, MASCOT_CONTEXT_MENU_WIDTH,
-        MASCOT_HEIGHT, MASCOT_MESSAGE_HEIGHT, MASCOT_MESSAGE_WIDTH,
-        MASCOT_NOTIFICATION_BOTTOM_PADDING, MASCOT_NOTIFICATION_HEIGHT, MASCOT_NOTIFICATION_WIDTH,
-        MASCOT_PEEK_VISIBLE_WIDTH, MASCOT_REST_BOTTOM_MARGIN, MASCOT_REST_RIGHT_MARGIN,
-        MASCOT_WIDTH, PANEL_COMPACT_HEIGHT, PANEL_MAX_HEIGHT, SCREEN_MARGIN,
+        panel_physical_geometry, peeked_dock_side, system_notification_physical_geometry,
+        LogicalPosition, LogicalSize, MascotContextMenuPlacement, MascotContextMenuState,
+        MascotDockSide, PanelActivityState, PanelLayoutState, PhysicalPosition, PhysicalRect,
+        PhysicalSize, MASCOT_AVATAR_HEIGHT, MASCOT_AVATAR_WIDTH,
+        MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM, MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP,
+        MASCOT_CONTEXT_MENU_GAP, MASCOT_CONTEXT_MENU_HEIGHT, MASCOT_CONTEXT_MENU_TAIL_MAX,
+        MASCOT_CONTEXT_MENU_TAIL_MIN, MASCOT_CONTEXT_MENU_WIDTH, MASCOT_HEIGHT,
+        MASCOT_MESSAGE_HEIGHT, MASCOT_MESSAGE_WIDTH, MASCOT_NOTIFICATION_BOTTOM_PADDING,
+        MASCOT_NOTIFICATION_HEIGHT, MASCOT_NOTIFICATION_WIDTH, MASCOT_PEEK_VISIBLE_WIDTH,
+        MASCOT_REST_BOTTOM_MARGIN, MASCOT_REST_RIGHT_MARGIN, MASCOT_SYSTEM_NOTIFICATION_GAP,
+        MASCOT_SYSTEM_NOTIFICATION_HEIGHT, MASCOT_SYSTEM_NOTIFICATION_MARGIN,
+        MASCOT_SYSTEM_NOTIFICATION_WIDTH, MASCOT_WIDTH, PANEL_COMPACT_HEIGHT, PANEL_MAX_HEIGHT,
+        SCREEN_MARGIN,
     };
 
     #[test]
@@ -1477,6 +1466,45 @@ mod mascot_position_tests {
     }
 
     #[test]
+    fn isolated_system_notification_never_resizes_or_overlaps_the_avatar() {
+        for scale in [1.0_f64, 1.25, 1.5, 1.75, 2.0] {
+            let work_area = PhysicalRect {
+                x: 0,
+                y: 0,
+                width: (1920.0 * scale).round() as u32,
+                height: (1040.0 * scale).round() as u32,
+            };
+            let avatar = PhysicalRect {
+                x: (1800.0 * scale).round() as i32,
+                y: (900.0 * scale).round() as i32,
+                width: (MASCOT_AVATAR_WIDTH * scale).round() as u32,
+                height: (MASCOT_AVATAR_HEIGHT * scale).round() as u32,
+            };
+            let geometry = system_notification_physical_geometry(avatar, work_area, scale);
+            let margin = (MASCOT_SYSTEM_NOTIFICATION_MARGIN * scale).round() as i32;
+            let gap = (MASCOT_SYSTEM_NOTIFICATION_GAP * scale).round() as i32;
+
+            assert_eq!(
+                geometry.size.width,
+                (MASCOT_SYSTEM_NOTIFICATION_WIDTH * scale).round() as u32
+            );
+            assert_eq!(
+                geometry.size.height,
+                (MASCOT_SYSTEM_NOTIFICATION_HEIGHT * scale).round() as u32
+            );
+            assert!(geometry.position.x >= work_area.x + margin);
+            assert!(
+                geometry.position.x + geometry.size.width as i32
+                    <= work_area.x + work_area.width as i32 - margin
+            );
+            assert!(
+                geometry.position.y + geometry.size.height as i32 <= avatar.y - gap,
+                "notification must stay entirely above the avatar at scale {scale}"
+            );
+        }
+    }
+
+    #[test]
     fn context_menu_tail_stays_inside_the_nav_when_window_is_edge_clamped() {
         let work_area = PhysicalRect {
             x: 0,
@@ -1594,34 +1622,6 @@ mod mascot_position_tests {
         assert!(!state.expire_pending_show(first_show));
         assert!(state.snapshot().desired_visible);
         assert_eq!(state.snapshot().generation, latest_show);
-    }
-
-    #[test]
-    fn only_the_owning_context_menu_generation_can_release_cursor_passthrough() {
-        let state = MascotContextMenuState::default();
-        state.mark_ready().unwrap();
-        let first = state.request_show().unwrap();
-        assert!(state.mark_awaiting_layout_ack(first));
-        assert!(state.claim_cursor_passthrough(first));
-
-        let latest = state.request_show().unwrap();
-        assert!(state.mark_awaiting_layout_ack(latest));
-        assert!(state.claim_cursor_passthrough(latest));
-        assert!(!state.release_cursor_passthrough(first).unwrap());
-        assert!(state.release_cursor_passthrough(latest).unwrap());
-        assert!(!state.release_any_cursor_passthrough().unwrap());
-    }
-
-    #[test]
-    fn context_menu_hide_can_always_release_cursor_passthrough_ownership() {
-        let state = MascotContextMenuState::default();
-        state.mark_ready().unwrap();
-        let generation = state.request_show().unwrap();
-        assert!(state.mark_awaiting_layout_ack(generation));
-        assert!(state.claim_cursor_passthrough(generation));
-
-        assert!(state.release_any_cursor_passthrough().unwrap());
-        assert!(!state.release_cursor_passthrough(generation).unwrap());
     }
 
     #[test]
@@ -2445,6 +2445,62 @@ fn notification_physical_geometry(
     }
 }
 
+#[cfg(any(windows, test))]
+fn system_notification_physical_geometry(
+    avatar: PhysicalRect,
+    work_area: PhysicalRect,
+    scale: f64,
+) -> NotificationPhysicalGeometry {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let margin = logical_to_physical(MASCOT_SYSTEM_NOTIFICATION_MARGIN, scale).max(0);
+    let gap = logical_to_physical(MASCOT_SYSTEM_NOTIFICATION_GAP, scale).max(0);
+    let max_width = (i64::from(work_area.width) - margin * 2).max(1);
+    let max_height = (i64::from(work_area.height) - margin * 2).max(1);
+    let width = logical_to_physical(MASCOT_SYSTEM_NOTIFICATION_WIDTH, scale).clamp(1, max_width);
+    let height = logical_to_physical(MASCOT_SYSTEM_NOTIFICATION_HEIGHT, scale).clamp(1, max_height);
+    let work_left = i64::from(work_area.x);
+    let work_top = i64::from(work_area.y);
+    let work_right = work_left + i64::from(work_area.width);
+    let work_bottom = work_top + i64::from(work_area.height);
+    let min_x = work_left + margin;
+    let max_x = work_right - width - margin;
+    let min_y = work_top + margin;
+    let max_y = work_bottom - height - margin;
+    let avatar_center_x = i64::from(avatar.x) + i64::from(avatar.width) / 2;
+    let desired_x = avatar_center_x - width / 2;
+    let x = if max_x >= min_x {
+        desired_x.clamp(min_x, max_x)
+    } else {
+        work_left + (i64::from(work_area.width) - width) / 2
+    };
+    let above_y = i64::from(avatar.y) - gap - height;
+    let below_y = i64::from(avatar.y) + i64::from(avatar.height) + gap;
+    let y = if above_y >= min_y {
+        above_y
+    } else if below_y <= max_y {
+        below_y
+    } else if max_y >= min_y {
+        above_y.clamp(min_y, max_y)
+    } else {
+        work_top + (i64::from(work_area.height) - height) / 2
+    };
+
+    NotificationPhysicalGeometry {
+        position: PhysicalPosition {
+            x: x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            y: y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        },
+        size: PhysicalSize {
+            width: width.min(i64::from(u32::MAX)) as u32,
+            height: height.min(i64::from(u32::MAX)) as u32,
+        },
+    }
+}
+
 fn mascot_context_menu_physical_geometry(
     avatar: PhysicalRect,
     work_area: PhysicalRect,
@@ -2636,22 +2692,7 @@ fn emit_mascot_context_menu_visibility(
         .map_err(|error| format!("failed to publish mascot context menu visibility: {error}"))
 }
 
-fn set_mascot_cursor_passthrough(app: &tauri::AppHandle, ignore: bool) -> Result<(), String> {
-    let mascot = app
-        .get_webview_window("mascot")
-        .ok_or_else(|| "mascot window is unavailable".to_string())?;
-    mascot
-        .set_ignore_cursor_events(ignore)
-        .map_err(|error| format!("failed to update mascot cursor passthrough: {error}"))
-}
-
 fn hide_mascot_context_menu_native_window(app: &tauri::AppHandle) {
-    // Always restore hit testing, even when state locking or menu hiding fails.
-    // A failed/stale menu generation must never leave the mascot click-through.
-    let _ = set_mascot_cursor_passthrough(app, false);
-    let _ = app
-        .state::<MascotContextMenuState>()
-        .release_any_cursor_passthrough();
     if let Some(menu) = app.get_webview_window("mascot-menu") {
         // Keep a failed hide click-through. A transparent topmost menu surface
         // must never start intercepting the desktop when it could not close.
@@ -2668,20 +2709,11 @@ fn rollback_mascot_context_menu_generation(
     state: &MascotContextMenuState,
     generation: u64,
 ) -> bool {
-    let owned_passthrough = state.release_cursor_passthrough(generation);
-    if !matches!(owned_passthrough, Ok(false)) {
-        // The generation owned hit testing, or the ownership lock is poisoned.
-        // Restore the safe default before any logical cancellation attempt.
-        let _ = set_mascot_cursor_passthrough(app, false);
-        if let Some(menu) = app.get_webview_window("mascot-menu") {
-            let _ = menu.hide();
-        }
-    }
     let cancelled = state.cancel_generation(generation);
     if cancelled {
         hide_mascot_context_menu_native_window(app);
     }
-    if cancelled || !matches!(owned_passthrough, Ok(false)) {
+    if cancelled {
         let _ = emit_mascot_context_menu_visibility(app, false);
     }
     cancelled
@@ -2702,8 +2734,6 @@ fn hide_mascot_context_menu_window(app: &tauri::AppHandle) {
     // and click-through until ready closes it.
     #[cfg(windows)]
     if !state.is_ready() {
-        let _ = set_mascot_cursor_passthrough(app, false);
-        let _ = state.release_any_cursor_passthrough();
         let _ = emit_mascot_context_menu_visibility(app, false);
         return;
     }
@@ -2813,6 +2843,7 @@ fn show_mascot_context_menu(
     app: tauri::AppHandle,
     state: tauri::State<'_, MascotContextMenuState>,
 ) -> Result<bool, String> {
+    hide_mascot_system_notification_native_window(&app);
     hide_panel_and_notify(&app);
     let _transition = state
         .transition
@@ -2862,17 +2893,6 @@ fn ack_mascot_context_menu_layout(
         }
     };
     harden_transparent_window(&menu);
-    // Enable click-through only after the renderer ACK. While the independent
-    // focused menu is visible, outside clicks then reach the real desktop and
-    // its Focused(false) path closes the menu without resizing the mascot HWND.
-    if !state.claim_cursor_passthrough(generation) {
-        rollback_mascot_context_menu_generation(&app, state.inner(), generation);
-        return Ok(false);
-    }
-    if let Err(error) = set_mascot_cursor_passthrough(&app, true) {
-        rollback_mascot_context_menu_generation(&app, state.inner(), generation);
-        return Err(error);
-    }
     if let Err(error) = menu.show() {
         rollback_mascot_context_menu_generation(&app, state.inner(), generation);
         return Err(format!("failed to show mascot context menu: {error}"));
@@ -2984,9 +3004,116 @@ fn hide_context_menu_after_focus_moves_outside_app(app: tauri::AppHandle) {
     });
 }
 
+fn hide_mascot_system_notification_native_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("mascot-notification") {
+        let _ = window.hide();
+    }
+}
+
+#[cfg(windows)]
+fn position_mascot_system_notification_window(
+    mascot: &tauri::WebviewWindow,
+    notification: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    let mascot_scale = mascot
+        .scale_factor()
+        .map_err(|error| format!("failed to read mascot scale factor: {error}"))?;
+    let client_origin = mascot_client_origin_physical(mascot)?;
+    let client_size = mascot
+        .inner_size()
+        .map_err(|error| format!("failed to read mascot client size: {error}"))?;
+    let avatar = mascot_avatar_physical_rect(client_origin, client_size, mascot_scale);
+    let avatar_center_x = i64::from(avatar.x) + i64::from(avatar.width) / 2;
+    let avatar_center_y = i64::from(avatar.y) + i64::from(avatar.height) / 2;
+    let monitor = mascot
+        .available_monitors()
+        .map_err(|error| format!("failed to enumerate monitors: {error}"))?
+        .into_iter()
+        .find(|monitor| {
+            let position = monitor.position();
+            let size = monitor.size();
+            let left = i64::from(position.x);
+            let top = i64::from(position.y);
+            avatar_center_x >= left
+                && avatar_center_x < left + i64::from(size.width)
+                && avatar_center_y >= top
+                && avatar_center_y < top + i64::from(size.height)
+        })
+        .or_else(|| mascot.current_monitor().ok().flatten())
+        .or_else(|| mascot.primary_monitor().ok().flatten())
+        .ok_or_else(|| "no monitor is available for the system notification".to_string())?;
+    let work_area = monitor.work_area();
+    let geometry = system_notification_physical_geometry(
+        avatar,
+        PhysicalRect {
+            x: work_area.position.x,
+            y: work_area.position.y,
+            width: work_area.size.width,
+            height: work_area.size.height,
+        },
+        monitor.scale_factor(),
+    );
+    set_window_physical_bounds(notification, geometry.position, geometry.size)
+}
+
+#[tauri::command]
+fn set_mascot_system_notification_ready(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MascotSystemNotificationState>,
+) -> bool {
+    state.mark_ready();
+    if let Some(window) = app.get_webview_window("mascot-notification") {
+        let _ = window.hide();
+        let _ = window.set_ignore_cursor_events(false);
+    }
+    app.emit_to("mascot", MASCOT_SYSTEM_NOTIFICATION_READY_EVENT, ())
+        .is_ok()
+}
+
+#[tauri::command]
+fn is_mascot_system_notification_ready(
+    state: tauri::State<'_, MascotSystemNotificationState>,
+) -> bool {
+    state.is_ready()
+}
+
+#[tauri::command]
+fn show_mascot_system_notification_window(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MascotSystemNotificationState>,
+) -> bool {
+    if !state.is_ready() {
+        return false;
+    }
+    let Some(mascot) = app.get_webview_window("mascot") else {
+        return false;
+    };
+    if !matches!(mascot.is_visible(), Ok(true)) {
+        return false;
+    }
+    let Some(notification) = app.get_webview_window("mascot-notification") else {
+        return false;
+    };
+    harden_transparent_window(&notification);
+    #[cfg(windows)]
+    if position_mascot_system_notification_window(&mascot, &notification).is_err() {
+        return false;
+    }
+    #[cfg(not(windows))]
+    let _ = mascot;
+    show_window_without_activation(&notification).is_ok()
+}
+
+#[tauri::command]
+fn hide_mascot_system_notification_window(app: tauri::AppHandle) -> bool {
+    hide_mascot_system_notification_native_window(&app);
+    true
+}
+
 #[tauri::command]
 fn hide_main_window(app: tauri::AppHandle) {
     hide_mascot_context_menu_window(&app);
+    hide_mascot_system_notification_native_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
         let _ = window.hide();
     }
@@ -3013,6 +3140,7 @@ fn show_main_window(
 #[tauri::command]
 fn show_notification_window(
     app: tauri::AppHandle,
+    motion: tauri::State<'_, MascotDockMotion>,
     initial_placement: tauri::State<'_, InitialMascotPlacement>,
 ) -> bool {
     hide_mascot_context_menu_window(&app);
@@ -3020,6 +3148,9 @@ fn show_notification_window(
         // A reminder should become visible without stealing focus from the
         // document or business application the user is working in.
         ensure_initial_mascot_placement(&window, initial_placement.inner());
+        let (width, height) = mascot_logical_size(&window);
+        restore_mascot_if_peeked(&window, motion.inner(), width, height);
+        let _ = app.emit_to("mascot", MASCOT_NATIVE_REVEALED_EVENT, ());
         return show_window_without_activation(&window).is_ok();
     }
     false
@@ -3337,6 +3468,7 @@ fn set_panel_activity(state: tauri::State<'_, PanelActivityState>, has_text: boo
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) {
     hide_mascot_context_menu_window(&app);
+    hide_mascot_system_notification_native_window(&app);
     app.exit(0);
 }
 
@@ -3635,6 +3767,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(InitialMascotPlacement::default())
         .manage(MascotDockMotion::default())
+        .manage(MascotSystemNotificationState::default())
         .manage(mascot_notification_layout_state())
         .manage(MascotContextMenuState::default())
         .manage(MascotDragMonitor::default())
@@ -3646,6 +3779,10 @@ fn main() {
             ack_mascot_context_menu_layout,
             hide_mascot_context_menu,
             set_mascot_context_menu_ready,
+            set_mascot_system_notification_ready,
+            is_mascot_system_notification_ready,
+            show_mascot_system_notification_window,
+            hide_mascot_system_notification_window,
             show_main_window,
             show_notification_window,
             finish_mascot_notification_collapse,
@@ -3697,6 +3834,7 @@ fn main() {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         hide_mascot_context_menu_window(&close_app);
+                        hide_mascot_system_notification_native_window(&close_app);
                         let _ = close_window.hide();
                         hide_panel_and_notify(&close_app);
                     }
@@ -3737,6 +3875,26 @@ fn main() {
                     // navigation indefinitely. Warm it up fully transparent,
                     // click-through and off-screen; its ready IPC immediately
                     // hides it before any user interaction can occur.
+                    window.set_ignore_cursor_events(true)?;
+                    window.set_position(Position::Physical(PhysicalPosition::new(
+                        -32_000, -32_000,
+                    )))?;
+                    show_window_without_activation(&window).map_err(std::io::Error::other)?;
+                }
+            }
+            if let Some(window) = app.get_webview_window("mascot-notification") {
+                harden_transparent_window(&window);
+                let close_window = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = close_window.hide();
+                    }
+                });
+                #[cfg(windows)]
+                {
+                    // Keep this renderer active before the first system message,
+                    // but never expose its warm-up surface on the desktop.
                     window.set_ignore_cursor_events(true)?;
                     window.set_position(Position::Physical(PhysicalPosition::new(
                         -32_000, -32_000,

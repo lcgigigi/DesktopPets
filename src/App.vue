@@ -4,6 +4,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import MascotWindow from './views/MascotWindow.vue'
 import MascotMenuWindow from './views/MascotMenuWindow.vue'
+import MascotNotificationWindow from './views/MascotNotificationWindow.vue'
 import PanelWindow from './views/PanelWindow.vue'
 import {
   createDesktopAuthState,
@@ -20,13 +21,23 @@ import {
   PANEL_TASK_READY_EVENT,
   PANEL_TASK_STATE_EVENT,
   PANEL_TASK_STATE_REQUEST_EVENT,
+  MASCOT_CONTEXT_MENU_VISIBILITY_EVENT,
+  MASCOT_SYSTEM_NOTIFICATION_ACTION_EVENT,
+  MASCOT_SYSTEM_NOTIFICATION_PRESENT_EVENT,
+  MASCOT_SYSTEM_NOTIFICATION_READY_EVENT,
+  hideMascotSystemNotificationWindow,
   hidePanelWindow,
+  isMascotSystemNotificationReady,
   openDesktopLogin,
   openSysMessageDetail,
   openWorkbench,
   setMascotNotificationVisible,
   showAssistant,
+  showMascotSystemNotificationWindow,
+  showNotificationWindow,
   showPanelWindow,
+  type MascotSystemNotificationAction,
+  type MascotSystemNotificationPresentation,
   type PanelTaskDeliveredPayload,
   type PanelTaskDeliveryPayload,
   type PanelTaskStatePayload,
@@ -82,10 +93,18 @@ let removePanelTaskStateRequestListener: (() => void) | undefined
 let removePanelSessionClearedListener: (() => void) | undefined
 let removeMascotMessageListener: (() => void) | undefined
 let removeSysMessageListener: (() => void) | undefined
+let removeSystemNotificationActionListener: UnlistenFn | undefined
+let removeSystemNotificationReadyListener: UnlistenFn | undefined
+let removeContextMenuVisibilityListener: UnlistenFn | undefined
 let removeDeepLinkListener: UnlistenFn | undefined
 let removeUnauthorizedListener: (() => void) | undefined
 let sessionValidationTimer: number | undefined
 let sysMessageEnrichmentGeneration = 0
+let systemNotificationPresentationGeneration = 0
+let systemNotificationSyncGeneration = 0
+let systemNotificationMessageKey = ''
+const systemNotificationWindowReady = ref(false)
+const contextMenuWindowVisible = ref(false)
 let isDeliveringDeferredTasks = false
 const panelTaskStateReady = ref(false)
 const deferredTaskEvents: TaskCreatedEvent[] = []
@@ -514,6 +533,72 @@ async function handleSysMessageView(message: SysMessageNotification) {
   }
 }
 
+function buildSystemNotificationPresentation(): MascotSystemNotificationPresentation | null {
+  const message = currentSysMessage.value
+  if (!message) return null
+
+  if (message.dedupeKey !== systemNotificationMessageKey) {
+    systemNotificationMessageKey = message.dedupeKey
+    systemNotificationPresentationGeneration += 1
+  }
+
+  return {
+    generation: systemNotificationPresentationGeneration,
+    message,
+    displayContent: currentSysMessageContent.value,
+    pendingCount: pendingSysMessageCount.value,
+    readPending: isCurrentSysMessageReadPending.value,
+    readAllPending: sysMessageReadAllPending.value,
+    actionError: sysMessageActionError.value,
+  }
+}
+
+async function syncSystemNotificationWindow() {
+  if (windowMode !== 'mascot' || !systemNotificationWindowReady.value) return
+
+  const syncGeneration = ++systemNotificationSyncGeneration
+  const presentation = buildSystemNotificationPresentation()
+  if (!presentation) systemNotificationMessageKey = ''
+  await emitTo(
+    'mascot-notification',
+    MASCOT_SYSTEM_NOTIFICATION_PRESENT_EVENT,
+    presentation,
+  )
+  if (syncGeneration !== systemNotificationSyncGeneration) return
+  if (presentation && !contextMenuWindowVisible.value) {
+    await showNotificationWindow()
+    if (syncGeneration !== systemNotificationSyncGeneration) return
+    await showMascotSystemNotificationWindow()
+  }
+}
+
+function handleSystemNotificationAction(payload: MascotSystemNotificationAction) {
+  if (payload.action === 'readAll') {
+    void handleAllSysMessagesRead()
+    return
+  }
+  if (!payload.message) return
+  if (payload.message.dedupeKey !== currentSysMessage.value?.dedupeKey) return
+  if (payload.action === 'read') {
+    void handleSysMessageRead(payload.message)
+  } else if (payload.action === 'view') {
+    void handleSysMessageView(payload.message)
+  }
+}
+
+watch(
+  () => [
+    currentSysMessage.value?.dedupeKey,
+    currentSysMessageContent.value,
+    pendingSysMessageCount.value,
+    isCurrentSysMessageReadPending.value,
+    sysMessageReadAllPending.value,
+    sysMessageActionError.value,
+  ],
+  () => { void syncSystemNotificationWindow() },
+  { flush: 'post' },
+)
+
 function connectDesktopSockets(options: { force?: boolean } = {}) {
   if (needsAuth.value) return
 
@@ -640,6 +725,32 @@ function handleDesktopAuthCallbackError(error: DesktopAuthCallbackError) {
 
 onMounted(async () => {
   if (windowMode === 'mascot') {
+    removeSystemNotificationActionListener = await listen<MascotSystemNotificationAction>(
+      MASCOT_SYSTEM_NOTIFICATION_ACTION_EVENT,
+      (event) => handleSystemNotificationAction(event.payload),
+    )
+    removeSystemNotificationReadyListener = await listen(
+      MASCOT_SYSTEM_NOTIFICATION_READY_EVENT,
+      () => {
+        systemNotificationWindowReady.value = true
+        void syncSystemNotificationWindow()
+      },
+    )
+    removeContextMenuVisibilityListener = await listen<boolean>(
+      MASCOT_CONTEXT_MENU_VISIBILITY_EVENT,
+      (event) => {
+        const wasVisible = contextMenuWindowVisible.value
+        contextMenuWindowVisible.value = event.payload
+        if (event.payload) {
+          systemNotificationSyncGeneration += 1
+          void hideMascotSystemNotificationWindow()
+        }
+        if (wasVisible && !event.payload) void syncSystemNotificationWindow()
+      },
+    )
+    systemNotificationWindowReady.value = await isMascotSystemNotificationReady()
+    if (systemNotificationWindowReady.value) void syncSystemNotificationWindow()
+
     removePanelTaskDeliveredListener = await listen<PanelTaskDeliveredPayload>(
       PANEL_TASK_DELIVERED_EVENT,
       (event) => handleTaskDelivered(event.payload),
@@ -780,6 +891,9 @@ onUnmounted(() => {
   removePanelSessionClearedListener?.()
   removeMascotMessageListener?.()
   removeSysMessageListener?.()
+  removeSystemNotificationActionListener?.()
+  removeSystemNotificationReadyListener?.()
+  removeContextMenuVisibilityListener?.()
   removeDeepLinkListener?.()
   removeUnauthorizedListener?.()
   stopSessionValidation()
@@ -799,17 +913,10 @@ onUnmounted(() => {
       :auth-pending="authPending"
       :auth-error-message="authErrorMessage"
       :sys-message="currentSysMessage"
-      :sys-message-content="currentSysMessageContent"
-      :pending-sys-message-count="pendingSysMessageCount"
-      :sys-message-read-pending="isCurrentSysMessageReadPending"
-      :sys-message-read-all-pending="sysMessageReadAllPending"
-      :sys-message-action-error="sysMessageActionError"
       @login="startDesktopLogin"
-      @read-sys-message="handleSysMessageRead"
-      @read-all-sys-messages="handleAllSysMessagesRead"
-      @view-sys-message="handleSysMessageView"
     />
     <MascotMenuWindow v-else-if="windowMode === 'mascot-menu'" />
+    <MascotNotificationWindow v-else-if="windowMode === 'mascot-notification'" />
     <PanelWindow v-else :socket-status="socketStatus" :mock-enabled="env.enableMock" :task="currentTask" />
   </main>
 </template>

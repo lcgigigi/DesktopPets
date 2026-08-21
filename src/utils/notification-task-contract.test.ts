@@ -7,9 +7,11 @@ import todoInputSource from '../components/TodoInputBox.vue?raw'
 import sysMessageServiceSource from '../services/sys-message.service.ts?raw'
 import windowServiceSource from '../services/window.service.ts?raw'
 import taskStoreSource from '../stores/task.ts?raw'
+import mascotNotificationWindowSource from '../views/MascotNotificationWindow.vue?raw'
 import mascotWindowSource from '../views/MascotWindow.vue?raw'
 import panelSource from '../views/PanelWindow.vue?raw'
 import rustSource from '../../src-tauri/src/main.rs?raw'
+import tauriConfigSource from '../../src-tauri/tauri.conf.json?raw'
 
 const appStyles = readFileSync(new URL('../assets/styles/app.css', import.meta.url), 'utf8')
 
@@ -155,10 +157,13 @@ describe('notification and task production contracts', () => {
     expect(todoInputSource).toContain('class="todo-input__error"')
     expect(todoInputSource).toContain('role="alert"')
 
-    // Auth, system message and bubble share one out-in branch, so they cannot
-    // render in parallel inside the mascot's expanded transparent HWND.
+    // Auth and compact bubbles share the mascot HWND. System messages render
+    // only in the isolated notification HWND so resizing them cannot corrupt
+    // the avatar's WebView2 composition surface.
     expect(mascotTemplate).toContain('mode="out-in"')
-    expectInOrder(mascotTemplate, 'v-if="!isContextMenuVisible && needsAuth"', 'v-else-if="!isContextMenuVisible && sysMessage"', 'v-else-if="!isContextMenuVisible && mascotStore.message"')
+    expectInOrder(mascotTemplate, 'v-if="!isContextMenuVisible && needsAuth"', 'v-else-if="!isContextMenuVisible && mascotStore.message"')
+    expect(mascotWindowSource).not.toContain('SysMessageTip')
+    expect(mascotNotificationWindowSource).toContain('<SysMessageTip')
     expect(mascotWindowSource).not.toMatch(/watch\(\s*hasBubbleMessage\s*,[\s\S]{0,260}?hidePanelWindow\(\)/)
   })
 
@@ -203,39 +208,39 @@ describe('notification and task production contracts', () => {
     expect(rustSource).toMatch(/fn set_mascot_notification_visible[\s\S]{0,620}?-> bool/)
   })
 
-  it('hides the transparent HWND while collapsing a dismissed message card', () => {
-    const release = section(
-      mascotWindowSource,
-      'async function releaseDismissedNotificationLayout',
-      'function handleExpandedOverlayAfterLeave',
+  it('keeps system-message rendering in a fixed independent HWND', () => {
+    const tauriConfig = JSON.parse(tauriConfigSource) as {
+      app: { windows: Array<Record<string, unknown>> }
+    }
+    const notificationWindow = tauriConfig.app.windows.find(
+      (window) => window.label === 'mascot-notification',
     )
-    const nativeCollapse = section(
+    const sync = section(
+      appSource,
+      'async function syncSystemNotificationWindow',
+      'function handleSystemNotificationAction',
+    )
+    const nativeShow = section(
       rustSource,
-      'fn set_mascot_notification_visible',
-      '#[tauri::command]\nfn set_panel_height',
+      'fn show_mascot_system_notification_window',
+      '#[tauri::command]\nfn hide_mascot_system_notification_window',
     )
 
-    expectInOrder(
-      release,
-      'hideDuringResize: true',
-      'isExpandedNotificationDismissing.value = false',
-      'await nextTick()',
-      "document.querySelector('.mascot-window')?.getBoundingClientRect()",
-      'requestAnimationFrame(() => requestAnimationFrame(() => resolve()))',
-      'await finishMascotNotificationCollapse()',
-    )
-    expectInOrder(
-      nativeCollapse,
-      'let suspended_for_resize = !visible && hide_during_resize.unwrap_or(false)',
-      'window.hide()',
-      'resize_mascot_for_notification',
-      'stage_collapsed_position',
-      'PhysicalPosition::new(-32_000, -32_000)',
-      'show_window_without_activation',
-    )
-    expect(rustSource).toMatch(
-      /fn finish_mascot_notification_collapse[\s\S]*?restore_staged_position[\s\S]*?show_window_without_activation/
-    )
+    expect(notificationWindow).toMatchObject({
+      width: 320,
+      height: 320,
+      transparent: true,
+      alwaysOnTop: true,
+      visible: false,
+      resizable: false,
+    })
+    expectInOrder(sync, "emitTo( 'mascot-notification'", 'await showNotificationWindow()', 'await showMascotSystemNotificationWindow()')
+    expect(mascotWindowSource).toContain('() => props.needsAuth')
+    expect(mascotWindowSource).not.toMatch(/hasExpandedNotification[\s\S]{0,100}?props\.sysMessage/)
+    expect(nativeShow).toContain('get_webview_window("mascot-notification")')
+    expect(nativeShow).toContain('position_mascot_system_notification_window')
+    expect(nativeShow).toContain('show_window_without_activation(&notification)')
+    expect(mascotNotificationWindowSource).toContain('if (!presentation.value) void hideMascotSystemNotificationWindow()')
   })
 
   it('offers one-click batch read only when more than one reminder is pending', () => {

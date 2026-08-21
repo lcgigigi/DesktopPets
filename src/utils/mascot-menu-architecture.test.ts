@@ -130,6 +130,7 @@ describe('mascot context menu architecture', () => {
     expect(nativeAck).toContain('menu.set_ignore_cursor_events(false)')
     expect(nativeAck).toContain('menu.set_focus()')
     expect(nativeAck).toContain('state.mark_visible(generation)')
+    expect(rustSource).not.toContain('fn set_mascot_cursor_passthrough')
     expect(rustSource).toContain('fn rollback_mascot_context_menu_generation')
     expect(rustSource).toContain('fn expire_pending_show')
     expect(rustSource).toContain('A WebView2 hosted by a never-visible HWND')
@@ -189,11 +190,11 @@ describe('mascot context menu architecture', () => {
       app: { windows: Array<{ label: string; closable?: boolean }> }
     }
 
-    for (const label of ['mascot', 'panel', 'mascot-menu']) {
+    for (const label of ['mascot', 'panel', 'mascot-menu', 'mascot-notification']) {
       expect(tauriConfig.app.windows.find((window) => window.label === label)?.closable).toBe(false)
     }
-    expect(rustSource.match(/tauri::WindowEvent::CloseRequested/g)).toHaveLength(3)
-    expect(rustSource.match(/api\.prevent_close\(\)/g)).toHaveLength(3)
+    expect(rustSource.match(/tauri::WindowEvent::CloseRequested/g)).toHaveLength(4)
+    expect(rustSource.match(/api\.prevent_close\(\)/g)).toHaveLength(4)
     expect(rustSource).toContain('hide_mascot_context_menu_window(&close_app)')
     expect(rustSource).toContain('hide_panel_and_notify(&close_app)')
   })

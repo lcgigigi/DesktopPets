@@ -589,7 +589,7 @@ try {
         hklmRunFallbackVerified = $true
         processNotStarted = $true
         manualInteractiveGateRequired = $true
-        manualCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Test-HualiAISilentDeployment.ps1 -MsiPath .\<1.0.41.msi> -ExpectedVersion 1.0.41 -ValidateDefaultLaunch -RequireInteractiveDefaultLaunch'
+        manualCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Test-HualiAISilentDeployment.ps1 -MsiPath .\<1.0.42.msi> -ExpectedVersion 1.0.42 -ValidateDefaultLaunch -RequireInteractiveDefaultLaunch'
       }
       if ($RequireInteractiveDefaultLaunch) {
         throw '当前 Windows runner 没有 Explorer 交互桌面；默认启动的无用户回退路径已验证，但本次要求的交互真机门禁明确失败。'

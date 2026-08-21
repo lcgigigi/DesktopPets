@@ -41,7 +41,10 @@ body[data-window='panel'] #app {
 
 html[data-window='mascot-menu'],
 body[data-window='mascot-menu'],
-body[data-window='mascot-menu'] #app {
+body[data-window='mascot-menu'] #app,
+html[data-window='mascot-notification'],
+body[data-window='mascot-notification'],
+body[data-window='mascot-notification'] #app {
   width: 100%;
   height: 100%;
   min-width: 0;

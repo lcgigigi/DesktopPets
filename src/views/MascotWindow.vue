@@ -6,7 +6,6 @@ import { listen } from '@tauri-apps/api/event'
 import AuthLoginTip from '../components/AuthLoginTip.vue'
 import MascotAvatar from '../components/MascotAvatar.vue'
 import MascotBubble from '../components/MascotBubble.vue'
-import SysMessageTip from '../components/SysMessageTip.vue'
 import {
   MASCOT_NATIVE_DRAG_ENDED_EVENT,
   MASCOT_NATIVE_REVEALED_EVENT,
@@ -44,18 +43,10 @@ const props = defineProps<{
   authPending: boolean
   authErrorMessage?: string
   sysMessage: SysMessageNotification | null
-  sysMessageContent: string
-  pendingSysMessageCount?: number
-  sysMessageReadPending?: boolean
-  sysMessageReadAllPending?: boolean
-  sysMessageActionError?: string
 }>()
 
 const emit = defineEmits<{
   login: []
-  readSysMessage: [message: SysMessageNotification]
-  readAllSysMessages: []
-  viewSysMessage: [message: SysMessageNotification]
 }>()
 
 const mascotStore = useMascotStore()
@@ -266,6 +257,7 @@ function scheduleIdleHide() {
 
 function shouldPauseIdleHide() {
   if (isContextMenuVisible.value) return true
+  if (props.sysMessage) return true
   if (peekTransition.value) return true
   return shouldPauseMascotIdleHide({
     isNotifying: isNotifying.value,
@@ -549,7 +541,7 @@ async function handleContextMenu(event: MouseEvent) {
 
 const hasBubbleMessage = computed(() => Boolean(mascotStore.message))
 const hasExpandedNotification = computed(
-  () => Boolean(props.sysMessage || props.needsAuth)
+  () => props.needsAuth
 )
 const isExpandedNotificationDismissing = ref(false)
 const isBubbleMessageDismissing = ref(false)
@@ -669,10 +661,7 @@ watch(
   () => ({
     visible: isNotifying.value,
     compact: usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value,
-    identity: props.sysMessage?.dedupeKey
-      || (props.needsAuth ? 'auth' : '')
-      || mascotStore.message,
-    pendingCount: props.pendingSysMessageCount || 0,
+    identity: (props.needsAuth ? 'auth' : '') || mascotStore.message,
   }),
   ({ visible, compact }) => {
     clearIdleHideTimer()
@@ -807,19 +796,6 @@ onUnmounted(() => {
         :pending="authPending"
         :message="authErrorMessage"
         @login="emit('login')"
-      />
-      <SysMessageTip
-        v-else-if="!isContextMenuVisible && sysMessage"
-        :key="sysMessage.dedupeKey"
-        :message="sysMessage"
-        :display-content="sysMessageContent"
-        :pending-count="pendingSysMessageCount || 0"
-        :read-pending="sysMessageReadPending"
-        :read-all-pending="sysMessageReadAllPending"
-        :action-error="sysMessageActionError"
-        @read="emit('readSysMessage', $event)"
-        @read-all="emit('readAllSysMessages')"
-        @view="emit('viewSysMessage', $event)"
       />
       <MascotBubble
         v-else-if="!isContextMenuVisible && mascotStore.message"

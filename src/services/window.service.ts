@@ -17,6 +17,9 @@ export const PANEL_TASK_STATE_REQUEST_EVENT = 'huali:panel-task-state-request'
 export const PANEL_TASK_READY_EVENT = 'huali:panel-task-ready'
 export const PANEL_TASK_DELIVERED_EVENT = 'huali:panel-task-delivered'
 export const MASCOT_CONTEXT_MENU_VISIBILITY_EVENT = 'mascot-context-menu-visibility'
+export const MASCOT_SYSTEM_NOTIFICATION_READY_EVENT = 'mascot-system-notification-ready'
+export const MASCOT_SYSTEM_NOTIFICATION_PRESENT_EVENT = 'mascot-system-notification-present'
+export const MASCOT_SYSTEM_NOTIFICATION_ACTION_EVENT = 'mascot-system-notification-action'
 export type MascotDockSide = 'left' | 'right'
 
 export interface MascotContextMenuPlacement {
@@ -24,6 +27,21 @@ export interface MascotContextMenuPlacement {
   placement: 'above' | 'below'
   /** Horizontal tail position inside the 192px visible menu card. */
   tailX: number
+}
+
+export interface MascotSystemNotificationPresentation {
+  generation: number
+  message: SysMessageNotification
+  displayContent: string
+  pendingCount: number
+  readPending: boolean
+  readAllPending: boolean
+  actionError: string
+}
+
+export interface MascotSystemNotificationAction {
+  action: 'read' | 'readAll' | 'view'
+  message?: SysMessageNotification
 }
 
 export interface PanelActivityPayload {
@@ -205,6 +223,38 @@ export async function setMascotContextMenuReady() {
     await invoke('set_mascot_context_menu_ready')
   } catch {
     return
+  }
+}
+
+export async function setMascotSystemNotificationReady() {
+  try {
+    return await invoke<boolean>('set_mascot_system_notification_ready')
+  } catch {
+    return false
+  }
+}
+
+export async function isMascotSystemNotificationReady() {
+  try {
+    return await invoke<boolean>('is_mascot_system_notification_ready')
+  } catch {
+    return false
+  }
+}
+
+export async function showMascotSystemNotificationWindow() {
+  try {
+    return await invoke<boolean>('show_mascot_system_notification_window')
+  } catch {
+    return false
+  }
+}
+
+export async function hideMascotSystemNotificationWindow() {
+  try {
+    return await invoke<boolean>('hide_mascot_system_notification_window')
+  } catch {
+    return false
   }
 }
 

@@ -25,7 +25,11 @@ vi.mock('../utils/storage', () => ({
 import {
   PANEL_REVEAL_EVENT,
   finishMascotNotificationCollapse,
+  hideMascotSystemNotificationWindow,
+  isMascotSystemNotificationReady,
   openExternal,
+  setMascotSystemNotificationReady,
+  showMascotSystemNotificationWindow,
   showNotificationWindow,
   showPanelWindow,
   togglePanelWindow,
@@ -107,5 +111,19 @@ describe('background task panel reveal', () => {
     mocks.invoke.mockResolvedValue(true)
     await expect(finishMascotNotificationCollapse()).resolves.toBe(true)
     expect(mocks.invoke).toHaveBeenCalledWith('finish_mascot_notification_collapse')
+  })
+
+  it('routes system-message presentation through its independent native window', async () => {
+    mocks.invoke.mockResolvedValue(true)
+
+    await expect(isMascotSystemNotificationReady()).resolves.toBe(true)
+    await expect(setMascotSystemNotificationReady()).resolves.toBe(true)
+    await expect(showMascotSystemNotificationWindow()).resolves.toBe(true)
+    await expect(hideMascotSystemNotificationWindow()).resolves.toBe(true)
+
+    expect(mocks.invoke).toHaveBeenCalledWith('is_mascot_system_notification_ready')
+    expect(mocks.invoke).toHaveBeenCalledWith('set_mascot_system_notification_ready')
+    expect(mocks.invoke).toHaveBeenCalledWith('show_mascot_system_notification_window')
+    expect(mocks.invoke).toHaveBeenCalledWith('hide_mascot_system_notification_window')
   })
 })

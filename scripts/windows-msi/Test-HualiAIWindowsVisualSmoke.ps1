@@ -1207,7 +1207,7 @@ try {
         [long]$_.Handle -ne $mascotHandle -and
         -not (Test-WindowOwnLogicalSize `
           -Window $_ `
-          -LogicalWidth 192 `
+          -LogicalWidth 216 `
           -LogicalHeight 76)
       } |
       ForEach-Object { [long]$_.Handle }
@@ -1328,7 +1328,7 @@ try {
     param($windows)
     $null -ne (Find-WindowByLogicalSize `
         -Windows $windows `
-        -LogicalWidth 192 `
+        -LogicalWidth 216 `
         -LogicalHeight 76 `
         -Scale $scale `
         -ExcludedHandles $menuExcludedHandles)
@@ -1336,7 +1336,7 @@ try {
   $mascotWithMenu = Find-WindowByHandle -Windows $menuOpenWindows -Handle $mascotHandle
   $menuAbove = Find-WindowByLogicalSize `
     -Windows $menuOpenWindows `
-    -LogicalWidth 192 `
+    -LogicalWidth 216 `
     -LogicalHeight 76 `
     -Scale $scale `
     -ExcludedHandles $menuExcludedHandles
@@ -1356,7 +1356,7 @@ try {
   $menuScale = $menuDpi / 96.0
   Assert-WindowLogicalSize `
     -Window $menuAbove `
-    -LogicalWidth 192 `
+    -LogicalWidth 216 `
     -LogicalHeight 76 `
     -Scale $menuScale `
     -Label '上方右键菜单'
@@ -1493,7 +1493,7 @@ try {
   $belowMenuScale = $belowMenuDpi / 96.0
   Assert-WindowLogicalSize `
     -Window $menuBelow `
-    -LogicalWidth 192 `
+    -LogicalWidth 216 `
     -LogicalHeight 76 `
     -Scale $belowMenuScale `
     -Label '下方右键菜单'
