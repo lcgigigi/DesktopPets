@@ -24,6 +24,7 @@ vi.mock('../utils/storage', () => ({
 
 import {
   PANEL_REVEAL_EVENT,
+  finishMascotNotificationCollapse,
   openExternal,
   showNotificationWindow,
   showPanelWindow,
@@ -100,5 +101,11 @@ describe('background task panel reveal', () => {
     mocks.invoke.mockResolvedValue(false)
     await expect(showNotificationWindow()).resolves.toBe(false)
     expect(mocks.invoke).toHaveBeenCalledWith('show_notification_window')
+  })
+
+  it('finishes an off-screen notification collapse before returning to the desktop', async () => {
+    mocks.invoke.mockResolvedValue(true)
+    await expect(finishMascotNotificationCollapse()).resolves.toBe(true)
+    expect(mocks.invoke).toHaveBeenCalledWith('finish_mascot_notification_collapse')
   })
 })

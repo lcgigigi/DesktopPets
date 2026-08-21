@@ -28,7 +28,7 @@ const MASCOT_AVATAR_HEIGHT: f64 = 88.0;
 const MASCOT_NOTIFICATION_BOTTOM_PADDING: f64 = 8.0;
 // Keep the same amount of the safety window visible when peeking from either
 // desktop edge. This leaves a discoverable part of Xiaoli on screen.
-const MASCOT_PEEK_VISIBLE_WIDTH: f64 = 76.0;
+const MASCOT_PEEK_VISIBLE_WIDTH: f64 = 84.0;
 const MASCOT_PEEK_ANIMATION_DURATION_MS: u64 = 560;
 const MASCOT_REVEAL_ANIMATION_DURATION_MS: u64 = 480;
 const MASCOT_DOCK_ANIMATION_FRAME_MS: u64 = 12;
@@ -85,12 +85,41 @@ struct MascotNotificationLayoutState(Arc<Mutex<Option<MascotNotificationLayout>>
 
 #[cfg(windows)]
 #[derive(Clone, Default)]
-struct MascotNotificationLayoutState;
+struct MascotNotificationLayoutState(Arc<Mutex<Option<PhysicalPosition<i32>>>>);
+
+#[cfg(windows)]
+impl MascotNotificationLayoutState {
+    fn stage_collapsed_position(&self, position: PhysicalPosition<i32>) -> Result<(), String> {
+        let mut staged = self
+            .0
+            .lock()
+            .map_err(|_| "mascot notification layout state is unavailable".to_string())?;
+        *staged = Some(position);
+        Ok(())
+    }
+
+    fn take_collapsed_position(&self) -> Result<Option<PhysicalPosition<i32>>, String> {
+        self.0
+            .lock()
+            .map(|mut staged| staged.take())
+            .map_err(|_| "mascot notification layout state is unavailable".to_string())
+    }
+
+    fn restore_staged_position(&self, window: &tauri::WebviewWindow) -> Result<bool, String> {
+        let Some(position) = self.take_collapsed_position()? else {
+            return Ok(false);
+        };
+        window
+            .set_position(Position::Physical(position))
+            .map_err(|error| format!("failed to restore staged mascot position: {error}"))?;
+        Ok(true)
+    }
+}
 
 fn mascot_notification_layout_state() -> MascotNotificationLayoutState {
     #[cfg(windows)]
     {
-        MascotNotificationLayoutState
+        MascotNotificationLayoutState::default()
     }
 
     #[cfg(not(windows))]
@@ -2997,6 +3026,27 @@ fn show_notification_window(
 }
 
 #[tauri::command]
+fn finish_mascot_notification_collapse(
+    app: tauri::AppHandle,
+    layout_state: tauri::State<'_, MascotNotificationLayoutState>,
+) -> bool {
+    let Some(window) = app.get_webview_window("mascot") else {
+        return false;
+    };
+    #[cfg(windows)]
+    if layout_state.restore_staged_position(&window).is_err() {
+        return false;
+    }
+    #[cfg(not(windows))]
+    let _ = layout_state;
+    if show_window_without_activation(&window).is_err() {
+        return false;
+    }
+    sync_panel_if_visible(&app);
+    true
+}
+
+#[tauri::command]
 fn peek_mascot_window(
     app: tauri::AppHandle,
     motion: tauri::State<'_, MascotDockMotion>,
@@ -3182,6 +3232,10 @@ fn set_mascot_notification_visible(
         hide_mascot_context_menu_window(&app);
     }
     if let Some(window) = app.get_webview_window("mascot") {
+        #[cfg(windows)]
+        if visible && layout_state.restore_staged_position(&window).is_err() {
+            return false;
+        }
         // The first frontend layout request can race the hidden window's native
         // setup on Windows. Anchor the collapsed mascot before calculating the
         // expanded login/reminder bounds so no stale top-left restore position
@@ -3224,7 +3278,33 @@ fn set_mascot_notification_visible(
             }
             return false;
         }
-        if !visible {
+        #[cfg(windows)]
+        if suspended_for_resize {
+            let target_position = match window.outer_position() {
+                Ok(position) => position,
+                Err(_) => {
+                    let _ = show_window_without_activation(&window);
+                    return false;
+                }
+            };
+            if layout_state
+                .stage_collapsed_position(target_position)
+                .is_err()
+            {
+                let _ = show_window_without_activation(&window);
+                return false;
+            }
+            let staged = window
+                .set_position(Position::Physical(PhysicalPosition::new(-32_000, -32_000)))
+                .is_ok()
+                && show_window_without_activation(&window).is_ok();
+            if !staged {
+                let _ = layout_state.restore_staged_position(&window);
+                let _ = show_window_without_activation(&window);
+                return false;
+            }
+        }
+        if !visible && !suspended_for_resize {
             // A panel may be opened while a bubble is fading. Re-anchor it only
             // after the mascot has atomically returned to collapsed bounds.
             sync_panel_if_visible(&app);
@@ -3568,6 +3648,7 @@ fn main() {
             set_mascot_context_menu_ready,
             show_main_window,
             show_notification_window,
+            finish_mascot_notification_collapse,
             peek_mascot_window,
             reveal_mascot_window,
             start_mascot_drag,

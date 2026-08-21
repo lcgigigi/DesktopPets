@@ -140,6 +140,46 @@ describe('sysMessageService', () => {
     expect(message.msgStatus).toBe(0)
   })
 
+  it('marks the current and queued messages as read in one request', async () => {
+    mocks.get.mockResolvedValue({ rows: [] })
+    mocks.put.mockResolvedValue(true)
+    const messages = [
+      {
+        id: '101', rawId: 101, dedupeKey: '101', msgSubject: '提醒 1', msgContent: '',
+        msgStatus: 0 as const, msgType: 1,
+      },
+      {
+        id: '102', rawId: '102', dedupeKey: '102', msgSubject: '提醒 2', msgContent: '',
+        msgStatus: 0 as const, msgType: 1,
+      },
+    ]
+
+    await expect(sysMessageService.markAllRead(messages)).resolves.toBe(true)
+
+    expect(mocks.put).toHaveBeenCalledWith('/sys-message/read', { ids: [101, 102] })
+    expect(messages.map((message) => message.msgStatus)).toEqual([1, 1])
+  })
+
+  it('keeps every queued message when batch read is not confirmed', async () => {
+    mocks.get.mockResolvedValue({ rows: [] })
+    mocks.put.mockResolvedValue(false)
+    const messages = [
+      {
+        id: '101', rawId: 101, dedupeKey: '101', msgSubject: '提醒 1', msgContent: '',
+        msgStatus: 0 as const, msgType: 1,
+      },
+      {
+        id: '102', rawId: 102, dedupeKey: '102', msgSubject: '提醒 2', msgContent: '',
+        msgStatus: 0 as const, msgType: 1,
+      },
+    ]
+
+    await expect(sysMessageService.markAllRead(messages)).rejects.toThrow(
+      '服务端未确认全部消息已读'
+    )
+    expect(messages.map((message) => message.msgStatus)).toEqual([0, 0])
+  })
+
   it('忽略退出或切换用户后才返回的旧轮询结果', async () => {
     let resolveOldRequest: ((value: unknown) => void) | undefined
     mocks.get

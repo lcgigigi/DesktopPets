@@ -11,12 +11,14 @@ const props = defineProps<{
   displayContent: string
   pendingCount?: number
   readPending?: boolean
+  readAllPending?: boolean
   actionError?: string
 }>()
 
 const emit = defineEmits<{
   view: [message: SysMessageNotification]
   read: [message: SysMessageNotification]
+  readAll: []
 }>()
 
 const title = computed(() => props.message.msgSubject || '站内消息')
@@ -110,6 +112,17 @@ const announcement = computed(() => {
           @click.stop="emit('read', message)"
         >
           {{ readPending ? '处理中…' : '知道了' }}
+        </button>
+        <button
+          v-if="(pendingCount ?? 0) > 0"
+          class="sys-message-tip__button sys-message-tip__button--read-all"
+          type="button"
+          :disabled="readPending"
+          :aria-label="`将当前及其余 ${pendingCount ?? 0} 条提醒全部标为已读，共 ${(pendingCount ?? 0) + 1} 条`"
+          :title="`全部标为已读（共 ${(pendingCount ?? 0) + 1} 条）`"
+          @click.stop="emit('readAll')"
+        >
+          {{ readAllPending ? '处理中…' : '全部已读' }}
         </button>
         <button
           class="sys-message-tip__button sys-message-tip__button--primary"

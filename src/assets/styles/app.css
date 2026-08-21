@@ -440,6 +440,12 @@
   color: #ffffff;
 }
 
+.sys-message-tip__button--read-all {
+  border-color: rgba(116, 221, 180, 0.24);
+  background: rgba(86, 210, 163, 0.08);
+  color: #d9fff0;
+}
+
 .sys-message-tip__button:hover {
   transform: translateY(-1px);
 }
@@ -781,6 +787,25 @@
   width: 16px;
   height: 16px;
   flex: 0 0 16px;
+}
+
+@media (max-width: 180px) {
+  .mascot-context-menu {
+    gap: 2px;
+    padding: 3px;
+  }
+
+  .mascot-context-menu__item {
+    gap: 4px;
+    padding: 0 5px;
+    font-size: 11px;
+  }
+
+  .mascot-context-menu__icon {
+    width: 14px;
+    height: 14px;
+    flex-basis: 14px;
+  }
 }
 
 .auth-login-tip {

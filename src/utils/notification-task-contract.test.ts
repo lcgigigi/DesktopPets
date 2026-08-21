@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import appSource from '../App.vue?raw'
 import taskCardSource from '../components/TaskPushCard.vue?raw'
+import sysMessageTipSource from '../components/SysMessageTip.vue?raw'
 import todoInputSource from '../components/TodoInputBox.vue?raw'
 import sysMessageServiceSource from '../services/sys-message.service.ts?raw'
 import windowServiceSource from '../services/window.service.ts?raw'
@@ -220,14 +221,40 @@ describe('notification and task production contracts', () => {
       'isExpandedNotificationDismissing.value = false',
       'await nextTick()',
       "document.querySelector('.mascot-window')?.getBoundingClientRect()",
-      'await showNotificationWindow()',
+      'requestAnimationFrame(() => requestAnimationFrame(() => resolve()))',
+      'await finishMascotNotificationCollapse()',
     )
     expectInOrder(
       nativeCollapse,
       'let suspended_for_resize = !visible && hide_during_resize.unwrap_or(false)',
       'window.hide()',
       'resize_mascot_for_notification',
+      'stage_collapsed_position',
+      'PhysicalPosition::new(-32_000, -32_000)',
+      'show_window_without_activation',
     )
+    expect(rustSource).toMatch(
+      /fn finish_mascot_notification_collapse[\s\S]*?restore_staged_position[\s\S]*?show_window_without_activation/
+    )
+  })
+
+  it('offers one-click batch read only when more than one reminder is pending', () => {
+    const batchService = section(
+      sysMessageServiceSource,
+      'async markAllRead',
+      'disconnect()',
+    )
+    const batchHandler = section(
+      appSource,
+      'async function handleAllSysMessagesRead',
+      'async function handleSysMessageView',
+    )
+
+    expect(sysMessageTipSource).toContain('v-if="(pendingCount ?? 0) > 0"')
+    expect(sysMessageTipSource).toContain("全部已读")
+    expect(sysMessageTipSource).toContain("emit('readAll')")
+    expectInOrder(batchService, 'unreadMessages', 'new Set', "request.put<unknown, boolean>('/sys-message/read', { ids })", 'markedRead !== true', 'message.msgStatus = 1')
+    expectInOrder(batchHandler, 'snapshot.length < 2', 'sysMessageReadAllPending.value = true', 'await sysMessageService.markAllRead(snapshot)', 'snapshotKeys', 'currentSysMessage.value = remainingMessages.shift() ?? null', 'catch (error)', '消息已保留')
   })
 
   it('clears queued delivery state and invalidates old panel events on session clear', () => {

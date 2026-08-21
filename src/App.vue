@@ -63,6 +63,7 @@ const socketStatus = ref(env.enableMock ? 'mock' : 'closed')
 const currentSysMessage = ref<ResolvedSysMessage | null>(null)
 const sysMessageQueue = ref<ResolvedSysMessage[]>([])
 const sysMessageReadPendingKey = ref('')
+const sysMessageReadAllPending = ref(false)
 const sysMessageActionError = ref('')
 const recentSysMessageKeys = new Set<string>()
 const authPending = ref(false)
@@ -105,7 +106,8 @@ const needsAuth = computed(
 )
 const currentSysMessageContent = computed(() => currentSysMessage.value?.displayContent || '')
 const isCurrentSysMessageReadPending = computed(
-  () => currentSysMessage.value?.dedupeKey === sysMessageReadPendingKey.value
+  () => sysMessageReadAllPending.value
+    || currentSysMessage.value?.dedupeKey === sysMessageReadPendingKey.value
 )
 const pendingSysMessageCount = computed(() => sysMessageQueue.value.length)
 
@@ -413,7 +415,7 @@ function hideCurrentSysMessage(message: SysMessageNotification) {
 }
 
 async function handleSysMessageRead(message: SysMessageNotification) {
-  if (sysMessageReadPendingKey.value) return
+  if (sysMessageReadPendingKey.value || sysMessageReadAllPending.value) return
 
   if (isSysMessagePreview) {
     hideCurrentSysMessage(message)
@@ -435,8 +437,45 @@ async function handleSysMessageRead(message: SysMessageNotification) {
   }
 }
 
+async function handleAllSysMessagesRead() {
+  if (sysMessageReadPendingKey.value || sysMessageReadAllPending.value) return
+  const snapshot = [
+    ...(currentSysMessage.value ? [currentSysMessage.value] : []),
+    ...sysMessageQueue.value,
+  ]
+  if (snapshot.length < 2) return
+
+  const snapshotKeys = new Set(snapshot.map((message) => message.dedupeKey))
+  sysMessageActionError.value = ''
+  sysMessageReadAllPending.value = true
+  try {
+    if (!isSysMessagePreview) {
+      await sysMessageService.markAllRead(snapshot)
+    }
+
+    const remainingMessages = [
+      ...(currentSysMessage.value && !snapshotKeys.has(currentSysMessage.value.dedupeKey)
+        ? [currentSysMessage.value]
+        : []),
+      ...sysMessageQueue.value.filter((message) => !snapshotKeys.has(message.dedupeKey)),
+    ]
+    currentSysMessage.value = remainingMessages.shift() ?? null
+    sysMessageQueue.value = remainingMessages
+    if (currentSysMessage.value) {
+      void hidePanelWindow()
+    } else {
+      void deliverTasksWhenSystemMessagesFinish()
+    }
+  } catch (error) {
+    console.warn('Failed to mark all sys_messages as read', error)
+    sysMessageActionError.value = '未能全部标为已读，消息已保留，请稍后重试'
+  } finally {
+    sysMessageReadAllPending.value = false
+  }
+}
+
 async function handleSysMessageView(message: SysMessageNotification) {
-  if (sysMessageReadPendingKey.value) return
+  if (sysMessageReadPendingKey.value || sysMessageReadAllPending.value) return
 
   if (isSysMessagePreview) {
     hideCurrentSysMessage(message)
@@ -496,6 +535,7 @@ function clearDesktopSession(message: string, status: MascotStatus = 'remind') {
   currentSysMessage.value = null
   sysMessageQueue.value = []
   sysMessageReadPendingKey.value = ''
+  sysMessageReadAllPending.value = false
   sysMessageActionError.value = ''
   recentSysMessageKeys.clear()
   taskSessionEpoch += 1
@@ -762,9 +802,11 @@ onUnmounted(() => {
       :sys-message-content="currentSysMessageContent"
       :pending-sys-message-count="pendingSysMessageCount"
       :sys-message-read-pending="isCurrentSysMessageReadPending"
+      :sys-message-read-all-pending="sysMessageReadAllPending"
       :sys-message-action-error="sysMessageActionError"
       @login="startDesktopLogin"
       @read-sys-message="handleSysMessageRead"
+      @read-all-sys-messages="handleAllSysMessagesRead"
       @view-sys-message="handleSysMessageView"
     />
     <MascotMenuWindow v-else-if="windowMode === 'mascot-menu'" />

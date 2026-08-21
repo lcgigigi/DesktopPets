@@ -16,6 +16,7 @@ import {
   PANEL_VISIBILITY_EVENT,
   type MascotDockSide,
   type PanelActivityPayload,
+  finishMascotNotificationCollapse,
   hidePanelWindow,
   openWorkbench,
   peekMascotWindow,
@@ -46,12 +47,14 @@ const props = defineProps<{
   sysMessageContent: string
   pendingSysMessageCount?: number
   sysMessageReadPending?: boolean
+  sysMessageReadAllPending?: boolean
   sysMessageActionError?: string
 }>()
 
 const emit = defineEmits<{
   login: []
   readSysMessage: [message: SysMessageNotification]
+  readAllSysMessages: []
   viewSysMessage: [message: SysMessageNotification]
 }>()
 
@@ -535,13 +538,10 @@ async function handleContextMenu(event: MouseEvent) {
     isPeeked.value = false
     peekTransition.value = undefined
   }
-  // Hide an active bubble/reminder in this WebView before the separate native
-  // menu window appears. This removes even a one-frame overlap between them.
-  isContextMenuVisible.value = true
-  refreshIdleHideSchedule()
+  // Keep the mascot visible while the detached menu performs its first-load
+  // handshake. Native visibility is the only authority that flips this state.
   void hidePanelWindow()
   if (!await showMascotContextMenu()) {
-    isContextMenuVisible.value = false
     refreshIdleHideSchedule()
     void releaseDismissedNotificationLayout()
   }
@@ -614,6 +614,10 @@ async function releaseDismissedNotificationLayout() {
 
   await nextTick()
   document.querySelector('.mascot-window')?.getBoundingClientRect()
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  })
+  await finishMascotNotificationCollapse()
 
   // A new item can arrive while the native command is in flight. In that case
   // explicitly restore its requested layout because isNotifying may have stayed
@@ -626,8 +630,6 @@ async function releaseDismissedNotificationLayout() {
       false,
       generation,
     )
-  } else {
-    await showNotificationWindow()
   }
 }
 
@@ -813,8 +815,10 @@ onUnmounted(() => {
         :display-content="sysMessageContent"
         :pending-count="pendingSysMessageCount || 0"
         :read-pending="sysMessageReadPending"
+        :read-all-pending="sysMessageReadAllPending"
         :action-error="sysMessageActionError"
         @read="emit('readSysMessage', $event)"
+        @read-all="emit('readAllSysMessages')"
         @view="emit('viewSysMessage', $event)"
       />
       <MascotBubble

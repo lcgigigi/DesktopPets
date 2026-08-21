@@ -321,6 +321,20 @@ export const sysMessageService = {
     message.msgStatus = 1
     return true
   },
+  async markAllRead(messages: SysMessageNotification[]) {
+    const unreadMessages = messages.filter((message) => message.msgStatus !== 1)
+    const ids = Array.from(new Set(
+      unreadMessages.map((message) => normalizeRequestId(message.rawId))
+    ))
+    if (!ids.length) return true
+
+    const markedRead = await request.put<unknown, boolean>('/sys-message/read', { ids })
+    if (markedRead !== true) throw new Error('服务端未确认全部消息已读')
+    unreadMessages.forEach((message) => {
+      message.msgStatus = 1
+    })
+    return true
+  },
   disconnect() {
     shouldReconnect = false
     activeUserId = ''

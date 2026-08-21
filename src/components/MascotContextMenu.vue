@@ -4,7 +4,6 @@ import { nextTick, onMounted, ref, watch } from 'vue'
 const props = defineProps<{
   x: number
   y: number
-  width: number
   placement?: 'above' | 'below'
   tailX?: number
   entering?: boolean
@@ -74,8 +73,8 @@ watch(() => props.entering, (entering) => {
     :style="{
       left: `${x}px`,
       top: `${y}px`,
-      width: `${width}px`,
-      '--menu-tail-x': `${tailX ?? width / 2}px`
+      width: `calc(100% - ${x * 2}px)`,
+      '--menu-tail-x': `clamp(18px, ${tailX ?? 96}px, calc(100% - 18px))`
     }"
     aria-label="机器人功能菜单"
     @contextmenu.prevent

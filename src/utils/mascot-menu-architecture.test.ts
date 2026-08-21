@@ -89,6 +89,7 @@ describe('mascot context menu architecture', () => {
       'const hasBubbleMessage'
     )
     expect(handler).toContain('await showMascotContextMenu()')
+    expect(handler).not.toContain('isContextMenuVisible.value = true')
     expect(handler).not.toContain('syncNativeNotificationLayout')
     expect(handler).not.toContain('setMascotNotificationVisible')
   })
@@ -148,7 +149,8 @@ describe('mascot context menu architecture', () => {
 
   it('keeps enough transparent native gutter for above and below shadows', () => {
     expect(mascotMenuWindowSource).toContain(":y=\"placement === 'above' ? 8 : 14\"")
-    expect(mascotMenuWindowSource).toContain(':width="192"')
+    expect(contextMenuSource).toContain('width: `calc(100% - ${x * 2}px)`')
+    expect(contextMenuSource).not.toContain('width: number')
     expect(rustSource).toContain('const MASCOT_CONTEXT_MENU_WIDTH: f64 = 216.0;')
     expect(rustSource).toContain('const MASCOT_CONTEXT_MENU_HEIGHT: f64 = 76.0;')
     expect(rustSource).toContain('const MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM: f64 = 55.0;')

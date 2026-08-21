@@ -1,0 +1,52 @@
+name: Build unsigned Windows enterprise MSI v1.0.41
+
+on:
+  push:
+    branches:
+      - codex/robot-regression-fixes-1.0.41
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-enterprise-msi-unsigned-v1041
+  cancel-in-progress: false
+
+jobs:
+  build-msi:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up stable Rust MSVC
+        shell: pwsh
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal
+          rustup default stable-x86_64-pc-windows-msvc
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build and validate unsigned intranet enterprise MSI
+        shell: pwsh
+        run: |
+          & .\scripts\build-windows-msi.ps1 -Mode intranet -AllowUnsigned -SkipNpmCi
+
+      - name: Upload administrator distribution package
+        uses: actions/upload-artifact@v6
+        with:
+          name: huali-windows-enterprise-msi-intranet-v1.0.41
+          path: |
+            artifacts/windows-msi-intranet/
+            artifacts/*-intranet-windows-enterprise-msi-x64.zip
+          if-no-files-found: error
+          retention-days: 30

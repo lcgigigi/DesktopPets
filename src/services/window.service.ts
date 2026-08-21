@@ -225,6 +225,14 @@ export async function showNotificationWindow(): Promise<boolean> {
   }
 }
 
+export async function finishMascotNotificationCollapse(): Promise<boolean> {
+  try {
+    return await invoke<boolean>('finish_mascot_notification_collapse')
+  } catch {
+    return false
+  }
+}
+
 export async function peekMascotWindow(reducedMotion = false) {
   try {
     return await invoke<MascotDockSide | null>('peek_mascot_window', { reducedMotion })
