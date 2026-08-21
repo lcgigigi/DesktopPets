@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { listen } from '@tauri-apps/api/event'
 import AuthLoginTip from '../components/AuthLoginTip.vue'
@@ -84,6 +84,7 @@ const animationState = ref<MascotAnimationState>()
 const dragThreshold = 8
 const avatarSingleClickDelayMs = 280
 const idleHideDelayMs = 60 * 1000
+const peekHideDurationMs = 560
 const peekRevealDurationMs = 480
 const nativeDragSafetyTimeoutMs = 15 * 1000
 const notificationLayoutRetryDelayMs = 120
@@ -95,7 +96,7 @@ const panelVisible = ref(false)
 const panelHasText = ref(false)
 const panelFocused = ref(false)
 const isContextMenuVisible = ref(false)
-const peekTransition = ref<'revealing'>()
+const peekTransition = ref<'peeking' | 'revealing'>()
 let dragState:
   | {
       pointerId: number
@@ -142,7 +143,7 @@ function prefersReducedMotion() {
 async function syncNativeNotificationLayout(
   visible: boolean,
   compact: boolean,
-  options: { reveal?: boolean; force?: boolean } = {}
+  options: { reveal?: boolean; force?: boolean; hideDuringResize?: boolean } = {}
 ): Promise<boolean> {
   const reveal = options.reveal ?? false
   if (
@@ -155,7 +156,8 @@ async function syncNativeNotificationLayout(
   const generation = ++nativeNotificationLayoutGeneration
   const synced = await setMascotNotificationVisible(visible, compact, {
     reveal,
-    reducedMotion: prefersReducedMotion()
+    reducedMotion: prefersReducedMotion(),
+    hideDuringResize: options.hideDuringResize
   })
   if (generation !== nativeNotificationLayoutGeneration) return false
 
@@ -241,20 +243,27 @@ function scheduleIdleHide() {
       scheduleIdleHide()
       return
     }
-    void peekMascotWindow(prefersReducedMotion()).then((side) => {
+    const reducedMotion = prefersReducedMotion()
+    void peekMascotWindow(reducedMotion).then((side) => {
       if (!side) {
         refreshIdleHideSchedule()
         return
       }
       peekSide.value = side
-      isPeeked.value = true
-      peekTransition.value = undefined
+      peekTransition.value = 'peeking'
+      window.clearTimeout(peekTransitionTimer)
+      peekTransitionTimer = window.setTimeout(() => {
+        if (peekTransition.value !== 'peeking') return
+        isPeeked.value = true
+        peekTransition.value = undefined
+      }, reducedMotion ? 0 : peekHideDurationMs)
     })
   }, idleHideDelayMs)
 }
 
 function shouldPauseIdleHide() {
   if (isContextMenuVisible.value) return true
+  if (peekTransition.value) return true
   return shouldPauseMascotIdleHide({
     isNotifying: isNotifying.value,
     isDragging: isDragging.value,
@@ -277,7 +286,7 @@ function refreshIdleHideSchedule() {
 function handlePointerEnter() {
   isPointerInside.value = true
   clearIdleHideTimer()
-  if (!isPeeked.value) return
+  if (!isPeeked.value && peekTransition.value !== 'peeking') return
 
   startPeekReveal()
 }
@@ -300,7 +309,7 @@ function handleExternalReveal() {
 }
 
 function startPeekReveal(moveWindow = true) {
-  if (!isPeeked.value) return false
+  if (!isPeeked.value && peekTransition.value !== 'peeking') return false
 
   isPeeked.value = false
   peekTransition.value = 'revealing'
@@ -586,11 +595,14 @@ async function releaseDismissedNotificationLayout() {
   const releaseBubble = !hasBubbleMessage.value && isBubbleMessageDismissing.value
   if (!releaseExpanded && !releaseBubble) return
 
-  // Preserve the current flex layout until the native window has already been
-  // resized around the avatar. Releasing the class first lets one expanded
-  // WebView frame recenter Xiaoli and is perceived as a position jump.
+  // WebView2 can retain a tile from the old large backbuffer when a transparent
+  // HWND is shrunk while visible. Hide only for this dismissal resize, then
+  // force the collapsed DOM layout before showing the HWND again.
   if (!hasVisibleOverlay()) {
-    await syncNativeNotificationLayout(false, false, { force: true })
+    await syncNativeNotificationLayout(false, false, {
+      force: true,
+      hideDuringResize: true,
+    })
   }
 
   if (releaseExpanded && !hasExpandedNotification.value) {
@@ -599,6 +611,9 @@ async function releaseDismissedNotificationLayout() {
   if (releaseBubble && !hasBubbleMessage.value) {
     isBubbleMessageDismissing.value = false
   }
+
+  await nextTick()
+  document.querySelector('.mascot-window')?.getBoundingClientRect()
 
   // A new item can arrive while the native command is in flight. In that case
   // explicitly restore its requested layout because isNotifying may have stayed
@@ -611,6 +626,8 @@ async function releaseDismissedNotificationLayout() {
       false,
       generation,
     )
+  } else {
+    await showNotificationWindow()
   }
 }
 

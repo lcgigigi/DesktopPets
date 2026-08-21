@@ -202,6 +202,34 @@ describe('notification and task production contracts', () => {
     expect(rustSource).toMatch(/fn set_mascot_notification_visible[\s\S]{0,620}?-> bool/)
   })
 
+  it('hides the transparent HWND while collapsing a dismissed message card', () => {
+    const release = section(
+      mascotWindowSource,
+      'async function releaseDismissedNotificationLayout',
+      'function handleExpandedOverlayAfterLeave',
+    )
+    const nativeCollapse = section(
+      rustSource,
+      'fn set_mascot_notification_visible',
+      '#[tauri::command]\nfn set_panel_height',
+    )
+
+    expectInOrder(
+      release,
+      'hideDuringResize: true',
+      'isExpandedNotificationDismissing.value = false',
+      'await nextTick()',
+      "document.querySelector('.mascot-window')?.getBoundingClientRect()",
+      'await showNotificationWindow()',
+    )
+    expectInOrder(
+      nativeCollapse,
+      'let suspended_for_resize = !visible && hide_during_resize.unwrap_or(false)',
+      'window.hide()',
+      'resize_mascot_for_notification',
+    )
+  })
+
   it('clears queued delivery state and invalidates old panel events on session clear', () => {
     const clearSession = section(appSource, 'function clearDesktopSession', 'function handleSessionExpired')
     const panelClearListener = section(

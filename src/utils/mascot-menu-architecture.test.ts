@@ -31,7 +31,7 @@ describe('mascot context menu architecture', () => {
     expect(menuWindow).toMatchObject({
       label: 'mascot-menu',
       url: 'index.html?window=mascot-menu',
-      width: 192,
+      width: 216,
       height: 76,
       decorations: false,
       transparent: true,
@@ -148,6 +148,8 @@ describe('mascot context menu architecture', () => {
 
   it('keeps enough transparent native gutter for above and below shadows', () => {
     expect(mascotMenuWindowSource).toContain(":y=\"placement === 'above' ? 8 : 14\"")
+    expect(mascotMenuWindowSource).toContain(':width="192"')
+    expect(rustSource).toContain('const MASCOT_CONTEXT_MENU_WIDTH: f64 = 216.0;')
     expect(rustSource).toContain('const MASCOT_CONTEXT_MENU_HEIGHT: f64 = 76.0;')
     expect(rustSource).toContain('const MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM: f64 = 55.0;')
     expect(rustSource).toContain('const MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP: f64 = 9.0;')

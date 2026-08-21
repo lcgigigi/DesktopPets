@@ -22,7 +22,7 @@ export type MascotDockSide = 'left' | 'right'
 export interface MascotContextMenuPlacement {
   generation: number
   placement: 'above' | 'below'
-  /** Horizontal tail position inside the 168px visible menu card. */
+  /** Horizontal tail position inside the 192px visible menu card. */
   tailX: number
 }
 
@@ -295,14 +295,15 @@ export async function syncPanelWindow() {
 export async function setMascotNotificationVisible(
   visible: boolean,
   compact = false,
-  options: { reveal?: boolean; reducedMotion?: boolean } = {}
+  options: { reveal?: boolean; reducedMotion?: boolean; hideDuringResize?: boolean } = {}
 ): Promise<boolean> {
   try {
     return await invoke<boolean>('set_mascot_notification_visible', {
       visible,
       compact,
       reveal: options.reveal ?? false,
-      reducedMotion: options.reducedMotion ?? false
+      reducedMotion: options.reducedMotion ?? false,
+      hideDuringResize: options.hideDuringResize ?? false
     })
   } catch {
     return false

@@ -91,7 +91,7 @@ describe('mascot one-third-smaller size contract', () => {
     expect((windowWidth - avatarWidth) / 2).toBe(12)
     expect((windowHeight - avatarHeight) / 2).toBe(8)
     expect(numericConst(rustSource, 'MASCOT_NOTIFICATION_BOTTOM_PADDING')).toBe(8)
-    expect(numericConst(rustSource, 'MASCOT_PEEK_VISIBLE_WIDTH')).toBe(68)
+    expect(numericConst(rustSource, 'MASCOT_PEEK_VISIBLE_WIDTH')).toBe(76)
     expect(numericConst(rustSource, 'MASCOT_MESSAGE_HEIGHT')).toBe(176)
   })
 })

@@ -102,7 +102,7 @@ onUnmounted(() => {
       :key="menuGeneration"
       :x="12"
       :y="placement === 'above' ? 8 : 14"
-      :width="168"
+      :width="192"
       :placement="placement"
       :tail-x="tailX"
       :entering="menuEntering"

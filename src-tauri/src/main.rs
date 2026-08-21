@@ -28,7 +28,7 @@ const MASCOT_AVATAR_HEIGHT: f64 = 88.0;
 const MASCOT_NOTIFICATION_BOTTOM_PADDING: f64 = 8.0;
 // Keep the same amount of the safety window visible when peeking from either
 // desktop edge. This leaves a discoverable part of Xiaoli on screen.
-const MASCOT_PEEK_VISIBLE_WIDTH: f64 = 68.0;
+const MASCOT_PEEK_VISIBLE_WIDTH: f64 = 76.0;
 const MASCOT_PEEK_ANIMATION_DURATION_MS: u64 = 560;
 const MASCOT_REVEAL_ANIMATION_DURATION_MS: u64 = 480;
 const MASCOT_DOCK_ANIMATION_FRAME_MS: u64 = 12;
@@ -36,14 +36,14 @@ const MASCOT_DOCK_ANIMATION_FRAME_MS: u64 = 12;
 // Treat that sub-pixel drift as resize noise instead of a user drag.
 #[cfg(any(not(windows), test))]
 const MASCOT_NOTIFICATION_DRAG_EPSILON: f64 = 1.0;
-const MASCOT_CONTEXT_MENU_WIDTH: f64 = 192.0;
+const MASCOT_CONTEXT_MENU_WIDTH: f64 = 216.0;
 const MASCOT_CONTEXT_MENU_HEIGHT: f64 = 76.0;
 const MASCOT_CONTEXT_MENU_GAP: f64 = 18.0;
 const MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM: f64 = 55.0;
 const MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP: f64 = 9.0;
 const MASCOT_CONTEXT_MENU_NAV_LEFT: f64 = 12.0;
 const MASCOT_CONTEXT_MENU_TAIL_MIN: f64 = 18.0;
-const MASCOT_CONTEXT_MENU_TAIL_MAX: f64 = 150.0;
+const MASCOT_CONTEXT_MENU_TAIL_MAX: f64 = 174.0;
 const MASCOT_CONTEXT_MENU_LAYOUT_ACK_TIMEOUT_MS: u64 = 1200;
 const DESKTOP_AUTH_CALLBACK_PREFIX: &str = "huali-ai-mascot://auth-callback";
 const DESKTOP_AUTH_CALLBACK_FILE: &str = "huali-ai-mascot-auth-callback.tmp";
@@ -591,6 +591,7 @@ fn ensure_initial_mascot_placement(window: &tauri::WebviewWindow, state: &Initia
     }
 }
 
+#[cfg(any(not(windows), test))]
 fn mascot_dock_target(
     window: &tauri::WebviewWindow,
     width: f64,
@@ -622,6 +623,7 @@ fn mascot_dock_target(
     })
 }
 
+#[cfg(any(not(windows), test))]
 fn nearest_dock_side(
     position_x: f64,
     width: f64,
@@ -637,6 +639,7 @@ fn nearest_dock_side(
     }
 }
 
+#[cfg(any(not(windows), test))]
 fn mascot_dock_x(
     side: MascotDockSide,
     peek: bool,
@@ -652,6 +655,58 @@ fn mascot_dock_x(
     }
 }
 
+#[cfg(any(windows, test))]
+fn mascot_dock_physical_target(
+    current_position: PhysicalPosition<i32>,
+    window_size: PhysicalSize<u32>,
+    work_area: PhysicalRect,
+    scale: f64,
+    peek: bool,
+) -> (PhysicalPosition<i32>, MascotDockSide) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let work_left = i64::from(work_area.x);
+    let work_top = i64::from(work_area.y);
+    let work_right = work_left + i64::from(work_area.width);
+    let work_bottom = work_top + i64::from(work_area.height);
+    let window_width = i64::from(window_size.width);
+    let window_height = i64::from(window_size.height);
+    let window_center = i64::from(current_position.x) + window_width / 2;
+    let work_center = work_left + i64::from(work_area.width) / 2;
+    let side = if window_center <= work_center {
+        MascotDockSide::Left
+    } else {
+        MascotDockSide::Right
+    };
+    let visible_width = logical_to_physical(MASCOT_PEEK_VISIBLE_WIDTH, scale);
+    let rest_margin = logical_to_physical(MASCOT_REST_RIGHT_MARGIN, scale);
+    let x = match (side, peek) {
+        (MascotDockSide::Left, true) => work_left - window_width + visible_width,
+        (MascotDockSide::Left, false) => work_left + rest_margin,
+        (MascotDockSide::Right, true) => work_right - visible_width,
+        (MascotDockSide::Right, false) => work_right - window_width - rest_margin,
+    };
+    let min_y = work_top + logical_to_physical(SCREEN_MARGIN, scale);
+    let max_y = work_bottom - window_height - logical_to_physical(MASCOT_REST_BOTTOM_MARGIN, scale);
+    let y = if max_y >= min_y {
+        i64::from(current_position.y).clamp(min_y, max_y)
+    } else {
+        min_y
+    };
+
+    (
+        PhysicalPosition {
+            x: x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            y: y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        },
+        side,
+    )
+}
+
+#[cfg(any(not(windows), test))]
 fn current_mascot_dock_side(window: &tauri::WebviewWindow, width: f64) -> Option<MascotDockSide> {
     let monitor = window.current_monitor().ok().flatten()?;
     let scale = monitor.scale_factor();
@@ -747,10 +802,7 @@ fn dock_mascot_immediately(
     width: f64,
     height: f64,
 ) {
-    motion.cancel();
-    if let Some(target) = mascot_dock_target(window, width, height, false) {
-        let _ = window.set_position(Position::Logical(target));
-    }
+    let _ = animate_mascot_dock(window.clone(), motion.clone(), width, height, false, true);
 }
 
 fn mascot_is_partly_offscreen(window: &tauri::WebviewWindow, width: f64) -> bool {
@@ -788,18 +840,18 @@ mod mascot_position_tests {
         align_window_to_avatar, async_key_state_is_pressed, clamp_position_to_rect,
         fit_notification_size_to_rect, fit_panel_height_to_rect, mascot_avatar_offset,
         mascot_avatar_physical_rect, mascot_bottom_right_position,
-        mascot_context_menu_physical_geometry, mascot_dock_x, nearest_dock_side,
-        notification_drag_delta, notification_physical_geometry, panel_physical_geometry,
-        peeked_dock_side, LogicalPosition, LogicalSize, MascotContextMenuPlacement,
-        MascotContextMenuState, MascotDockSide, PanelActivityState, PanelLayoutState,
-        PhysicalPosition, PhysicalRect, PhysicalSize, MASCOT_AVATAR_HEIGHT, MASCOT_AVATAR_WIDTH,
-        MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM, MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP,
-        MASCOT_CONTEXT_MENU_GAP, MASCOT_CONTEXT_MENU_HEIGHT, MASCOT_CONTEXT_MENU_TAIL_MAX,
-        MASCOT_CONTEXT_MENU_TAIL_MIN, MASCOT_CONTEXT_MENU_WIDTH, MASCOT_HEIGHT,
-        MASCOT_MESSAGE_HEIGHT, MASCOT_MESSAGE_WIDTH, MASCOT_NOTIFICATION_BOTTOM_PADDING,
-        MASCOT_NOTIFICATION_HEIGHT, MASCOT_NOTIFICATION_WIDTH, MASCOT_PEEK_VISIBLE_WIDTH,
-        MASCOT_REST_BOTTOM_MARGIN, MASCOT_REST_RIGHT_MARGIN, MASCOT_WIDTH, PANEL_COMPACT_HEIGHT,
-        PANEL_MAX_HEIGHT, SCREEN_MARGIN,
+        mascot_context_menu_physical_geometry, mascot_dock_physical_target, mascot_dock_x,
+        nearest_dock_side, notification_drag_delta, notification_physical_geometry,
+        panel_physical_geometry, peeked_dock_side, LogicalPosition, LogicalSize,
+        MascotContextMenuPlacement, MascotContextMenuState, MascotDockSide, PanelActivityState,
+        PanelLayoutState, PhysicalPosition, PhysicalRect, PhysicalSize, MASCOT_AVATAR_HEIGHT,
+        MASCOT_AVATAR_WIDTH, MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM,
+        MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP, MASCOT_CONTEXT_MENU_GAP, MASCOT_CONTEXT_MENU_HEIGHT,
+        MASCOT_CONTEXT_MENU_TAIL_MAX, MASCOT_CONTEXT_MENU_TAIL_MIN, MASCOT_CONTEXT_MENU_WIDTH,
+        MASCOT_HEIGHT, MASCOT_MESSAGE_HEIGHT, MASCOT_MESSAGE_WIDTH,
+        MASCOT_NOTIFICATION_BOTTOM_PADDING, MASCOT_NOTIFICATION_HEIGHT, MASCOT_NOTIFICATION_WIDTH,
+        MASCOT_PEEK_VISIBLE_WIDTH, MASCOT_REST_BOTTOM_MARGIN, MASCOT_REST_RIGHT_MARGIN,
+        MASCOT_WIDTH, PANEL_COMPACT_HEIGHT, PANEL_MAX_HEIGHT, SCREEN_MARGIN,
     };
 
     #[test]
@@ -859,6 +911,45 @@ mod mascot_position_tests {
             mascot_dock_x(MascotDockSide::Right, true, MASCOT_WIDTH, 0.0, 1920.0),
             1920.0 - MASCOT_PEEK_VISIBLE_WIDTH
         );
+    }
+
+    #[test]
+    fn physical_dock_target_keeps_the_requested_width_visible_at_high_dpi() {
+        for scale in [1.25_f64, 1.5, 1.75, 2.0] {
+            let work_area = PhysicalRect {
+                x: 0,
+                y: 0,
+                width: (2560.0 * scale).round() as u32,
+                height: (1400.0 * scale).round() as u32,
+            };
+            let window_size = PhysicalSize {
+                width: (MASCOT_WIDTH * scale).round() as u32,
+                height: (MASCOT_HEIGHT * scale).round() as u32,
+            };
+            let visible = (MASCOT_PEEK_VISIBLE_WIDTH * scale).round() as i32;
+            let (left, left_side) = mascot_dock_physical_target(
+                PhysicalPosition { x: 40, y: 800 },
+                window_size,
+                work_area,
+                scale,
+                true,
+            );
+            let (right, right_side) = mascot_dock_physical_target(
+                PhysicalPosition {
+                    x: work_area.width as i32 - window_size.width as i32 - 40,
+                    y: 800,
+                },
+                window_size,
+                work_area,
+                scale,
+                true,
+            );
+
+            assert_eq!(left_side, MascotDockSide::Left);
+            assert_eq!(right_side, MascotDockSide::Right);
+            assert_eq!(left.x + window_size.width as i32, visible);
+            assert_eq!(work_area.width as i32 - right.x, visible);
+        }
     }
 
     #[test]
@@ -1287,7 +1378,7 @@ mod mascot_position_tests {
             geometry.position.x + MASCOT_CONTEXT_MENU_WIDTH as i32 / 2,
             avatar.x + avatar.width as i32 / 2
         );
-        assert_eq!(geometry.payload.tail_x, 84.0);
+        assert_eq!(geometry.payload.tail_x, 96.0);
     }
 
     #[test]
@@ -1557,6 +1648,7 @@ fn restore_mascot_if_peeked(
     }
 }
 
+#[cfg(not(windows))]
 fn animate_mascot_dock(
     window: tauri::WebviewWindow,
     motion: MascotDockMotion,
@@ -1564,19 +1656,51 @@ fn animate_mascot_dock(
     height: f64,
     peek: bool,
     reduced_motion: bool,
-) {
+) -> Option<MascotDockSide> {
+    let side = current_mascot_dock_side(&window, width)?;
     let Some(target) = mascot_dock_target(&window, width, height, peek) else {
-        return;
+        return None;
     };
     let scale = window.scale_factor().unwrap_or(1.0);
     let Ok(start) = window.outer_position() else {
         let _ = window.set_position(Position::Logical(target));
-        return;
+        return Some(side);
     };
     let start = start.to_logical::<f64>(scale);
     animate_window_position(window, motion, start, target, peek, reduced_motion);
+    Some(side)
 }
 
+#[cfg(windows)]
+fn animate_mascot_dock(
+    window: tauri::WebviewWindow,
+    motion: MascotDockMotion,
+    _width: f64,
+    _height: f64,
+    peek: bool,
+    reduced_motion: bool,
+) -> Option<MascotDockSide> {
+    let monitor = window.current_monitor().ok().flatten()?;
+    let work_area = monitor.work_area();
+    let start = window.outer_position().ok()?;
+    let window_size = window.outer_size().ok()?;
+    let (target, side) = mascot_dock_physical_target(
+        start,
+        window_size,
+        PhysicalRect {
+            x: work_area.position.x,
+            y: work_area.position.y,
+            width: work_area.size.width,
+            height: work_area.size.height,
+        },
+        monitor.scale_factor(),
+        peek,
+    );
+    animate_window_position_physical(window, motion, start, target, peek, reduced_motion);
+    Some(side)
+}
+
+#[cfg(any(not(windows), test))]
 fn animate_window_position(
     window: tauri::WebviewWindow,
     motion: MascotDockMotion,
@@ -1628,6 +1752,59 @@ fn animate_window_position(
 
         if motion.0.load(Ordering::SeqCst) == animation_token {
             let _ = window.set_position(Position::Logical(target));
+        }
+    });
+}
+
+#[cfg(windows)]
+fn animate_window_position_physical(
+    window: tauri::WebviewWindow,
+    motion: MascotDockMotion,
+    start: PhysicalPosition<i32>,
+    target: PhysicalPosition<i32>,
+    peek: bool,
+    reduced_motion: bool,
+) {
+    let animation_token = motion.cancel();
+
+    if reduced_motion {
+        let _ = window.set_position(Position::Physical(target));
+        return;
+    }
+
+    let duration = Duration::from_millis(if peek {
+        MASCOT_PEEK_ANIMATION_DURATION_MS
+    } else {
+        MASCOT_REVEAL_ANIMATION_DURATION_MS
+    });
+
+    thread::spawn(move || {
+        let started_at = Instant::now();
+        loop {
+            if motion.0.load(Ordering::SeqCst) != animation_token {
+                return;
+            }
+
+            let progress = (started_at.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
+            let eased = if peek {
+                progress.powi(3) * (progress * (progress * 6.0 - 15.0) + 10.0)
+            } else {
+                1.0 - (1.0 - progress).powi(4)
+            };
+            let position = PhysicalPosition {
+                x: (f64::from(start.x) + f64::from(target.x - start.x) * eased).round() as i32,
+                y: (f64::from(start.y) + f64::from(target.y - start.y) * eased).round() as i32,
+            };
+            let _ = window.set_position(Position::Physical(position));
+
+            if progress >= 1.0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(MASCOT_DOCK_ANIMATION_FRAME_MS));
+        }
+
+        if motion.0.load(Ordering::SeqCst) == animation_token {
+            let _ = window.set_position(Position::Physical(target));
         }
     });
 }
@@ -2133,8 +2310,8 @@ enum MascotContextMenuPlacement {
 struct MascotContextMenuPlacementPayload {
     generation: u64,
     placement: MascotContextMenuPlacement,
-    // CSS consumes this as a logical coordinate inside the 168-DIP nav. It is
-    // deliberately not relative to the 192-DIP transparent native window.
+    // CSS consumes this as a logical coordinate inside the 192-DIP nav. It is
+    // deliberately not relative to the 216-DIP transparent native window.
     tail_x: f64,
 }
 
@@ -2838,16 +3015,15 @@ fn peek_mascot_window(
                 return None;
             }
         }
-        let side = current_mascot_dock_side(&window, width)?;
         hide_panel_and_notify(&app);
-        animate_mascot_dock(
+        let side = animate_mascot_dock(
             window,
             motion.inner().clone(),
             MASCOT_WIDTH,
             MASCOT_HEIGHT,
             true,
             reduced_motion,
-        );
+        )?;
         return Some(side.as_str().to_string());
     }
 
@@ -3000,6 +3176,7 @@ fn set_mascot_notification_visible(
     compact: Option<bool>,
     reveal: Option<bool>,
     reduced_motion: Option<bool>,
+    hide_during_resize: Option<bool>,
 ) -> bool {
     if visible {
         hide_mascot_context_menu_window(&app);
@@ -3011,6 +3188,15 @@ fn set_mascot_notification_visible(
         // can pull the card back or leave it clipped to a thin border.
         ensure_initial_mascot_placement(&window, initial_placement.inner());
         let compact = compact.unwrap_or(false);
+        #[cfg(not(windows))]
+        let _ = hide_during_resize;
+        #[cfg(windows)]
+        let suspended_for_resize = !visible && hide_during_resize.unwrap_or(false);
+        #[cfg(not(windows))]
+        let suspended_for_resize = false;
+        if suspended_for_resize && window.hide().is_err() {
+            return false;
+        }
         if resize_mascot_for_notification(
             &window,
             motion.inner(),
@@ -3033,6 +3219,9 @@ fn set_mascot_notification_visible(
                 false,
                 true,
             );
+            if suspended_for_resize {
+                let _ = show_window_without_activation(&window);
+            }
             return false;
         }
         if !visible {
