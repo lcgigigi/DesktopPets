@@ -324,6 +324,22 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     expect(cycle).toContain('$probeRoot -ne $backdropHandle')
     expect(cycle).toContain('clickThrough = $true')
   })
+
+  it('samples the downward menu shadow separately from the flipped pointer', () => {
+    const source = normalizedPowerShell()
+    const metricsStart = source.indexOf('function Get-MenuVisualMetrics')
+    const metricsEnd = source.indexOf('function Invoke-MouseClick', metricsStart)
+    const metrics = source.slice(metricsStart, metricsEnd)
+
+    expect(metricsStart).toBeGreaterThanOrEqual(0)
+    expect(metricsEnd).toBeGreaterThan(metricsStart)
+    expect(metrics).toContain('$shadowTop = [Math]::Max(0, $coreBottom')
+    expect(metrics).toContain("$tailTop = if ($Placement -eq 'Above')")
+    expect(metrics).toContain('$isTailBand =')
+    expect(metrics).toContain('$isShadowBand =')
+    expect(metrics.indexOf('$isTailBand =')).toBeLessThan(metrics.indexOf('$tailChangedPixels++'))
+    expect(metrics.indexOf('$isShadowBand =')).toBeLessThan(metrics.indexOf('$shadowChangedPixels++'))
+  })
 })
 
 describe('Windows v1.0.43 workflow visual-gate compiler contract', () => {

@@ -907,15 +907,24 @@ function Get-MenuVisualMetrics {
       [int][Math]::Round(14 * $Scale)
     }
     $coreBottom = [Math]::Min($Region.Height, $coreTop + [int][Math]::Round(42 * $Scale))
-    $shadowTop = if ($Placement -eq 'Above') {
-      [int][Math]::Round(48 * $Scale)
+    # The card uses a downward CSS box-shadow in both placements. When the
+    # menu flips below Xiaoli, only the pointer moves above the card; sampling
+    # the top gutter as "shadow" would therefore reject a correctly rendered
+    # menu with zero shadow pixels. Keep shadow and pointer bands independent.
+    $shadowTop = [Math]::Max(0, $coreBottom - [int][Math]::Round(2 * $Scale))
+    $shadowBottom = [Math]::Min(
+      $Region.Height,
+      $coreBottom + [int][Math]::Round(16 * $Scale)
+    )
+    $tailTop = if ($Placement -eq 'Above') {
+      [Math]::Max(0, $coreBottom - [int][Math]::Round(4 * $Scale))
     } else {
-      [int][Math]::Round(6 * $Scale)
+      [Math]::Max(0, $coreTop - [int][Math]::Round(10 * $Scale))
     }
-    $shadowBottom = if ($Placement -eq 'Above') {
-      [Math]::Min($Region.Height, [int][Math]::Round(68 * $Scale))
+    $tailBottom = if ($Placement -eq 'Above') {
+      [Math]::Min($Region.Height, $coreBottom + [int][Math]::Round(14 * $Scale))
     } else {
-      [Math]::Min($Region.Height, [int][Math]::Round(22 * $Scale))
+      [Math]::Min($Region.Height, $coreTop + [int][Math]::Round(4 * $Scale))
     }
     $shadowLeft = [int][Math]::Round(8 * $Scale)
     $shadowRight = [Math]::Min($Region.Width, [int][Math]::Round(184 * $Scale))
@@ -972,14 +981,17 @@ function Get-MenuVisualMetrics {
         $isShadowBand = $x -ge $shadowLeft -and $x -lt $shadowRight -and
             $y -ge $shadowTop -and $y -lt $shadowBottom -and
             ($y -lt $coreTop -or $y -ge $coreBottom)
-        if ($isShadowBand -and $difference -gt 8) {
-          if ([Math]::Abs($x - $AnchorX) -le $tailRadius) {
-            $tailChangedPixels++
-          } elseif ([Math]::Abs($x - $AnchorX) -gt $shadowTailExclusion) {
-            # Exclude the white pointer itself: only pixels spread away from
-            # the anchor can prove that the card shadow was rendered.
-            $shadowChangedPixels++
-          }
+        $isTailBand = $x -ge $shadowLeft -and $x -lt $shadowRight -and
+            $y -ge $tailTop -and $y -lt $tailBottom
+        if ($isTailBand -and $difference -gt 8 -and
+            [Math]::Abs($x - $AnchorX) -le $tailRadius) {
+          $tailChangedPixels++
+        }
+        if ($isShadowBand -and $difference -gt 8 -and
+            [Math]::Abs($x - $AnchorX) -gt $shadowTailExclusion) {
+          # Exclude the white pointer itself: only pixels spread away from the
+          # anchor can prove that the downward card shadow was rendered.
+          $shadowChangedPixels++
         }
       }
     }
