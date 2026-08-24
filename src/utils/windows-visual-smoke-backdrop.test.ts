@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import unsignedV1043WorkflowSource from '../../.github/workflows/build-windows-msi-unsigned-v1043.yml?raw'
+import unsignedV1044WorkflowSource from '../../.github/workflows/build-windows-msi-unsigned-v1044.yml?raw'
 import visualSmokeSource from '../../scripts/windows-msi/Test-HualiAIWindowsVisualSmoke.ps1?raw'
 
 const FRAME_WIDTH = 120
@@ -115,7 +115,7 @@ function normalizedPowerShell() {
 }
 
 function normalizedWorkflow() {
-  return unsignedV1043WorkflowSource.replace(/\r\n?/g, '\n')
+  return unsignedV1044WorkflowSource.replace(/\r\n?/g, '\n')
 }
 
 function getWorkflowStep(source: string, name: string) {
@@ -314,7 +314,7 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     const cycleEnd = source.indexOf('$report.checks.repeatedNotificationHitTesting', cycleStart)
     const cycle = source.slice(cycleStart, cycleEnd)
 
-    expect(source).toContain('Test-WindowOwnLogicalSize -Window $_ -LogicalWidth 320 -LogicalHeight 176')
+    expect(source).toContain('Test-WindowOwnLogicalSize -Window $_ -LogicalWidth 320 -LogicalHeight 192')
     expect(source).toContain('[Math]::Abs($mascotLogicalWidth - 120)')
     expect(source).toContain('[Math]::Abs($mascotLogicalHeight - 104)')
     expect(cycleStart).toBeGreaterThanOrEqual(0)
@@ -342,7 +342,7 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
   })
 })
 
-describe('Windows v1.0.43 workflow visual-gate compiler contract', () => {
+describe('Windows v1.0.44 workflow visual-gate compiler contract', () => {
   it('compiles the gate in PowerShell 7 and 5.1 before Node and Rust setup', () => {
     const workflow = normalizedWorkflow()
     const powerShell7 = getWorkflowStep(workflow, 'Compile visual gate with PowerShell 7')
@@ -376,6 +376,10 @@ describe('Windows v1.0.43 workflow visual-gate compiler contract', () => {
     expect(upload.start).toBeGreaterThan(deployment.start)
     expect(deployment.source).toContain('-ValidateDefaultLaunch `')
     expect(deployment.source).toContain('-RunVisualSmoke `')
+    expect(deployment.source).toContain("-ExpectedVersion '1.0.44' `")
+    expect(deployment.source).toContain("-PreviousVersion '1.0.43' `")
+    expect(workflow).toContain('run-id: 32703377634')
+    expect(workflow).toContain('5f8d723941693202cb8532d6138d084f431ed0c5d72e7a136c4a39cbad81d596')
   })
 })
 

@@ -247,7 +247,7 @@ describe('notification and task production contracts', () => {
     expect(mascotWindowSource).toContain('() => props.needsAuth')
     expect(appSource).toContain("kind: 'auth'")
     expect(appSource).toContain("kind: 'message'")
-    expect(rustSource).toContain('const MASCOT_AUTH_NOTIFICATION_HEIGHT: f64 = 176.0;')
+    expect(rustSource).toContain('const MASCOT_AUTH_NOTIFICATION_HEIGHT: f64 = 192.0;')
     expect(mascotResize).toContain('let compact = visible')
     expect(startup).toContain('await setMascotNotificationVisible(false, false)')
     expect(startup).not.toContain("请先登录后接收消息")
@@ -306,8 +306,8 @@ describe('notification and task production contracts', () => {
     expect(runtimeAnimation).toContain("peekSide.value === 'left' ? 'revealing-left' : 'revealing'")
     expect(runtimeAnimation).toContain("peekTransition.value === 'peeking' || isPeeked.value")
     expect(runtimeAnimation).toContain("peekSide.value === 'left' ? 'peeking-left' : 'peeking'")
-    expect(mascotWindowSource).toContain('const peekHideDurationMs = 560')
-    expect(mascotWindowSource).toContain('const peekRevealDurationMs = 480')
+    expect(mascotWindowSource).toContain('const peekHideDurationMs = mascotAnimationTiming.peeking.durationMs')
+    expect(mascotWindowSource).toContain('const peekRevealDurationMs = mascotAnimationTiming.revealing.durationMs')
     expect(rustSource).toContain('const MASCOT_PEEK_ANIMATION_DURATION_MS: u64 = 560;')
     expect(rustSource).toContain('const MASCOT_REVEAL_ANIMATION_DURATION_MS: u64 = 480;')
   })
@@ -389,6 +389,24 @@ describe('notification and task production contracts', () => {
       expect(completeTextRegion).toContain('white-space: normal')
       expect(completeTextRegion).not.toContain('text-overflow: ellipsis')
     }
+  })
+
+  it('reserves two unclipped lines for every login guidance state', () => {
+    const detachedLogin = section(
+      appStyles,
+      '.mascot-notification-window .auth-login-tip {',
+      '.mascot-notification-window .sys-message-tip__card {',
+    )
+    const loginBody = section(appStyles, '.auth-login-tip__body {', '.auth-login-tip__body strong {')
+    const loginCopy = section(appStyles, '.auth-login-tip__body p {', '.auth-login-tip__button {')
+
+    expect(detachedLogin).toContain('max-height: none')
+    expect(detachedLogin).toContain('flex: 0 0 auto')
+    expect(loginBody).toContain('overflow: visible')
+    expect(loginCopy).toContain('min-height: 40px')
+    expect(loginCopy).toContain('line-height: 19px')
+    expect(loginCopy).toContain('overflow: visible')
+    expect(mascotNotificationWindowSource).toContain("preview === 'auth-pending'")
   })
 
   it('offers one-click batch read only when more than one reminder is pending', () => {

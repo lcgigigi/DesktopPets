@@ -17,11 +17,11 @@ const preview = import.meta.env.DEV
   ? new URLSearchParams(window.location.search).get('preview')
   : null
 
-if (preview === 'auth') {
+if (preview === 'auth' || preview === 'auth-pending') {
   presentation.value = {
     kind: 'auth',
     generation: 1,
-    pending: false,
+    pending: preview === 'auth-pending',
     message: '',
   }
 } else if (preview === 'sys-message') {

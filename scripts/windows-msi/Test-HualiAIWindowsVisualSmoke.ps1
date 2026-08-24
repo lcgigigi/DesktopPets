@@ -594,7 +594,7 @@ function Test-WindowOwnLogicalSize {
 function Find-MascotWindow {
   param([Parameter(Mandatory = $true)]$Windows)
 
-  # Login now renders in its own 320x176 HWND. The mascot must stay within its
+  # Login now renders in its own 320x192 HWND. The mascot must stay within its
   # 120x104 collapsed or 240x176 compact-bubble envelope; accepting 320x480 here
   # would hide the exact transparent click-mask regression this gate protects.
   $matches = foreach ($window in $Windows) {
@@ -1211,7 +1211,7 @@ try {
     param($windows)
     $mascot = Find-MascotWindow -Windows $windows
     $authWindow = $windows | Where-Object {
-      Test-WindowOwnLogicalSize -Window $_ -LogicalWidth 320 -LogicalHeight 176
+      Test-WindowOwnLogicalSize -Window $_ -LogicalWidth 320 -LogicalHeight 192
     } | Select-Object -First 1
     $null -ne $mascot -and $null -ne $authWindow
   }
@@ -1223,10 +1223,10 @@ try {
   $mascotHandle = [long]$mascotBefore.Handle
   $authBefore = $startupWindows | Where-Object {
     [long]$_.Handle -ne $mascotHandle -and
-    (Test-WindowOwnLogicalSize -Window $_ -LogicalWidth 320 -LogicalHeight 176)
+    (Test-WindowOwnLogicalSize -Window $_ -LogicalWidth 320 -LogicalHeight 192)
   } | Select-Object -First 1
   if (-not $authBefore) {
-    throw '首次未登录启动未找到独立 320x176 登录提醒 HWND。'
+    throw '首次未登录启动未找到独立 320x192 登录提醒 HWND。'
   }
   $authHandle = [long]$authBefore.Handle
   # Every other visible startup HWND is a WebView2/helper surface. The menu is

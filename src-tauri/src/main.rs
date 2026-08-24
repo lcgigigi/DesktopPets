@@ -47,7 +47,7 @@ const MASCOT_CONTEXT_MENU_TAIL_MAX: f64 = 174.0;
 const MASCOT_CONTEXT_MENU_LAYOUT_ACK_TIMEOUT_MS: u64 = 1200;
 const MASCOT_SYSTEM_NOTIFICATION_WIDTH: f64 = 320.0;
 const MASCOT_SYSTEM_NOTIFICATION_HEIGHT: f64 = 320.0;
-const MASCOT_AUTH_NOTIFICATION_HEIGHT: f64 = 176.0;
+const MASCOT_AUTH_NOTIFICATION_HEIGHT: f64 = 192.0;
 const MASCOT_SYSTEM_NOTIFICATION_GAP: f64 = 8.0;
 const MASCOT_SYSTEM_NOTIFICATION_MARGIN: f64 = 8.0;
 const DESKTOP_AUTH_CALLBACK_PREFIX: &str = "huali-ai-mascot://auth-callback";
@@ -1027,13 +1027,14 @@ mod mascot_position_tests {
         align_window_to_avatar, async_key_state_is_pressed, clamp_position_to_rect,
         fit_notification_size_to_rect, fit_panel_height_to_rect, mascot_avatar_offset,
         mascot_avatar_physical_rect, mascot_bottom_right_position,
-        mascot_context_menu_physical_geometry, mascot_dock_physical_target, mascot_dock_x,
-        nearest_dock_side, notification_drag_delta, notification_physical_geometry,
-        panel_physical_geometry, peeked_dock_side, system_notification_physical_geometry,
-        LogicalPosition, LogicalSize, MascotContextMenuPlacement, MascotContextMenuState,
-        MascotDockSide, MascotSystemNotificationState, PanelActivityState, PanelLayoutState,
-        PhysicalPosition, PhysicalRect, PhysicalSize, MASCOT_AUTH_NOTIFICATION_HEIGHT,
-        MASCOT_AVATAR_HEIGHT, MASCOT_AVATAR_WIDTH, MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM,
+        mascot_context_menu_physical_geometry, mascot_dock_eased_progress,
+        mascot_dock_physical_target, mascot_dock_x, nearest_dock_side, notification_drag_delta,
+        notification_physical_geometry, panel_physical_geometry, peeked_dock_side,
+        system_notification_physical_geometry, LogicalPosition, LogicalSize,
+        MascotContextMenuPlacement, MascotContextMenuState, MascotDockSide,
+        MascotSystemNotificationState, PanelActivityState, PanelLayoutState, PhysicalPosition,
+        PhysicalRect, PhysicalSize, MASCOT_AUTH_NOTIFICATION_HEIGHT, MASCOT_AVATAR_HEIGHT,
+        MASCOT_AVATAR_WIDTH, MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM,
         MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP, MASCOT_CONTEXT_MENU_GAP, MASCOT_CONTEXT_MENU_HEIGHT,
         MASCOT_CONTEXT_MENU_TAIL_MAX, MASCOT_CONTEXT_MENU_TAIL_MIN, MASCOT_CONTEXT_MENU_WIDTH,
         MASCOT_HEIGHT, MASCOT_MESSAGE_HEIGHT, MASCOT_MESSAGE_WIDTH,
@@ -1101,6 +1102,21 @@ mod mascot_position_tests {
             mascot_dock_x(MascotDockSide::Right, true, MASCOT_WIDTH, 0.0, 1920.0),
             1920.0 - MASCOT_PEEK_VISIBLE_WIDTH
         );
+    }
+
+    #[test]
+    fn dock_motion_easing_is_monotonic_and_settles_at_both_ends() {
+        for peek in [false, true] {
+            assert_eq!(mascot_dock_eased_progress(peek, 0.0), 0.0);
+            assert_eq!(mascot_dock_eased_progress(peek, 1.0), 1.0);
+
+            let samples: Vec<f64> = (0..=40)
+                .map(|step| mascot_dock_eased_progress(peek, f64::from(step) / 40.0))
+                .collect();
+            assert!(samples.windows(2).all(|pair| pair[1] >= pair[0]));
+            assert!(samples[1] < 0.01, "motion must not jump on its first frame");
+            assert!(1.0 - samples[39] < 0.01, "motion must settle gently");
+        }
     }
 
     #[test]
@@ -1912,6 +1928,18 @@ fn restore_mascot_if_peeked(
     }
 }
 
+fn mascot_dock_eased_progress(peek: bool, progress: f64) -> f64 {
+    let progress = progress.clamp(0.0, 1.0);
+    if peek {
+        // Smootherstep gives the longer hide motion a quiet start and landing.
+        progress.powi(3) * (progress * (progress * 6.0 - 15.0) + 10.0)
+    } else {
+        // Smoothstep avoids the several-pixel first-frame jump of a quartic
+        // ease-out while keeping the shorter reveal responsive and settled.
+        progress.powi(2) * (3.0 - 2.0 * progress)
+    }
+}
+
 #[cfg(not(windows))]
 fn animate_mascot_dock(
     window: tauri::WebviewWindow,
@@ -1922,9 +1950,7 @@ fn animate_mascot_dock(
     reduced_motion: bool,
 ) -> Option<MascotDockSide> {
     let side = current_mascot_dock_side(&window, width)?;
-    let Some(target) = mascot_dock_target(&window, width, height, peek) else {
-        return None;
-    };
+    let target = mascot_dock_target(&window, width, height, peek)?;
     let scale = window.scale_factor().unwrap_or(1.0);
     let Ok(start) = window.outer_position() else {
         let _ = window.set_position(Position::Logical(target));
@@ -1994,14 +2020,7 @@ fn animate_window_position(
             }
 
             let progress = (started_at.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
-            let eased = if peek {
-                // Smootherstep keeps the hide motion quiet at both ends.
-                progress.powi(3) * (progress * (progress * 6.0 - 15.0) + 10.0)
-            } else {
-                // A fast, non-overshooting ease-out reads as responsive without
-                // making the whole native window wobble against the screen edge.
-                1.0 - (1.0 - progress).powi(4)
-            };
+            let eased = mascot_dock_eased_progress(peek, progress);
             let position = LogicalPosition {
                 x: start.x + (target.x - start.x) * eased,
                 y: start.y + (target.y - start.y) * eased,
@@ -2050,11 +2069,7 @@ fn animate_window_position_physical(
             }
 
             let progress = (started_at.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
-            let eased = if peek {
-                progress.powi(3) * (progress * (progress * 6.0 - 15.0) + 10.0)
-            } else {
-                1.0 - (1.0 - progress).powi(4)
-            };
+            let eased = mascot_dock_eased_progress(peek, progress);
             let position = PhysicalPosition {
                 x: (f64::from(start.x) + f64::from(target.x - start.x) * eased).round() as i32,
                 y: (f64::from(start.y) + f64::from(target.y - start.y) * eased).round() as i32,

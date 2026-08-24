@@ -33,7 +33,7 @@ import {
   advanceRunningDirection,
   createRunningDirectionState
 } from '../utils/mascot-drag-motion'
-import { mascotWaitingInteractionMs } from '../utils/mascot-animation-timing'
+import { mascotAnimationTiming, mascotWaitingInteractionMs } from '../utils/mascot-animation-timing'
 import { canOpenMascotTodoPanel } from '../utils/mascot-panel-access'
 import { shouldPauseMascotIdleHide } from '../utils/mascot-idle-policy'
 
@@ -71,8 +71,10 @@ const animationState = ref<MascotAnimationState>()
 const dragThreshold = 8
 const avatarSingleClickDelayMs = 280
 const idleHideDelayMs = 60 * 1000
-const peekHideDurationMs = 560
-const peekRevealDurationMs = 480
+// Use the same authored clock for the sprite frames and the native-window
+// transition state. The contract test keeps these values aligned with Rust.
+const peekHideDurationMs = mascotAnimationTiming.peeking.durationMs
+const peekRevealDurationMs = mascotAnimationTiming.revealing.durationMs
 const nativeDragSafetyTimeoutMs = 15 * 1000
 const notificationLayoutRetryDelayMs = 120
 const scaleChangeLayoutDebounceMs = 48
