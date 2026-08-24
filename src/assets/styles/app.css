@@ -53,8 +53,41 @@
   animation-name: sys-message-tip-in-flex;
 }
 
+.mascot-notification-window .auth-login-tip {
+  position: relative;
+  top: auto;
+  left: auto;
+  width: 100%;
+  max-height: 100%;
+  transform: none;
+  flex: 0 1 auto;
+  cursor: default;
+  animation-name: auth-login-tip-in-flex;
+}
+
 .mascot-notification-window .sys-message-tip__card {
   max-height: calc(100vh - 20px);
+}
+
+.mascot-notification-window .sys-message-tip__body {
+  display: grid;
+  flex: 0 1 auto;
+  overflow: visible;
+}
+
+.mascot-notification-window .sys-message-tip__summary-shell {
+  display: block;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.mascot-notification-window .sys-message-tip__body .sys-message-tip__summary,
+.mascot-notification-window .sys-message-tip.has-action-error .sys-message-tip__summary {
+  max-height: 60px;
+  display: block;
+  flex: 0 0 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .mascot-window {
@@ -148,15 +181,17 @@
   z-index: 1;
   max-width: 100%;
   margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
+  text-overflow: clip;
   color: #1b2f52;
   font-size: 12px;
   font-weight: 700;
-  line-height: 16px;
+  line-height: 17px;
   letter-spacing: 0.02em;
   text-align: center;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .mascot-bubble__tail {
@@ -265,6 +300,7 @@
   flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 14px;
 }
@@ -272,7 +308,7 @@
 .sys-message-tip__badge {
   display: inline-flex;
   min-width: 0;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   align-items: center;
   gap: 7px;
   min-height: 24px;
@@ -289,8 +325,8 @@
 
 .sys-message-tip__badge-label {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -428,30 +464,36 @@
 .sys-message-tip__actions {
   position: relative;
   z-index: 1;
-  display: flex;
+  display: grid;
   flex: 0 0 auto;
-  justify-content: flex-end;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-top: 15px;
   padding-top: 13px;
   border-top: 1px solid rgba(221, 240, 255, 0.09);
 }
 
+.sys-message-tip__actions.has-read-all {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .sys-message-tip__button {
-  flex: 1;
   min-width: 0;
   min-height: 44px;
-  padding: 0 14px;
+  height: auto;
+  padding: 7px 6px;
   border: 1px solid var(--tip-button-border);
   border-radius: 10px;
   background: rgba(236, 246, 255, 0.045);
   color: var(--tip-button-text);
   font-size: 13px;
   font-weight: 700;
-  line-height: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 18px;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   cursor: pointer;
   transition:
     transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -908,6 +950,8 @@
   font-size: 12px;
   line-height: 17px;
   overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
   word-break: break-word;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 6;
@@ -917,14 +961,16 @@
   width: 100%;
   flex: 0 0 34px;
   min-height: 34px;
+  height: auto;
   margin-top: 10px;
-  padding: 0 14px;
+  padding: 8px 14px;
   border-radius: 8px;
   background: #2f6fed;
   color: #ffffff;
   font-size: 12px;
   font-weight: 800;
-  line-height: 1;
+  line-height: 18px;
+  white-space: normal;
   cursor: pointer;
   transition:
     transform 140ms ease,

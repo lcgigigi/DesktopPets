@@ -29,7 +29,15 @@ export interface MascotContextMenuPlacement {
   tailX: number
 }
 
-export interface MascotSystemNotificationPresentation {
+export interface MascotAuthPresentation {
+  kind: 'auth'
+  generation: number
+  pending: boolean
+  message: string
+}
+
+export interface MascotSystemMessagePresentation {
+  kind: 'message'
   generation: number
   message: SysMessageNotification
   displayContent: string
@@ -39,10 +47,14 @@ export interface MascotSystemNotificationPresentation {
   actionError: string
 }
 
-export interface MascotSystemNotificationAction {
-  action: 'read' | 'readAll' | 'view'
-  message?: SysMessageNotification
-}
+export type MascotSystemNotificationPresentation =
+  | MascotAuthPresentation
+  | MascotSystemMessagePresentation
+
+export type MascotSystemNotificationAction =
+  | { action: 'login' }
+  | { action: 'readAll' }
+  | { action: 'read' | 'view'; message: SysMessageNotification }
 
 export interface PanelActivityPayload {
   hasText: boolean
@@ -242,17 +254,25 @@ export async function isMascotSystemNotificationReady() {
   }
 }
 
-export async function showMascotSystemNotificationWindow() {
+export async function showMascotSystemNotificationWindow(
+  compact = false,
+  clientGeneration?: number,
+) {
   try {
-    return await invoke<boolean>('show_mascot_system_notification_window')
+    return await invoke<boolean>('show_mascot_system_notification_window', {
+      compact,
+      clientGeneration: clientGeneration ?? null,
+    })
   } catch {
     return false
   }
 }
 
-export async function hideMascotSystemNotificationWindow() {
+export async function hideMascotSystemNotificationWindow(clientGeneration?: number) {
   try {
-    return await invoke<boolean>('hide_mascot_system_notification_window')
+    return await invoke<boolean>('hide_mascot_system_notification_window', {
+      clientGeneration: clientGeneration ?? null,
+    })
   } catch {
     return false
   }

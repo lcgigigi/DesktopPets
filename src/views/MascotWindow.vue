@@ -3,7 +3,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { nextTick, onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { listen } from '@tauri-apps/api/event'
-import AuthLoginTip from '../components/AuthLoginTip.vue'
 import MascotAvatar from '../components/MascotAvatar.vue'
 import MascotBubble from '../components/MascotBubble.vue'
 import {
@@ -13,7 +12,6 @@ import {
   MASCOT_REVEAL_EVENT,
   PANEL_ACTIVITY_EVENT,
   PANEL_VISIBILITY_EVENT,
-  type MascotDockSide,
   type PanelActivityPayload,
   finishMascotNotificationCollapse,
   hidePanelWindow,
@@ -40,13 +38,7 @@ import { shouldPauseMascotIdleHide } from '../utils/mascot-idle-policy'
 
 const props = defineProps<{
   needsAuth: boolean
-  authPending: boolean
-  authErrorMessage?: string
   sysMessage: SysMessageNotification | null
-}>()
-
-const emit = defineEmits<{
-  login: []
 }>()
 
 const mascotStore = useMascotStore()
@@ -84,7 +76,6 @@ const nativeDragSafetyTimeoutMs = 15 * 1000
 const notificationLayoutRetryDelayMs = 120
 const scaleChangeLayoutDebounceMs = 48
 const isPeeked = ref(false)
-const peekSide = ref<MascotDockSide>('right')
 const isPointerInside = ref(false)
 const panelVisible = ref(false)
 const panelHasText = ref(false)
@@ -164,7 +155,7 @@ async function syncNativeNotificationLayout(
 
 function notificationLayoutStillDesired(visible: boolean, compact: boolean) {
   return isNotifying.value === visible
-    && (usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value) === compact
+    && (!visible || compact)
 }
 
 async function revealNotificationAfterLayout(
@@ -219,7 +210,7 @@ function scheduleScaleChangedLayoutSync() {
       if (!scaleChangeLayoutPending || isDragging.value) return
       scaleChangeLayoutPending = false
       const visible = isNotifying.value
-      const compact = usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value
+      const compact = visible
       void syncNativeNotificationLayout(visible, compact, { force: true }).then((synced) => {
         if (synced && panelVisible.value) void syncPanelWindow()
       })
@@ -238,12 +229,11 @@ function scheduleIdleHide() {
       return
     }
     const reducedMotion = prefersReducedMotion()
-    void peekMascotWindow(reducedMotion).then((side) => {
-      if (!side) {
+    void peekMascotWindow(reducedMotion).then((dockedSide) => {
+      if (!dockedSide) {
         refreshIdleHideSchedule()
         return
       }
-      peekSide.value = side
       peekTransition.value = 'peeking'
       window.clearTimeout(peekTransitionTimer)
       peekTransitionTimer = window.setTimeout(() => {
@@ -257,6 +247,7 @@ function scheduleIdleHide() {
 
 function shouldPauseIdleHide() {
   if (isContextMenuVisible.value) return true
+  if (props.needsAuth) return true
   if (props.sysMessage) return true
   if (peekTransition.value) return true
   return shouldPauseMascotIdleHide({
@@ -342,7 +333,7 @@ function dismissTransientOverlays() {
 function isOverlayInteraction(target: EventTarget | null) {
   return (
     target instanceof Element &&
-    Boolean(target.closest('.auth-login-tip, .sys-message-tip, .mascot-context-menu, .mascot-bubble'))
+    Boolean(target.closest('.sys-message-tip, .mascot-context-menu, .mascot-bubble'))
   )
 }
 
@@ -540,52 +531,29 @@ async function handleContextMenu(event: MouseEvent) {
 }
 
 const hasBubbleMessage = computed(() => Boolean(mascotStore.message))
-const hasExpandedNotification = computed(
-  () => props.needsAuth
-)
-const isExpandedNotificationDismissing = ref(false)
 const isBubbleMessageDismissing = ref(false)
-const usesExpandedNotificationLayout = computed(
-  () => hasExpandedNotification.value || isExpandedNotificationDismissing.value
-)
 const usesCompactNotificationLayout = computed(
   () => hasBubbleMessage.value
     || isBubbleMessageDismissing.value
 )
 const avatarAnimationState = computed<MascotAnimationState | undefined>(() => {
   if (previewAnimationState) return previewAnimationState
-  if (peekTransition.value === 'revealing') {
-    return peekSide.value === 'left' ? 'revealing-left' : 'revealing'
-  }
-  if (isPeeked.value) return peekSide.value === 'left' ? 'peeking-left' : 'peeking'
+  // The native HWND slide is the only runtime hide/reveal motion. Selecting the
+  // peek sprite atlas here makes Xiaoli appear to hide in place before moving
+  // to the edge, which reads as two competing animations.
   return props.sysMessage ? 'waving' : animationState.value
 })
 const isNotifying = computed(
-  () => usesExpandedNotificationLayout.value || usesCompactNotificationLayout.value
-)
-
-watch(
-  hasExpandedNotification,
-  (visible, wasVisible) => {
-    if (visible) {
-      isExpandedNotificationDismissing.value = false
-    } else if (wasVisible) {
-      // Keep the large native window and flex layout until Vue has removed the
-      // fading card. Shrinking earlier clips its top-left corner over Xiaoli.
-      isExpandedNotificationDismissing.value = true
-    }
-  },
-  { flush: 'sync' }
+  () => usesCompactNotificationLayout.value
 )
 
 function hasVisibleOverlay() {
-  return hasExpandedNotification.value || hasBubbleMessage.value
+  return hasBubbleMessage.value
 }
 
 async function releaseDismissedNotificationLayout() {
-  const releaseExpanded = !hasExpandedNotification.value && isExpandedNotificationDismissing.value
   const releaseBubble = !hasBubbleMessage.value && isBubbleMessageDismissing.value
-  if (!releaseExpanded && !releaseBubble) return
+  if (!releaseBubble) return
 
   // WebView2 can retain a tile from the old large backbuffer when a transparent
   // HWND is shrunk while visible. Hide only for this dismissal resize, then
@@ -597,9 +565,6 @@ async function releaseDismissedNotificationLayout() {
     })
   }
 
-  if (releaseExpanded && !hasExpandedNotification.value) {
-    isExpandedNotificationDismissing.value = false
-  }
   if (releaseBubble && !hasBubbleMessage.value) {
     isBubbleMessageDismissing.value = false
   }
@@ -618,14 +583,14 @@ async function releaseDismissedNotificationLayout() {
     const generation = ++notificationRevealGeneration
     await revealNotificationAfterLayout(
       true,
-      !hasExpandedNotification.value,
+      true,
       false,
       generation,
     )
   }
 }
 
-function handleExpandedOverlayAfterLeave() {
+function handleOverlayAfterLeave() {
   void releaseDismissedNotificationLayout()
 }
 
@@ -647,6 +612,10 @@ watch(
     if (message) {
       void hidePanelWindow()
     }
+    // A reminder pauses side hiding while it is visible. Re-arm the idle
+    // schedule as soon as it is read or expires; otherwise the pause could
+    // survive after the detached notification window has disappeared.
+    refreshIdleHideSchedule()
   }
 )
 
@@ -654,14 +623,15 @@ watch(
   () => props.needsAuth,
   (needsAuth) => {
     if (needsAuth) void hidePanelWindow()
+    refreshIdleHideSchedule()
   }
 )
 
 watch(
   () => ({
     visible: isNotifying.value,
-    compact: usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value,
-    identity: (props.needsAuth ? 'auth' : '') || mascotStore.message,
+    compact: isNotifying.value,
+    identity: mascotStore.message,
   }),
   ({ visible, compact }) => {
     clearIdleHideTimer()
@@ -725,18 +695,16 @@ onMounted(async () => {
   })
   removeWindowScaleChangedListener = await getCurrentWindow().onScaleChanged(() => {
     // Tao has already applied WM_DPICHANGED by this point. Re-run our own
-    // work-area fit/clamp because a 320x480 card can otherwise overflow a
-    // high-DPI laptop even though its logical size stayed unchanged.
+    // work-area fit/clamp because the compact bubble can otherwise drift after
+    // moving between monitors with different scale factors.
     scheduleScaleChangedLayoutSync()
   })
 
-  // The initial reactive watcher can run while the native window is still
-  // completing setup. Reapply the desired bounds after mount so a first-run
-  // login card cannot be rendered inside the collapsed 120x104 mascot window
-  // and survive only as a clipped horizontal border.
+  // The login card lives in the independent notification HWND. The mascot HWND
+  // therefore starts collapsed and expands only for short, compact bubbles.
   await syncNativeNotificationLayout(
     isNotifying.value,
-    usesCompactNotificationLayout.value && !usesExpandedNotificationLayout.value,
+    isNotifying.value,
     { force: true }
   )
   notificationCoordinatorReady = true
@@ -774,7 +742,6 @@ onUnmounted(() => {
     :class="{
       'is-dragging': isDragging || previewAnimationState?.startsWith('running-'),
       'is-notifying': isNotifying,
-      'has-expanded-notification': usesExpandedNotificationLayout,
       'has-context-menu': isContextMenuVisible
     }"
     @pointerdown="handlePointerDown"
@@ -788,17 +755,10 @@ onUnmounted(() => {
     <Transition
       name="mascot-overlay"
       mode="out-in"
-      @after-leave="handleExpandedOverlayAfterLeave"
+      @after-leave="handleOverlayAfterLeave"
     >
-      <AuthLoginTip
-        v-if="!isContextMenuVisible && needsAuth"
-        key="auth-login"
-        :pending="authPending"
-        :message="authErrorMessage"
-        @login="emit('login')"
-      />
       <MascotBubble
-        v-else-if="!isContextMenuVisible && mascotStore.message"
+        v-if="!isContextMenuVisible && mascotStore.message"
         key="mascot-message"
         :message="mascotStore.message"
       />

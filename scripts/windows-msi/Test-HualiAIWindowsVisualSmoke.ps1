@@ -289,6 +289,7 @@ public sealed class HualiVisualSmokeBackdrop
     private Thread thread;
     private Form form;
     private Exception failure;
+    private long windowHandle;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
@@ -309,6 +310,11 @@ public sealed class HualiVisualSmokeBackdrop
     {
         this.bounds = bounds;
         this.color = Color.FromArgb(red, green, blue);
+    }
+
+    public long Handle
+    {
+        get { return Interlocked.Read(ref windowHandle); }
     }
 
     public void Start()
@@ -389,6 +395,7 @@ public sealed class HualiVisualSmokeBackdrop
                 backdrop.Bounds = bounds;
                 backdrop.Shown += delegate
                 {
+                    Interlocked.Exchange(ref windowHandle, backdrop.Handle.ToInt64());
                     // Raise above an already-foreground terminal, then return
                     // to the top of the normal window band. The product starts
                     // afterwards in the always-on-top band, so its mascot/menu
@@ -459,6 +466,7 @@ public sealed class HualiVisualSmokeBackdrop
         }
         finally
         {
+            Interlocked.Exchange(ref windowHandle, 0);
             form = null;
         }
     }
@@ -586,18 +594,17 @@ function Test-WindowOwnLogicalSize {
 function Find-MascotWindow {
   param([Parameter(Mandatory = $true)]$Windows)
 
-  # At first launch the auth reminder can expand the mascot from 120x104 DIP to
-  # as much as 320x480 DIP before the first EnumWindows sample. Match the known
-  # mascot size envelope at each HWND's own DPI; the panel and menu are still
-  # hidden at this point, and WebView2's visible 13x13 helpers fall far outside.
+  # Login now renders in its own 320x176 HWND. The mascot must stay within its
+  # 120x104 collapsed or 240x176 compact-bubble envelope; accepting 320x480 here
+  # would hide the exact transparent click-mask regression this gate protects.
   $matches = foreach ($window in $Windows) {
     $windowDpi = [HualiVisualSmokeNative]::GetDpiForWindow([IntPtr][long]$window.Handle)
     if ($windowDpi -lt 96) { $windowDpi = 96 }
     $windowScale = $windowDpi / 96.0
     $logicalWidth = $window.Width / $windowScale
     $logicalHeight = $window.Height / $windowScale
-    if ($logicalWidth -ge 118 -and $logicalWidth -le 322 -and
-        $logicalHeight -ge 102 -and $logicalHeight -le 482) {
+    if ($logicalWidth -ge 118 -and $logicalWidth -le 242 -and
+        $logicalHeight -ge 102 -and $logicalHeight -le 178) {
       [pscustomobject]@{
         Window = $window
         Area = $window.Area
@@ -1190,7 +1197,11 @@ try {
   }
   $startupWindows = Wait-ForWindows -Process $process -Condition {
     param($windows)
-    $null -ne (Find-MascotWindow -Windows $windows)
+    $mascot = Find-MascotWindow -Windows $windows
+    $authWindow = $windows | Where-Object {
+      Test-WindowOwnLogicalSize -Window $_ -LogicalWidth 320 -LogicalHeight 176
+    } | Select-Object -First 1
+    $null -ne $mascot -and $null -ne $authWindow
   }
   if (-not (Test-Path -LiteralPath $visualSmokeDataDirectory -PathType Container)) {
     throw "WebView2 未使用独立的视觉验收数据目录：$visualSmokeDataDirectory"
@@ -1198,6 +1209,14 @@ try {
   $report.motionValidation.isolatedDataDirectoryConfigured = $true
   $mascotBefore = Find-MascotWindow -Windows $startupWindows
   $mascotHandle = [long]$mascotBefore.Handle
+  $authBefore = $startupWindows | Where-Object {
+    [long]$_.Handle -ne $mascotHandle -and
+    (Test-WindowOwnLogicalSize -Window $_ -LogicalWidth 320 -LogicalHeight 176)
+  } | Select-Object -First 1
+  if (-not $authBefore) {
+    throw '首次未登录启动未找到独立 320x176 登录提醒 HWND。'
+  }
+  $authHandle = [long]$authBefore.Handle
   # Every other visible startup HWND is a WebView2/helper surface. The menu is
   # a separate hidden Tauri window at startup, so excluding all of these fixed
   # handles prevents a helper from ever being promoted to the menu identity.
@@ -1219,18 +1238,25 @@ try {
   if (-not $mascotBefore) {
     throw '启动后固定的机器人 HWND 已消失。'
   }
+  $authBefore = Find-WindowByHandle `
+    -Windows @(Get-WindowSnapshot -Process $process) `
+    -Handle $authHandle
+  if (-not $authBefore) {
+    throw '启动后独立登录提醒 HWND 已消失。'
+  }
 
   $dpi = [HualiVisualSmokeNative]::GetDpiForWindow([IntPtr]$mascotHandle)
   if ($dpi -lt 96) { $dpi = 96 }
   $scale = $dpi / 96.0
   $mascotLogicalWidth = [Math]::Round($mascotBefore.Width / $scale, 2)
   $mascotLogicalHeight = [Math]::Round($mascotBefore.Height / $scale, 2)
-  if ($mascotLogicalWidth -lt 118 -or $mascotLogicalWidth -gt 322 -or
-      $mascotLogicalHeight -lt 102 -or $mascotLogicalHeight -gt 482) {
-    throw "启动机器人尺寸超出生产布局范围：${mascotLogicalWidth}x${mascotLogicalHeight} DIP。"
+  if ([Math]::Abs($mascotLogicalWidth - 120) -gt 3 -or
+      [Math]::Abs($mascotLogicalHeight - 104) -gt 3) {
+    throw "启动机器人未保持 120x104 折叠尺寸：${mascotLogicalWidth}x${mascotLogicalHeight} DIP。"
   }
   $report.checks.startup = [ordered]@{
     mascot = $mascotBefore
+    authNotification = $authBefore
     mascotDpi = $dpi
     mascotScale = $scale
     mascotLogicalWidth = $mascotLogicalWidth
@@ -1435,8 +1461,81 @@ try {
   }
   Save-ScreenCapture -FileName '04-context-menu-dismissed.png' | Out-Null
 
-  # Place the expanded mascot window partly above the work area so its visible
-  # avatar sits near the top edge. The context menu must flip below the avatar.
+  # Repeatedly hide and restore the same detached notification HWND. This is
+  # the production race that previously let a delayed old show overtake a new
+  # hide and leave an invisible always-on-top rectangle blocking web clicks.
+  $backdropHandle = [long]$backdrop.Handle
+  if ($backdropHandle -eq 0) {
+    throw '无法获取视觉验收背景 HWND。'
+  }
+  $notificationCycleChecks = @()
+  for ($cycle = 1; $cycle -le 6; $cycle++) {
+    $cycleReadyWindows = Wait-ForWindows -Process $process -Condition {
+      param($windows)
+      $null -ne (Find-WindowByHandle -Windows $windows -Handle $authHandle) -and
+      $null -eq (Find-WindowByHandle -Windows $windows -Handle $menuHandle)
+    }
+    $cycleMascot = Find-WindowByHandle -Windows $cycleReadyWindows -Handle $mascotHandle
+    $cycleAuth = Find-WindowByHandle -Windows $cycleReadyWindows -Handle $authHandle
+    if (-not $cycleMascot -or -not $cycleAuth) {
+      throw "第 $cycle 轮提醒窗口循环前 HWND 不完整。"
+    }
+    $cycleDpi = [HualiVisualSmokeNative]::GetDpiForWindow([IntPtr]$mascotHandle)
+    if ($cycleDpi -lt 96) { $cycleDpi = 96 }
+    $cycleScale = $cycleDpi / 96.0
+    $cycleAvatarPoint = Get-AvatarClickPoint -MascotWindow $cycleMascot -Scale $cycleScale
+    Invoke-MouseClick `
+      -X $cycleAvatarPoint.X `
+      -Y $cycleAvatarPoint.Y `
+      -Button Left `
+      -ExpectedRootHandle $mascotHandle
+    Start-Sleep -Milliseconds 100
+    Invoke-MouseClick `
+      -X $cycleAvatarPoint.X `
+      -Y $cycleAvatarPoint.Y `
+      -Button Right `
+      -ExpectedRootHandle $mascotHandle
+
+    $cycleHiddenWindows = Wait-ForWindows -Process $process -Condition {
+      param($windows)
+      $null -ne (Find-WindowByHandle -Windows $windows -Handle $menuHandle) -and
+      $null -eq (Find-WindowByHandle -Windows $windows -Handle $authHandle)
+    }
+    Start-Sleep -Milliseconds 120
+    $probeX = [int]($cycleAuth.Left + [Math]::Max(2, [Math]::Round(3 * $cycleScale)))
+    $probeY = [int]($cycleAuth.Top + [Math]::Max(2, [Math]::Round(3 * $cycleScale)))
+    $probeRoot = [HualiVisualSmokeNative]::RootWindowFromPoint($probeX, $probeY)
+    if ($probeRoot -ne $backdropHandle) {
+      throw "第 $cycle 轮隐藏提醒后透明区域仍拦截鼠标：坐标=$probeX,$probeY，命中 HWND=$probeRoot，背景 HWND=$backdropHandle。"
+    }
+    $notificationCycleChecks += [ordered]@{
+      cycle = $cycle
+      notificationHidden = $true
+      probeX = $probeX
+      probeY = $probeY
+      hitTestRoot = $probeRoot
+      backdropRoot = $backdropHandle
+      clickThrough = $true
+      visibleWindows = $cycleHiddenWindows.Count
+    }
+
+    Invoke-MouseClick `
+      -X ($dismissWorkArea.Left + 12) `
+      -Y ($dismissWorkArea.Top + 12)
+    Wait-ForWindows -Process $process -Condition {
+      param($windows)
+      $null -eq (Find-WindowByHandle -Windows $windows -Handle $menuHandle) -and
+      $null -ne (Find-WindowByHandle -Windows $windows -Handle $authHandle)
+    } | Out-Null
+  }
+  $report.checks.repeatedNotificationHitTesting = [ordered]@{
+    cycles = $notificationCycleChecks.Count
+    allHiddenStatesClickThrough = $true
+    details = $notificationCycleChecks
+  }
+
+  # Place the mascot window partly above the work area so its visible avatar
+  # sits near the top edge. The context menu must flip below the avatar.
   # Keep the boundary test on the mascot's current monitor. VirtualScreen.Left
   # may refer to a different-DPI secondary display in a mixed-monitor setup.
   $workArea = Get-MonitorWorkArea -WindowHandle $mascotHandle

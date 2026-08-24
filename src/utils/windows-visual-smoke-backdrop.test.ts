@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import unsignedV1039WorkflowSource from '../../.github/workflows/build-windows-msi-unsigned-v1039.yml?raw'
+import unsignedV1043WorkflowSource from '../../.github/workflows/build-windows-msi-unsigned-v1043.yml?raw'
 import visualSmokeSource from '../../scripts/windows-msi/Test-HualiAIWindowsVisualSmoke.ps1?raw'
 
 const FRAME_WIDTH = 120
@@ -115,7 +115,7 @@ function normalizedPowerShell() {
 }
 
 function normalizedWorkflow() {
-  return unsignedV1039WorkflowSource.replace(/\r\n?/g, '\n')
+  return unsignedV1043WorkflowSource.replace(/\r\n?/g, '\n')
 }
 
 function getWorkflowStep(source: string, name: string) {
@@ -307,9 +307,26 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     expect(fourEdgeEnd).toBeGreaterThan(fourEdgeStart)
     expect(execution.slice(fourEdgeStart, fourEdgeEnd)).toContain('-IncludeTop')
   })
+
+  it('repeats detached-notification hide/show and probes the old rectangle for click-through', () => {
+    const source = normalizedPowerShell()
+    const cycleStart = source.indexOf('for ($cycle = 1; $cycle -le 6; $cycle++)')
+    const cycleEnd = source.indexOf('$report.checks.repeatedNotificationHitTesting', cycleStart)
+    const cycle = source.slice(cycleStart, cycleEnd)
+
+    expect(source).toContain('Test-WindowOwnLogicalSize -Window $_ -LogicalWidth 320 -LogicalHeight 176')
+    expect(source).toContain('[Math]::Abs($mascotLogicalWidth - 120)')
+    expect(source).toContain('[Math]::Abs($mascotLogicalHeight - 104)')
+    expect(cycleStart).toBeGreaterThanOrEqual(0)
+    expect(cycleEnd).toBeGreaterThan(cycleStart)
+    expect(cycle).toContain('Find-WindowByHandle -Windows $windows -Handle $authHandle')
+    expect(cycle).toContain('[HualiVisualSmokeNative]::RootWindowFromPoint($probeX, $probeY)')
+    expect(cycle).toContain('$probeRoot -ne $backdropHandle')
+    expect(cycle).toContain('clickThrough = $true')
+  })
 })
 
-describe('Windows v1.0.39 workflow visual-gate compiler contract', () => {
+describe('Windows v1.0.43 workflow visual-gate compiler contract', () => {
   it('compiles the gate in PowerShell 7 and 5.1 before Node and Rust setup', () => {
     const workflow = normalizedWorkflow()
     const powerShell7 = getWorkflowStep(workflow, 'Compile visual gate with PowerShell 7')

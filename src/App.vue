@@ -51,9 +51,15 @@ import type { SysMessageNotification } from './types/sys-message'
 import type { TaskCreatedEvent } from './types/task'
 import { env } from './utils/env'
 import { storage } from './utils/storage'
+import {
+  SYS_MESSAGE_EXPIRY_MS,
+  isSysMessageExpired,
+  resolveSysMessageExpiresAt,
+} from './utils/sys-message-expiry'
 
 type ResolvedSysMessage = SysMessageNotification & {
   displayContent: string
+  expiresAt: number
 }
 
 const taskStore = useTaskStore()
@@ -99,9 +105,12 @@ let removeContextMenuVisibilityListener: UnlistenFn | undefined
 let removeDeepLinkListener: UnlistenFn | undefined
 let removeUnauthorizedListener: (() => void) | undefined
 let sessionValidationTimer: number | undefined
+let sysMessageExpiryTimer: number | undefined
 let sysMessageEnrichmentGeneration = 0
 let systemNotificationPresentationGeneration = 0
-let systemNotificationSyncGeneration = 0
+// Leave enough sequence space between renderer lifetimes so a late IPC from a
+// suspended/reloaded WebView cannot outrank the new coordinator's intent.
+let systemNotificationSyncGeneration = Date.now() * 1000
 let systemNotificationMessageKey = ''
 const systemNotificationWindowReady = ref(false)
 const contextMenuWindowVisible = ref(false)
@@ -289,7 +298,8 @@ if (isSysMessagePreview) {
     msgType: 1,
     bizType: 2,
     bizId: 'design-preview-meeting',
-    createTime: '2026-07-16 18:15'
+    createTime: '2026-07-16 18:15',
+    expiresAt: Date.now() + SYS_MESSAGE_EXPIRY_MS,
   }
   if (hasSysMessagePreviewQueue) {
     sysMessageQueue.value.push({
@@ -303,7 +313,8 @@ if (isSysMessagePreview) {
       msgType: 1,
       bizType: 1,
       bizId: 'design-preview-todo',
-      createTime: '2026-07-16 18:55'
+      createTime: '2026-07-16 18:55',
+      expiresAt: Date.now() + SYS_MESSAGE_EXPIRY_MS,
     })
   }
   if (hasSysMessagePreviewError) {
@@ -364,8 +375,11 @@ function rememberSysMessageKey(key: string) {
   window.setTimeout(() => recentSysMessageKeys.delete(key), 5000)
 }
 
-function showNextSysMessage() {
+function showNextSysMessage(now = Date.now()) {
   sysMessageActionError.value = ''
+  sysMessageQueue.value = sysMessageQueue.value.filter(
+    (message) => !isSysMessageExpired(message.expiresAt, now),
+  )
   currentSysMessage.value = sysMessageQueue.value.shift() ?? null
   if (currentSysMessage.value) {
     void emitTo('mascot', 'mascot-close-overlays', {})
@@ -376,6 +390,8 @@ function showNextSysMessage() {
 }
 
 function showIncomingSysMessage(message: ResolvedSysMessage) {
+  if (isSysMessageExpired(message.expiresAt)) return false
+
   void emitTo('mascot', 'mascot-close-overlays', {})
 
   if (currentSysMessage.value) {
@@ -387,6 +403,41 @@ function showIncomingSysMessage(message: ResolvedSysMessage) {
   // MascotWindow owns the native notification pipeline. It waits for Vue to
   // paint and for the bounds command to succeed before showing the hidden HWND.
   void hidePanelWindow()
+  return true
+}
+
+function expireStaleSysMessages(now = Date.now()) {
+  const activeQueue = sysMessageQueue.value.filter(
+    (message) => !isSysMessageExpired(message.expiresAt, now),
+  )
+  if (activeQueue.length !== sysMessageQueue.value.length) {
+    sysMessageQueue.value = activeQueue
+  }
+
+  if (currentSysMessage.value && isSysMessageExpired(currentSysMessage.value.expiresAt, now)) {
+    showNextSysMessage(now)
+  }
+}
+
+function scheduleSysMessageExpiry() {
+  window.clearTimeout(sysMessageExpiryTimer)
+  sysMessageExpiryTimer = undefined
+
+  const expiries = [
+    ...(currentSysMessage.value ? [currentSysMessage.value.expiresAt] : []),
+    ...sysMessageQueue.value.map((message) => message.expiresAt),
+  ]
+  if (!expiries.length) return
+
+  const nextExpiry = Math.min(...expiries)
+  const delay = Math.max(0, nextExpiry - Date.now())
+  sysMessageExpiryTimer = window.setTimeout(() => {
+    sysMessageExpiryTimer = undefined
+    expireStaleSysMessages()
+    // Browsers may deliver a timeout a fraction early. Rescheduling also picks
+    // up the next queued reminder after the current one has been removed.
+    scheduleSysMessageExpiry()
+  }, delay)
 }
 
 function applyEnrichedSysMessage(key: string, displayContent: string) {
@@ -418,7 +469,12 @@ function pushSysMessage(message: SysMessageNotification) {
   rememberSysMessageKey(message.dedupeKey)
 
   const generation = sysMessageEnrichmentGeneration
-  showIncomingSysMessage({ ...message, displayContent: getSysMessageFallback(message) })
+  const resolvedMessage: ResolvedSysMessage = {
+    ...message,
+    displayContent: getSysMessageFallback(message),
+    expiresAt: resolveSysMessageExpiresAt(message.createTime),
+  }
+  if (!showIncomingSysMessage(resolvedMessage)) return
   // Each message enriches independently, so one 12-second detail request can
   // never block the first card or later cards behind it.
   void enrichSysMessage(message, generation)
@@ -458,6 +514,7 @@ async function handleSysMessageRead(message: SysMessageNotification) {
 
 async function handleAllSysMessagesRead() {
   if (sysMessageReadPendingKey.value || sysMessageReadAllPending.value) return
+  expireStaleSysMessages()
   const snapshot = [
     ...(currentSysMessage.value ? [currentSysMessage.value] : []),
     ...sysMessageQueue.value,
@@ -534,15 +591,31 @@ async function handleSysMessageView(message: SysMessageNotification) {
 }
 
 function buildSystemNotificationPresentation(): MascotSystemNotificationPresentation | null {
+  if (needsAuth.value) {
+    if (systemNotificationMessageKey !== 'auth') {
+      systemNotificationMessageKey = 'auth'
+      systemNotificationPresentationGeneration += 1
+    }
+
+    return {
+      kind: 'auth',
+      generation: systemNotificationPresentationGeneration,
+      pending: authPending.value,
+      message: authErrorMessage.value,
+    }
+  }
+
   const message = currentSysMessage.value
   if (!message) return null
 
-  if (message.dedupeKey !== systemNotificationMessageKey) {
-    systemNotificationMessageKey = message.dedupeKey
+  const presentationKey = `message:${message.dedupeKey}`
+  if (presentationKey !== systemNotificationMessageKey) {
+    systemNotificationMessageKey = presentationKey
     systemNotificationPresentationGeneration += 1
   }
 
   return {
+    kind: 'message',
     generation: systemNotificationPresentationGeneration,
     message,
     displayContent: currentSysMessageContent.value,
@@ -565,14 +638,29 @@ async function syncSystemNotificationWindow() {
     presentation,
   )
   if (syncGeneration !== systemNotificationSyncGeneration) return
+  if (!presentation) {
+    // Native visibility is the final authority. Do not depend solely on a Vue
+    // after-leave callback: a suspended WebView2 renderer could otherwise leave
+    // a transparent always-on-top window intercepting clicks after the card is
+    // gone.
+    await hideMascotSystemNotificationWindow(syncGeneration)
+    return
+  }
   if (presentation && !contextMenuWindowVisible.value) {
     await showNotificationWindow()
     if (syncGeneration !== systemNotificationSyncGeneration) return
-    await showMascotSystemNotificationWindow()
+    await showMascotSystemNotificationWindow(
+      presentation.kind === 'auth',
+      syncGeneration,
+    )
   }
 }
 
 function handleSystemNotificationAction(payload: MascotSystemNotificationAction) {
+  if (payload.action === 'login') {
+    void startDesktopLogin()
+    return
+  }
   if (payload.action === 'readAll') {
     void handleAllSysMessagesRead()
     return
@@ -588,6 +676,9 @@ function handleSystemNotificationAction(payload: MascotSystemNotificationAction)
 
 watch(
   () => [
+    needsAuth.value,
+    authPending.value,
+    authErrorMessage.value,
     currentSysMessage.value?.dedupeKey,
     currentSysMessageContent.value,
     pendingSysMessageCount.value,
@@ -597,6 +688,15 @@ watch(
   ],
   () => { void syncSystemNotificationWindow() },
   { flush: 'post' },
+)
+
+watch(
+  () => [
+    currentSysMessage.value?.expiresAt ?? 0,
+    ...sysMessageQueue.value.map((message) => message.expiresAt),
+  ],
+  scheduleSysMessageExpiry,
+  { immediate: true, flush: 'sync' },
 )
 
 function connectDesktopSockets(options: { force?: boolean } = {}) {
@@ -617,6 +717,8 @@ function clearDesktopSession(message: string, status: MascotStatus = 'remind') {
   userStore.clearSession()
   authPending.value = false
   sysMessageEnrichmentGeneration += 1
+  window.clearTimeout(sysMessageExpiryTimer)
+  sysMessageExpiryTimer = undefined
   currentSysMessage.value = null
   sysMessageQueue.value = []
   sysMessageReadPendingKey.value = ''
@@ -684,17 +786,14 @@ async function startDesktopLogin() {
   const state = createDesktopAuthState()
   authPending.value = true
   authErrorMessage.value = ''
-  mascotStore.showMessage('正在打开网页登录...', 'thinking')
   const opened = await openDesktopLogin(state)
   if (!opened) {
     authPending.value = false
     authErrorMessage.value = '未能打开登录页面，请检查默认浏览器后重试。'
-    mascotStore.showMessage('登录页面打开失败，请重试', 'error', true)
     return
   }
 
   void hidePanelWindow()
-  mascotStore.showMessage('登录页面已打开，请在浏览器完成登录', 'thinking', true)
 }
 
 function handleLogout() {
@@ -742,8 +841,8 @@ onMounted(async () => {
         const wasVisible = contextMenuWindowVisible.value
         contextMenuWindowVisible.value = event.payload
         if (event.payload) {
-          systemNotificationSyncGeneration += 1
-          void hideMascotSystemNotificationWindow()
+          const hideGeneration = ++systemNotificationSyncGeneration
+          void hideMascotSystemNotificationWindow(hideGeneration)
         }
         if (wasVisible && !event.payload) void syncSystemNotificationWindow()
       },
@@ -809,16 +908,14 @@ onMounted(async () => {
       },
       handleDesktopAuthCallbackError,
     )
-    if (needsAuth.value) {
-      mascotStore.showMessage('请先登录后接收消息', 'remind', true)
-    } else {
+    if (!needsAuth.value) {
       void validateAndRestoreSession({ forceReconnect: true })
       startSessionValidation()
     }
-    // Keep the native window hidden until its first collapsed/login-card bounds
-    // have been applied. This prevents an MSI first launch from exposing the
-    // 120x104 startup frame with only a clipped strip of the login prompt.
-    await setMascotNotificationVisible(needsAuth.value, false)
+    // Authentication renders in the independent notification HWND. Keep the
+    // mascot's own topmost window at its 120x104 collapsed bounds on startup so
+    // transparent pixels cannot become a desktop-wide click interceptor.
+    await setMascotNotificationVisible(false, false)
     await showAssistant()
   }
 
@@ -897,6 +994,7 @@ onUnmounted(() => {
   removeDeepLinkListener?.()
   removeUnauthorizedListener?.()
   stopSessionValidation()
+  window.clearTimeout(sysMessageExpiryTimer)
   window.clearTimeout(taskDeliveryRetryTimer)
   if (windowMode === 'mascot') {
     websocketService.disconnect()
@@ -910,10 +1008,7 @@ onUnmounted(() => {
     <MascotWindow
       v-if="windowMode === 'mascot'"
       :needs-auth="needsAuth"
-      :auth-pending="authPending"
-      :auth-error-message="authErrorMessage"
       :sys-message="currentSysMessage"
-      @login="startDesktopLogin"
     />
     <MascotMenuWindow v-else-if="windowMode === 'mascot-menu'" />
     <MascotNotificationWindow v-else-if="windowMode === 'mascot-notification'" />

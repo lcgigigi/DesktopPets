@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { onMounted, onUnmounted, ref } from 'vue'
+import AuthLoginTip from '../components/AuthLoginTip.vue'
 import SysMessageTip from '../components/SysMessageTip.vue'
 import {
-  hideMascotSystemNotificationWindow,
   MASCOT_SYSTEM_NOTIFICATION_ACTION_EVENT,
   MASCOT_SYSTEM_NOTIFICATION_PRESENT_EVENT,
   setMascotSystemNotificationReady,
@@ -13,9 +13,20 @@ import {
 
 const presentation = ref<MascotSystemNotificationPresentation | null>(null)
 let removePresentationListener: UnlistenFn | undefined
+const preview = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get('preview')
+  : null
 
-if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === 'sys-message') {
+if (preview === 'auth') {
   presentation.value = {
+    kind: 'auth',
+    generation: 1,
+    pending: false,
+    message: '',
+  }
+} else if (preview === 'sys-message') {
+  presentation.value = {
+    kind: 'message',
     generation: 1,
     message: {
       id: 'notification-window-preview',
@@ -42,7 +53,7 @@ function publishAction(action: MascotSystemNotificationAction) {
 }
 
 function handleRead() {
-  if (!presentation.value) return
+  if (presentation.value?.kind !== 'message') return
   publishAction({ action: 'read', message: presentation.value.message })
 }
 
@@ -51,14 +62,12 @@ function handleReadAll() {
 }
 
 function handleView() {
-  if (!presentation.value) return
+  if (presentation.value?.kind !== 'message') return
   publishAction({ action: 'view', message: presentation.value.message })
 }
 
-function handleAfterLeave() {
-  // A newer message may arrive while the old card is fading. Never let the
-  // stale after-leave callback hide that newer presentation.
-  if (!presentation.value) void hideMascotSystemNotificationWindow()
+function handleLogin() {
+  publishAction({ action: 'login' })
 }
 
 onMounted(async () => {
@@ -77,10 +86,17 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="mascot-notification-window" aria-label="机器人消息提醒窗口">
-    <Transition name="mascot-overlay" mode="out-in" @after-leave="handleAfterLeave">
+  <section class="mascot-notification-window" aria-label="机器人提醒窗口">
+    <Transition name="mascot-overlay" mode="out-in">
+      <AuthLoginTip
+        v-if="presentation?.kind === 'auth'"
+        :key="presentation.generation"
+        :pending="presentation.pending"
+        :message="presentation.message"
+        @login="handleLogin"
+      />
       <SysMessageTip
-        v-if="presentation"
+        v-else-if="presentation?.kind === 'message'"
         :key="presentation.generation"
         :message="presentation.message"
         :display-content="presentation.displayContent"

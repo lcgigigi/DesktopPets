@@ -12,7 +12,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   hide: []
   exit: []
-  close: []
 }>()
 
 const menu = ref<HTMLElement | null>(null)
@@ -22,12 +21,10 @@ function focusSafeAction() {
 }
 
 function handleHide() {
-  emit('close')
   emit('hide')
 }
 
 function handleExit() {
-  emit('close')
   emit('exit')
 }
 

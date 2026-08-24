@@ -157,12 +157,13 @@ describe('notification and task production contracts', () => {
     expect(todoInputSource).toContain('class="todo-input__error"')
     expect(todoInputSource).toContain('role="alert"')
 
-    // Auth and compact bubbles share the mascot HWND. System messages render
-    // only in the isolated notification HWND so resizing them cannot corrupt
-    // the avatar's WebView2 composition surface.
+    // The long-lived auth and system cards render in the isolated notification
+    // HWND. The mascot HWND expands only for short compact bubbles.
     expect(mascotTemplate).toContain('mode="out-in"')
-    expectInOrder(mascotTemplate, 'v-if="!isContextMenuVisible && needsAuth"', 'v-else-if="!isContextMenuVisible && mascotStore.message"')
+    expect(mascotTemplate).toContain('v-if="!isContextMenuVisible && mascotStore.message"')
+    expect(mascotWindowSource).not.toContain('AuthLoginTip')
     expect(mascotWindowSource).not.toContain('SysMessageTip')
+    expect(mascotNotificationWindowSource).toContain('<AuthLoginTip')
     expect(mascotNotificationWindowSource).toContain('<SysMessageTip')
     expect(mascotWindowSource).not.toMatch(/watch\(\s*hasBubbleMessage\s*,[\s\S]{0,260}?hidePanelWindow\(\)/)
   })
@@ -181,10 +182,8 @@ describe('notification and task production contracts', () => {
     expect(notificationReveal).toContain('shown = await showNotificationWindow()')
     expect(taskReveal).not.toContain('showNotificationWindow()')
     expect(taskReveal).toContain('await showPanelWindow({ focus: false })')
-    expect(nativeNotification).toContain('show_window_without_activation(&window)')
-    expectInOrder(nativePanel, 'restore_mascot_if_peeked', 'place_panel_near_mascot', 'show_window_without_activation(&mascot)', 'show_window_without_activation(&panel)')
-    expect(nativePanel).toContain('show_window_without_activation(&mascot)')
-    expect(nativePanel).toContain('show_window_without_activation(&panel)')
+    expect(nativeNotification).toContain('show_interactive_window(&window, false)')
+    expectInOrder(nativePanel, 'restore_mascot_if_peeked', 'place_panel_near_mascot', 'show_interactive_window(&mascot, false)', 'show_interactive_window(&panel, should_focus)')
   })
 
   it('shows a notification only after bounds succeed and retries the full pipeline once', () => {
@@ -225,6 +224,16 @@ describe('notification and task production contracts', () => {
       'fn show_mascot_system_notification_window',
       '#[tauri::command]\nfn hide_mascot_system_notification_window',
     )
+    const mascotResize = section(
+      rustSource,
+      'fn set_mascot_notification_visible',
+      '#[tauri::command]\nfn set_panel_height',
+    )
+    const startup = section(
+      appSource,
+      'if (!needsAuth.value)',
+      'await showAssistant()',
+    )
 
     expect(notificationWindow).toMatchObject({
       width: 320,
@@ -234,13 +243,143 @@ describe('notification and task production contracts', () => {
       visible: false,
       resizable: false,
     })
-    expectInOrder(sync, "emitTo( 'mascot-notification'", 'await showNotificationWindow()', 'await showMascotSystemNotificationWindow()')
+    expectInOrder(sync, "emitTo( 'mascot-notification'", 'await showNotificationWindow()', "await showMascotSystemNotificationWindow( presentation.kind === 'auth', syncGeneration, )")
     expect(mascotWindowSource).toContain('() => props.needsAuth')
-    expect(mascotWindowSource).not.toMatch(/hasExpandedNotification[\s\S]{0,100}?props\.sysMessage/)
+    expect(appSource).toContain("kind: 'auth'")
+    expect(appSource).toContain("kind: 'message'")
+    expect(rustSource).toContain('const MASCOT_AUTH_NOTIFICATION_HEIGHT: f64 = 176.0;')
+    expect(mascotResize).toContain('let compact = visible')
+    expect(startup).toContain('await setMascotNotificationVisible(false, false)')
+    expect(startup).not.toContain("请先登录后接收消息")
     expect(nativeShow).toContain('get_webview_window("mascot-notification")')
     expect(nativeShow).toContain('position_mascot_system_notification_window')
-    expect(nativeShow).toContain('show_window_without_activation(&notification)')
-    expect(mascotNotificationWindowSource).toContain('if (!presentation.value) void hideMascotSystemNotificationWindow()')
+    expect(nativeShow).toContain('show_interactive_window(&notification, false)')
+    expect(sync).toContain('await hideMascotSystemNotificationWindow(syncGeneration)')
+    expect(mascotNotificationWindowSource).not.toContain('hideMascotSystemNotificationWindow')
+  })
+
+  it('keeps the detached system card attached to the mascot throughout native dragging', () => {
+    const dragMonitor = section(
+      rustSource,
+      'fn monitor_native_drag',
+      '#[derive(Clone, serde::Serialize)]',
+    )
+    const nativeSync = section(
+      rustSource,
+      'fn sync_visible_mascot_system_notification_to_mascot',
+      '#[tauri::command]\nfn set_mascot_system_notification_ready',
+    )
+
+    expectInOrder(
+      dragMonitor,
+      'let mut last_mascot_position = None',
+      'if mascot_position != last_mascot_position',
+      'sync_visible_mascot_system_notification_to_mascot(&app)',
+      'thread::sleep(Duration::from_millis(MASCOT_DOCK_ANIMATION_FRAME_MS))',
+    )
+    expect(nativeSync).toContain('is_visible()')
+    expect(nativeSync).toContain('position_mascot_system_notification_window(&mascot, &notification, compact)')
+    expect(rustSource).toMatch(/WindowEvent::Moved\(_\)[\s\S]{0,260}?cfg\(not\(windows\)\)[\s\S]{0,120}?sync_visible_mascot_system_notification_to_mascot/)
+    expect(rustSource).toContain('return set_window_physical_position_if_changed(window, position)')
+    expect(rustSource).toContain('SWP_NOSIZE')
+  })
+
+  it('uses only the native side slide for automatic hide and reveal', () => {
+    const runtimeAnimation = section(
+      mascotWindowSource,
+      'const avatarAnimationState = computed',
+      'const isNotifying = computed',
+    )
+    const idleHide = section(
+      mascotWindowSource,
+      'function scheduleIdleHide()',
+      'function shouldPauseIdleHide()',
+    )
+
+    expect(idleHide).toContain('peekMascotWindow(reducedMotion)')
+    expect(runtimeAnimation).not.toContain("'peeking'")
+    expect(runtimeAnimation).not.toContain("'peeking-left'")
+    expect(runtimeAnimation).not.toContain("'revealing'")
+    expect(runtimeAnimation).not.toContain("'revealing-left'")
+  })
+
+  it('drops stale reminders and schedules the nearest 30-minute expiry', () => {
+    const pushHandler = section(appSource, 'function pushSysMessage', 'function hideCurrentSysMessage')
+    const expiryScheduler = section(
+      appSource,
+      'function expireStaleSysMessages',
+      'function applyEnrichedSysMessage',
+    )
+
+    expectInOrder(
+      pushHandler,
+      'resolveSysMessageExpiresAt(message.createTime)',
+      'if (!showIncomingSysMessage(resolvedMessage)) return',
+      'void enrichSysMessage(message, generation)',
+    )
+    expectInOrder(
+      expiryScheduler,
+      'isSysMessageExpired(message.expiresAt, now)',
+      'isSysMessageExpired(currentSysMessage.value.expiresAt, now)',
+      'showNextSysMessage(now)',
+      'const nextExpiry = Math.min(...expiries)',
+      'window.setTimeout',
+      'expireStaleSysMessages()',
+      'scheduleSysMessageExpiry()',
+    )
+  })
+
+  it('makes every hidden detached overlay click-through and hides stale presentations natively', () => {
+    const safeHide = section(
+      rustSource,
+      'fn hide_transparent_window_safely',
+      'fn show_interactive_window',
+    )
+    const safeShow = section(
+      rustSource,
+      'fn show_interactive_window',
+      'fn mascot_logical_size',
+    )
+    const nativeHide = section(
+      rustSource,
+      'fn hide_mascot_system_notification_native_window',
+      'fn position_mascot_system_notification_window',
+    )
+    const nativeShow = section(
+      rustSource,
+      'fn show_mascot_system_notification_window',
+      '#[tauri::command]\nfn hide_mascot_system_notification_window',
+    )
+    const sync = section(
+      appSource,
+      'async function syncSystemNotificationWindow',
+      'function handleSystemNotificationAction',
+    )
+
+    expectInOrder(safeHide, 'set_ignore_cursor_events(true)', 'window.hide()')
+    expectInOrder(safeShow, 'set_ignore_cursor_events(false)', 'show_window_without_activation')
+    expectInOrder(nativeHide, 'state.request_hide(client_generation)', 'state.transition.lock()', 'state.can_hide(generation)', 'hide_transparent_window_safely(&window)', 'state.mark_physical_hidden()')
+    expectInOrder(nativeShow, 'state.request_show(compact, client_generation)', 'state.transition.lock()', 'state.can_show(generation, compact)', 'position_mascot_system_notification_window', 'show_interactive_window(&notification, false)', 'state.mark_visible(generation, compact)')
+    expectInOrder(sync, 'const syncGeneration = ++systemNotificationSyncGeneration', 'if (!presentation)', 'await hideMascotSystemNotificationWindow(syncGeneration)', 'return')
+    expect(appSource).toContain('let systemNotificationSyncGeneration = Date.now() * 1000')
+  })
+
+  it('shows notification actions and login feedback without ellipsis', () => {
+    const actions = section(appStyles, '.sys-message-tip__actions {', '.sys-message-tip__button {')
+    const button = section(appStyles, '.sys-message-tip__button {', '.sys-message-tip__button--primary {')
+    const bubble = section(appStyles, '.mascot-bubble__text {', '.mascot-bubble__tail {')
+    const loginButton = section(appStyles, '.auth-login-tip__button {', '.auth-login-tip__button:hover {')
+
+    expect(actions).toContain('display: grid')
+    expect(actions).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
+    expect(appStyles).toMatch(
+      /\.sys-message-tip__actions\.has-read-all\s*\{[\s\S]*?grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/,
+    )
+    expect(sysMessageTipSource).toContain("'has-read-all': (pendingCount ?? 0) > 0")
+    for (const completeTextRegion of [button, bubble, loginButton]) {
+      expect(completeTextRegion).toContain('white-space: normal')
+      expect(completeTextRegion).not.toContain('text-overflow: ellipsis')
+    }
   })
 
   it('offers one-click batch read only when more than one reminder is pending', () => {
@@ -294,8 +433,8 @@ describe('notification and task production contracts', () => {
     expect(panelReveal).toContain('if (options.focus)')
     expect(panelReveal).toContain('window.setTimeout(focusVisibleControl, 80)')
     expect(nativePanel).toContain('let should_focus = focus.unwrap_or(false)')
-    expect(nativePanel).toContain('show_window_without_activation(&panel)')
-    expect(nativeToggle).toContain('panel.set_focus()')
+    expect(nativePanel).toContain('show_interactive_window(&panel, should_focus)')
+    expect(nativeToggle).toContain('show_interactive_window(&panel, true)')
     expect(taskCardSource).toContain('tabindex="-1"')
     expect(taskCardSource).not.toContain('autofocus')
   })
@@ -313,7 +452,7 @@ describe('notification and task production contracts', () => {
   it('renders message fallback immediately and enriches each message independently', () => {
     const pushHandler = section(appSource, 'function pushSysMessage', 'function hideCurrentSysMessage')
 
-    expectInOrder(pushHandler, 'showIncomingSysMessage', 'getSysMessageFallback(message)', 'void enrichSysMessage(message, generation)')
+    expectInOrder(pushHandler, 'getSysMessageFallback(message)', 'showIncomingSysMessage(resolvedMessage)', 'void enrichSysMessage(message, generation)')
     expect(appSource).not.toContain('sysMessageResolutionQueue')
     expect(appSource).not.toContain('isResolvingSysMessage')
   })

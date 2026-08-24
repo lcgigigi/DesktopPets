@@ -148,6 +148,27 @@ describe('mascot context menu architecture', () => {
     expect(appStyles).toMatch(/\.mascot-context-menu\.is-entering\s*\{[\s\S]*?animation:/)
   })
 
+  it('keeps hide and exit as atomic native actions from the detached menu', () => {
+    const hideAction = sourceBetween(contextMenuSource, 'function handleHide()', 'function handleExit()')
+    const exitAction = sourceBetween(contextMenuSource, 'function handleExit()', 'function handleKeydown')
+    const menuActions = sourceBetween(mascotMenuWindowSource, 'function handleHide()', 'function handleKeydown')
+    const nativeHide = sourceBetween(rustSource, 'fn hide_main_window', '#[tauri::command]\nfn show_main_window')
+
+    // Closing the menu in a separate IPC first can suspend its WebView before
+    // the hide/exit IPC is dispatched. Each action must reach its all-in-one
+    // native command directly.
+    expect(hideAction).toContain("emit('hide')")
+    expect(hideAction).not.toContain("emit('close')")
+    expect(exitAction).toContain("emit('exit')")
+    expect(exitAction).not.toContain("emit('close')")
+    expect(menuActions).toContain('void hideAssistant()')
+    expect(menuActions).toContain('void exitAssistant()')
+    expect(mascotMenuWindowSource).not.toContain('@close="closeMenu"')
+    expect(nativeHide).toMatch(
+      /hide_mascot_context_menu_window\(&app\)[\s\S]*?hide_mascot_system_notification_native_window\(&app\)[\s\S]*?hide_transparent_window_safely\(&window\)[\s\S]*?hide_panel_and_notify\(&app\)/,
+    )
+  })
+
   it('keeps enough transparent native gutter for above and below shadows', () => {
     expect(mascotMenuWindowSource).toContain(":y=\"placement === 'above' ? 8 : 14\"")
     expect(contextMenuSource).toContain('width: `calc(100% - ${x * 2}px)`')

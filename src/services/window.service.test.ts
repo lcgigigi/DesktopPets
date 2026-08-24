@@ -118,12 +118,17 @@ describe('background task panel reveal', () => {
 
     await expect(isMascotSystemNotificationReady()).resolves.toBe(true)
     await expect(setMascotSystemNotificationReady()).resolves.toBe(true)
-    await expect(showMascotSystemNotificationWindow()).resolves.toBe(true)
-    await expect(hideMascotSystemNotificationWindow()).resolves.toBe(true)
+    await expect(showMascotSystemNotificationWindow(true, 7)).resolves.toBe(true)
+    await expect(hideMascotSystemNotificationWindow(8)).resolves.toBe(true)
 
     expect(mocks.invoke).toHaveBeenCalledWith('is_mascot_system_notification_ready')
     expect(mocks.invoke).toHaveBeenCalledWith('set_mascot_system_notification_ready')
-    expect(mocks.invoke).toHaveBeenCalledWith('show_mascot_system_notification_window')
-    expect(mocks.invoke).toHaveBeenCalledWith('hide_mascot_system_notification_window')
+    expect(mocks.invoke).toHaveBeenCalledWith('show_mascot_system_notification_window', {
+      compact: true,
+      clientGeneration: 7,
+    })
+    expect(mocks.invoke).toHaveBeenCalledWith('hide_mascot_system_notification_window', {
+      clientGeneration: 8,
+    })
   })
 })

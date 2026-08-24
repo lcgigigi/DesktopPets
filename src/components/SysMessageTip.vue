@@ -104,7 +104,10 @@ const announcement = computed(() => {
         {{ actionError }}
       </p>
 
-      <div class="sys-message-tip__actions">
+      <div
+        class="sys-message-tip__actions"
+        :class="{ 'has-read-all': (pendingCount ?? 0) > 0 }"
+      >
         <button
           class="sys-message-tip__button"
           type="button"

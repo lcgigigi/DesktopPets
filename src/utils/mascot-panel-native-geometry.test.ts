@@ -25,7 +25,7 @@ describe('Windows mascot panel native geometry', () => {
     )
 
     expect(placement).toContain('panel_physical_geometry_near_mascot(mascot, requested_height)')
-    expect(placement).toContain('set_window_physical_bounds(panel, geometry.position, geometry.size)')
+    expect(placement).toContain('set_window_physical_geometry_if_changed(panel, geometry.position, geometry.size)')
     expect(placement).not.toContain('panel.scale_factor()')
     expect(rustSource).not.toContain('fn current_panel_height')
     expect(targetMonitorGeometry).toContain('mascot_client_origin_physical(mascot)')
@@ -49,7 +49,9 @@ describe('Windows mascot panel native geometry', () => {
 
     expect(rustSource).toContain('.manage(PanelLayoutState::default())')
     expect(panelHeightCommand).toContain('panel_layout.set_height(height)')
-    expect(notificationCommand).toMatch(/if !visible \{[\s\S]*?sync_panel_if_visible\(&app\)/)
+    expect(notificationCommand).toMatch(
+      /if !visible && !suspended_for_resize \{[\s\S]*?sync_panel_if_visible\(&app\)/,
+    )
   })
 
   it('re-fits the notification and visible panel after WM_DPICHANGED settles', () => {

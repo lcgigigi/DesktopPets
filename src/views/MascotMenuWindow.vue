@@ -107,7 +107,6 @@ onUnmounted(() => {
       :entering="menuEntering"
       @hide="handleHide"
       @exit="handleExit"
-      @close="closeMenu"
     />
   </section>
 </template>
