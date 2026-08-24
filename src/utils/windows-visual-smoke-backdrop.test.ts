@@ -347,6 +347,20 @@ describe('Windows v1.0.43 workflow visual-gate compiler contract', () => {
     expect(powerShell7.source).toContain(compileCommand)
     expect(windowsPowerShell.source).toContain(compileCommand)
   })
+
+  it('runs the live HWND and mouse-interaction gate before publishing the MSI', () => {
+    const workflow = normalizedWorkflow()
+    const deployment = getWorkflowStep(
+      workflow,
+      'Smoke-test administrator deployment, upgrade, and live HWND interaction',
+    )
+    const upload = getWorkflowStep(workflow, 'Upload administrator distribution package')
+
+    expect(deployment.start).toBeGreaterThanOrEqual(0)
+    expect(upload.start).toBeGreaterThan(deployment.start)
+    expect(deployment.source).toContain('-ValidateDefaultLaunch `')
+    expect(deployment.source).toContain('-RunVisualSmoke `')
+  })
 })
 
 describe('Windows visual-smoke three-edge transparency reference cases', () => {

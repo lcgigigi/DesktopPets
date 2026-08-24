@@ -115,7 +115,7 @@ jobs:
           "HUALI_PREVIOUS_MSI=$($oldMsi[0].FullName)" | Out-File `
             -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Smoke-test administrator silent deployment and upgrade
+      - name: Smoke-test administrator deployment, upgrade, and live HWND interaction
         shell: pwsh
         run: |
           $msi = Get-ChildItem .\artifacts\windows-msi-intranet\*.msi | Select-Object -First 1
@@ -127,6 +127,7 @@ jobs:
             -PreviousVersion '1.0.42' `
             -PreviousMsiSha256 '27237d08b5830c8e585ce3d81a2e1d22dbc0c020b85afebda65a6f13eed30ea0' `
             -ValidateDefaultLaunch `
+            -RunVisualSmoke `
             -EvidenceDirectory .\artifacts\windows-deployment-smoke
 
       - name: Record default-launch coverage
