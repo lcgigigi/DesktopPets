@@ -12,6 +12,7 @@ import {
   MASCOT_REVEAL_EVENT,
   PANEL_ACTIVITY_EVENT,
   PANEL_VISIBILITY_EVENT,
+  type MascotDockSide,
   type PanelActivityPayload,
   finishMascotNotificationCollapse,
   hidePanelWindow,
@@ -76,6 +77,7 @@ const nativeDragSafetyTimeoutMs = 15 * 1000
 const notificationLayoutRetryDelayMs = 120
 const scaleChangeLayoutDebounceMs = 48
 const isPeeked = ref(false)
+const peekSide = ref<MascotDockSide>('right')
 const isPointerInside = ref(false)
 const panelVisible = ref(false)
 const panelHasText = ref(false)
@@ -229,11 +231,12 @@ function scheduleIdleHide() {
       return
     }
     const reducedMotion = prefersReducedMotion()
-    void peekMascotWindow(reducedMotion).then((dockedSide) => {
-      if (!dockedSide) {
+    void peekMascotWindow(reducedMotion).then((side) => {
+      if (!side) {
         refreshIdleHideSchedule()
         return
       }
+      peekSide.value = side
       peekTransition.value = 'peeking'
       window.clearTimeout(peekTransitionTimer)
       peekTransitionTimer = window.setTimeout(() => {
@@ -538,9 +541,15 @@ const usesCompactNotificationLayout = computed(
 )
 const avatarAnimationState = computed<MascotAnimationState | undefined>(() => {
   if (previewAnimationState) return previewAnimationState
-  // The native HWND slide is the only runtime hide/reveal motion. Selecting the
-  // peek sprite atlas here makes Xiaoli appear to hide in place before moving
-  // to the edge, which reads as two competing animations.
+  if (peekTransition.value === 'revealing') {
+    return peekSide.value === 'left' ? 'revealing-left' : 'revealing'
+  }
+  // Start the left/right half-head transition together with the native window
+  // slide. When the slide completes the resolved state stays unchanged, so the
+  // final frame remains at the edge instead of replaying as an in-place hide.
+  if (peekTransition.value === 'peeking' || isPeeked.value) {
+    return peekSide.value === 'left' ? 'peeking-left' : 'peeking'
+  }
   return props.sysMessage ? 'waving' : animationState.value
 })
 const isNotifying = computed(

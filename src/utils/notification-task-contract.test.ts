@@ -284,7 +284,7 @@ describe('notification and task production contracts', () => {
     expect(rustSource).toContain('SWP_NOSIZE')
   })
 
-  it('uses only the native side slide for automatic hide and reveal', () => {
+  it('synchronizes both half-head transitions with the native side slide', () => {
     const runtimeAnimation = section(
       mascotWindowSource,
       'const avatarAnimationState = computed',
@@ -296,11 +296,20 @@ describe('notification and task production contracts', () => {
       'function shouldPauseIdleHide()',
     )
 
-    expect(idleHide).toContain('peekMascotWindow(reducedMotion)')
-    expect(runtimeAnimation).not.toContain("'peeking'")
-    expect(runtimeAnimation).not.toContain("'peeking-left'")
-    expect(runtimeAnimation).not.toContain("'revealing'")
-    expect(runtimeAnimation).not.toContain("'revealing-left'")
+    expectInOrder(
+      idleHide,
+      'peekMascotWindow(reducedMotion)',
+      'peekSide.value = side',
+      "peekTransition.value = 'peeking'",
+    )
+    expect(runtimeAnimation).toContain("peekTransition.value === 'revealing'")
+    expect(runtimeAnimation).toContain("peekSide.value === 'left' ? 'revealing-left' : 'revealing'")
+    expect(runtimeAnimation).toContain("peekTransition.value === 'peeking' || isPeeked.value")
+    expect(runtimeAnimation).toContain("peekSide.value === 'left' ? 'peeking-left' : 'peeking'")
+    expect(mascotWindowSource).toContain('const peekHideDurationMs = 560')
+    expect(mascotWindowSource).toContain('const peekRevealDurationMs = 480')
+    expect(rustSource).toContain('const MASCOT_PEEK_ANIMATION_DURATION_MS: u64 = 560;')
+    expect(rustSource).toContain('const MASCOT_REVEAL_ANIMATION_DURATION_MS: u64 = 480;')
   })
 
   it('drops stale reminders and schedules the nearest 30-minute expiry', () => {
