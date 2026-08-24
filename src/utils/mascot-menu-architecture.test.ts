@@ -152,7 +152,7 @@ describe('mascot context menu architecture', () => {
     const hideAction = sourceBetween(contextMenuSource, 'function handleHide()', 'function handleExit()')
     const exitAction = sourceBetween(contextMenuSource, 'function handleExit()', 'function handleKeydown')
     const menuActions = sourceBetween(mascotMenuWindowSource, 'function handleHide()', 'function handleKeydown')
-    const nativeHide = sourceBetween(rustSource, 'fn hide_main_window', '#[tauri::command]\nfn show_main_window')
+    const nativeHide = sourceBetween(rustSource, 'fn hide_main_window', 'fn show_main_window')
 
     // Closing the menu in a separate IPC first can suspend its WebView before
     // the hide/exit IPC is dispatched. Each action must reach its all-in-one
