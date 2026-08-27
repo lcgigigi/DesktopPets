@@ -10,6 +10,8 @@ describe('Windows administrator deployment smoke contracts', () => {
     const deployment = deploymentSmokeSource.replace(/\r\n?/g, '\n')
 
     expect(msiValidation).toContain("Software\\Classes\\huali-ai-mascot")
+    expect(msiValidation).toContain("-Sql 'SELECT `Root`, `Key`, `Name`, `Value` FROM `Registry`'")
+    expect(msiValidation).not.toMatch(/FROM ``Registry`` WHERE ``Key`` LIKE/)
     expect(msiValidation).toContain("$_.Values[2] -eq 'URL Protocol'")
     expect(msiValidation).toContain("Software\\Classes\\huali-ai-mascot\\shell\\open\\command")
     expect(msiValidation).toContain("-notmatch '\\[!Path\\].*%1'")

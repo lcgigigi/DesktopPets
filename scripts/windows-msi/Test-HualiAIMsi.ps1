@@ -163,9 +163,14 @@ try {
       throw '管理平台的整机安装检测标记缺失或错误。'
     }
 
+    # Windows Installer SQL only implements a small SQL subset and does not
+    # support LIKE. Read the Registry table once and filter the protocol rows
+    # in PowerShell so the gate works on both Windows PowerShell 5.1 and pwsh.
     $protocolRows = @(Get-MsiRows `
-      -Sql "SELECT ``Root``, ``Key``, ``Name``, ``Value`` FROM ``Registry`` WHERE ``Key`` LIKE 'Software\Classes\huali-ai-mascot%'" `
-      -ColumnCount 4)
+      -Sql 'SELECT `Root`, `Key`, `Name`, `Value` FROM `Registry`' `
+      -ColumnCount 4 | Where-Object {
+        $_.Values[1] -like 'Software\Classes\huali-ai-mascot*'
+      })
     if (-not ($protocolRows | Where-Object {
           $_.Values[0] -eq '2' -and
           $_.Values[1] -ieq 'Software\Classes\huali-ai-mascot' -and
