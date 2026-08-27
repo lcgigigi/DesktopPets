@@ -42,6 +42,10 @@ const props = defineProps<{
   sysMessage: SysMessageNotification | null
 }>()
 
+const emit = defineEmits<{
+  login: []
+}>()
+
 const mascotStore = useMascotStore()
 const previewAnimationStates: readonly MascotAnimationState[] = [
   'idle',
@@ -343,7 +347,11 @@ function isOverlayInteraction(target: EventTarget | null) {
 }
 
 function togglePanel() {
-  if (!canOpenMascotTodoPanel(props.needsAuth, Boolean(props.sysMessage))) return
+  if (props.needsAuth) {
+    emit('login')
+    return
+  }
+  if (!canOpenMascotTodoPanel(false, Boolean(props.sysMessage))) return
 
   dismissTransientOverlays()
   playTransientAnimation('waiting', mascotWaitingInteractionMs)

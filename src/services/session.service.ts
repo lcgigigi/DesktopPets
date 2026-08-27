@@ -41,7 +41,12 @@ function normalizeCurrentUser(data: CurrentUserPayload): UserInfo | null {
 
 export async function validateDesktopSession(expectedUserId: string): Promise<DesktopSessionCheck> {
   try {
-    const data = await request.get<unknown, CurrentUserPayload>('/getInfo')
+    // Session validation is the confirmation request for a possible 401. Do
+    // not publish another global unauthorized event from this request or the
+    // first failing business API could recursively clear the desktop session.
+    const data = await request.get<unknown, CurrentUserPayload>('/getInfo', {
+      reportUnauthorized: false,
+    })
     const currentUser = normalizeCurrentUser(data)
     const expected = expectedUserId.trim()
     // A successful /getInfo response proves the token is accepted. Different

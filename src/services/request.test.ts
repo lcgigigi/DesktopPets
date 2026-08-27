@@ -92,4 +92,19 @@ describe('desktop request', () => {
 
     removeListener()
   })
+
+  it('allows the dedicated session confirmation request to suppress recursive unauthorized events', async () => {
+    const listener = vi.fn()
+    const removeListener = onDesktopUnauthorized(listener)
+    mocks.nativeFetch.mockResolvedValue(
+      new Response(JSON.stringify({ code: 401, msg: '登录状态已过期' }), { status: 200 }),
+    )
+
+    await expect(
+      request.get('/getInfo', { reportUnauthorized: false }),
+    ).rejects.toBeInstanceOf(DesktopRequestError)
+    expect(listener).not.toHaveBeenCalled()
+
+    removeListener()
+  })
 })

@@ -92,6 +92,7 @@ describe('validateDesktopSession', () => {
 
     mocks.get.mockRejectedValue(new DesktopRequestError('登录状态已过期', { status: 401 }))
     await expect(validateDesktopSession('10001')).resolves.toEqual({ status: 'unauthorized' })
+    expect(mocks.get).toHaveBeenCalledWith('/getInfo', { reportUnauthorized: false })
   })
 
   it('does not erase login when the account lacks permission for getInfo', async () => {

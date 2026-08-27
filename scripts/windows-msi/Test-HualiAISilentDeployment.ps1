@@ -31,6 +31,7 @@ $ProcessName = 'HualiAIDesktopAssistant'
 $MarkerPath = 'HKLM:\SOFTWARE\Huali\HualiAIDesktopAssistant'
 $RunPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
 $RunValueName = '华力AI桌面助手'
+$ProtocolSubKey = 'SOFTWARE\Classes\huali-ai-mascot'
 $LaunchLogPath = Join-Path $env:ProgramData 'HualiAI\Logs\launch-after-install.log'
 
 function Test-IsAdministrator {
@@ -86,6 +87,62 @@ function Get-RunExecutablePath {
   return $Matches[1]
 }
 
+function Assert-DesktopAuthProtocol {
+  param([Parameter(Mandatory = $true)][string]$ExpectedExecutablePath)
+
+  $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+    [Microsoft.Win32.RegistryHive]::LocalMachine,
+    [Microsoft.Win32.RegistryView]::Registry64
+  )
+  try {
+    $protocolKey = $baseKey.OpenSubKey($ProtocolSubKey)
+    if (-not $protocolKey) {
+      throw '机器级 huali-ai-mascot 登录回调协议未注册。'
+    }
+    try {
+      if ('URL Protocol' -notin @($protocolKey.GetValueNames())) {
+        throw 'huali-ai-mascot 注册缺少 URL Protocol 标记。'
+      }
+    } finally {
+      $protocolKey.Dispose()
+    }
+
+    $commandKey = $baseKey.OpenSubKey("$ProtocolSubKey\shell\open\command")
+    if (-not $commandKey) {
+      throw 'huali-ai-mascot 注册缺少 shell open command。'
+    }
+    try {
+      $command = [string]$commandKey.GetValue('')
+      $escapedExecutable = [regex]::Escape([IO.Path]::GetFullPath($ExpectedExecutablePath))
+      if ($command -notmatch $escapedExecutable -or $command -notmatch '%1') {
+        throw "huali-ai-mascot 回调命令错误：$command"
+      }
+    } finally {
+      $commandKey.Dispose()
+    }
+  } finally {
+    $baseKey.Dispose()
+  }
+}
+
+function Assert-NoDesktopAuthProtocol {
+  param([Parameter(Mandatory = $true)][string]$Stage)
+
+  $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+    [Microsoft.Win32.RegistryHive]::LocalMachine,
+    [Microsoft.Win32.RegistryView]::Registry64
+  )
+  try {
+    $protocolKey = $baseKey.OpenSubKey($ProtocolSubKey)
+    if ($protocolKey) {
+      $protocolKey.Dispose()
+      throw "$Stage 后仍残留 huali-ai-mascot 登录回调协议。"
+    }
+  } finally {
+    $baseKey.Dispose()
+  }
+}
+
 function Get-HualiProcesses {
   return @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
 }
@@ -137,6 +194,7 @@ function Assert-InstalledState {
   if (-not $installedExecutablePath.StartsWith($programFilesRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "程序未按计算机安装到 Program Files：$installedExecutablePath"
   }
+  Assert-DesktopAuthProtocol -ExpectedExecutablePath $installedExecutablePath
 
   return [pscustomobject]@{
     ProductCode = [string]$product.PSChildName
@@ -163,6 +221,7 @@ function Assert-UninstalledState {
   if ($runKey -and $runKey.PSObject.Properties[$RunValueName]) {
     throw "$Stage 后仍存在 HKLM 登录自启动项。"
   }
+  Assert-NoDesktopAuthProtocol -Stage $Stage
   if ($FormerExecutablePath -and (Test-Path -LiteralPath $FormerExecutablePath -PathType Leaf)) {
     throw "$Stage 后主程序仍残留：$FormerExecutablePath"
   }

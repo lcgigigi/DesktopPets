@@ -1,9 +1,23 @@
 import { describe, expect, it } from 'vitest'
+import msiValidationSource from '../../scripts/windows-msi/Test-HualiAIMsi.ps1?raw'
 import deploymentSmokeSource from '../../scripts/windows-msi/Test-HualiAISilentDeployment.ps1?raw'
 import visualSmokeSource from '../../scripts/windows-msi/Test-HualiAIWindowsVisualSmoke.ps1?raw'
 import rustSource from '../../src-tauri/src/main.rs?raw'
 
 describe('Windows administrator deployment smoke contracts', () => {
+  it('requires the machine-wide desktop authentication callback protocol throughout MSI lifecycle gates', () => {
+    const msiValidation = msiValidationSource.replace(/\r\n?/g, '\n')
+    const deployment = deploymentSmokeSource.replace(/\r\n?/g, '\n')
+
+    expect(msiValidation).toContain("Software\\Classes\\huali-ai-mascot")
+    expect(msiValidation).toContain("$_.Values[2] -eq 'URL Protocol'")
+    expect(msiValidation).toContain("Software\\Classes\\huali-ai-mascot\\shell\\open\\command")
+    expect(msiValidation).toContain("-notmatch '\\[!Path\\].*%1'")
+    expect(deployment).toContain("$ProtocolSubKey = 'SOFTWARE\\Classes\\huali-ai-mascot'")
+    expect(deployment).toContain('Assert-DesktopAuthProtocol -ExpectedExecutablePath $installedExecutablePath')
+    expect(deployment).toContain('Assert-NoDesktopAuthProtocol -Stage $Stage')
+  })
+
   it('keeps zero, one and many PowerShell results array-shaped under StrictMode', () => {
     const normalized = deploymentSmokeSource.replace(/\r\n?/g, '\n')
 

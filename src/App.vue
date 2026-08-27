@@ -86,6 +86,7 @@ const recentSysMessageKeys = new Set<string>()
 const authPending = ref(false)
 const authErrorMessage = ref('')
 const SESSION_VALIDATION_INTERVAL = 5 * 60 * 1000
+const AUTH_CALLBACK_TIMEOUT = 2 * 60 * 1000
 const TASK_DELIVERY_ACK_TIMEOUT = 1000
 let removeTaskListener: (() => void) | undefined
 let removeStatusListener: (() => void) | undefined
@@ -105,6 +106,8 @@ let removeContextMenuVisibilityListener: UnlistenFn | undefined
 let removeDeepLinkListener: UnlistenFn | undefined
 let removeUnauthorizedListener: (() => void) | undefined
 let sessionValidationTimer: number | undefined
+let sessionRecoveryPromise: Promise<void> | undefined
+let authCallbackTimer: number | undefined
 let sysMessageExpiryTimer: number | undefined
 let sysMessageEnrichmentGeneration = 0
 let systemNotificationPresentationGeneration = 0
@@ -711,11 +714,17 @@ function stopSessionValidation() {
   sessionValidationTimer = undefined
 }
 
+function stopAuthCallbackTimer() {
+  window.clearTimeout(authCallbackTimer)
+  authCallbackTimer = undefined
+}
+
 function clearDesktopSession(message: string, status: MascotStatus = 'remind') {
   websocketService.disconnect()
   sysMessageService.disconnect()
   userStore.clearSession()
   authPending.value = false
+  stopAuthCallbackTimer()
   sysMessageEnrichmentGeneration += 1
   window.clearTimeout(sysMessageExpiryTimer)
   sysMessageExpiryTimer = undefined
@@ -746,6 +755,38 @@ function handleSessionExpired(context?: DesktopUnauthorizedContext) {
   if (!userStore.isAuthenticated || env.enableMock) return
   if (context && context.token !== userStore.token) return
   clearDesktopSession('登录状态已过期，请重新登录', 'remind')
+}
+
+async function confirmSessionAfterUnauthorized(context: DesktopUnauthorizedContext) {
+  if (!userStore.isAuthenticated || env.enableMock || context.token !== userStore.token) return
+  if (sessionRecoveryPromise) return sessionRecoveryPromise
+
+  const validatedToken = userStore.token
+  const currentUserId = userStore.userInfo?.userId || ''
+  sessionRecoveryPromise = (async () => {
+    const result = await validateDesktopSession(currentUserId)
+    if (
+      userStore.token !== validatedToken
+      || (userStore.userInfo?.userId || '') !== currentUserId
+    ) return
+
+    if (result.status === 'unauthorized') {
+      handleSessionExpired({ token: validatedToken })
+      return
+    }
+
+    // A 401 from an optional business endpoint must not destroy a session that
+    // the dedicated identity endpoint still accepts. Temporary validation
+    // failures also keep the local session and will be retried periodically.
+    if (result.status === 'valid') {
+      userStore.setUserInfo(result.userInfo)
+      connectDesktopSockets({ force: true })
+    }
+  })().finally(() => {
+    sessionRecoveryPromise = undefined
+  })
+
+  return sessionRecoveryPromise
 }
 
 async function validateAndRestoreSession(options: { forceReconnect?: boolean } = {}) {
@@ -783,6 +824,7 @@ function startSessionValidation() {
 }
 
 async function startDesktopLogin() {
+  stopAuthCallbackTimer()
   const state = createDesktopAuthState()
   authPending.value = true
   authErrorMessage.value = ''
@@ -792,6 +834,13 @@ async function startDesktopLogin() {
     authErrorMessage.value = '未能打开登录页面，请检查默认浏览器后重试。'
     return
   }
+
+  authCallbackTimer = window.setTimeout(() => {
+    authCallbackTimer = undefined
+    if (!authPending.value) return
+    authPending.value = false
+    authErrorMessage.value = '未收到网页确认，请重新打开并点击“确认登录桌面吉祥物”。'
+  }, AUTH_CALLBACK_TIMEOUT)
 
   void hidePanelWindow()
 }
@@ -814,6 +863,7 @@ function handleDesktopAuthCallbackError(error: DesktopAuthCallbackError) {
   if (!authPending.value) return
 
   authPending.value = false
+  stopAuthCallbackTimer()
   const message = error === 'expired'
     ? '登录回调已失效，请重新登录'
     : error === 'missing-identity'
@@ -891,7 +941,9 @@ onMounted(async () => {
     removeSysMessageListener = sysMessageService.onMessage((message) => {
       pushSysMessage(message)
     })
-    removeUnauthorizedListener = onDesktopUnauthorized(handleSessionExpired)
+    removeUnauthorizedListener = onDesktopUnauthorized((context) => {
+      void confirmSessionAfterUnauthorized(context)
+    })
     removeDeepLinkListener = await listenDesktopAuthCallbacks(
       (payload) => {
         // 登录卡消失时直接恢复普通窗口，避免 Windows 在“大卡片 -> 小气泡”
@@ -899,7 +951,13 @@ onMounted(async () => {
         mascotStore.resetStatus()
         userStore.setSession(payload)
         authPending.value = false
+        stopAuthCallbackTimer()
         authErrorMessage.value = ''
+        // Hide the native login surface immediately. The regular reactive sync
+        // will publish the next system message if one is queued, but a delayed
+        // WebView2 paint can no longer leave the old login card on screen.
+        const hideGeneration = ++systemNotificationSyncGeneration
+        void hideMascotSystemNotificationWindow(hideGeneration)
         connectDesktopSockets({ force: true })
         startSessionValidation()
         // The state-checked callback is the login completion signal. Socket and
@@ -994,6 +1052,7 @@ onUnmounted(() => {
   removeDeepLinkListener?.()
   removeUnauthorizedListener?.()
   stopSessionValidation()
+  stopAuthCallbackTimer()
   window.clearTimeout(sysMessageExpiryTimer)
   window.clearTimeout(taskDeliveryRetryTimer)
   if (windowMode === 'mascot') {
@@ -1009,6 +1068,7 @@ onUnmounted(() => {
       v-if="windowMode === 'mascot'"
       :needs-auth="needsAuth"
       :sys-message="currentSysMessage"
+      @login="startDesktopLogin"
     />
     <MascotMenuWindow v-else-if="windowMode === 'mascot-menu'" />
     <MascotNotificationWindow v-else-if="windowMode === 'mascot-notification'" />

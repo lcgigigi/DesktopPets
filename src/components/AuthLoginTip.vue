@@ -18,7 +18,7 @@ const headline = computed(() => {
 
 const body = computed(() => {
   if (props.message) return props.message
-  if (props.pending) return '登录页面已打开，请在浏览器完成登录；如果页面被关闭，可以重新打开。'
+  if (props.pending) return '请在网页中确认登录桌面吉祥物；即使浏览器已登录，也需点击确认。'
   return '当前还没有获取到你的 Web 登录身份。登录后会自动接收站内消息。'
 })
 </script>
@@ -39,7 +39,7 @@ const body = computed(() => {
       <p :role="message ? 'alert' : 'status'">{{ body }}</p>
     </div>
     <button class="auth-login-tip__button" type="button" @click.stop="emit('login')">
-      {{ pending ? '重新打开登录页' : message ? '重试登录' : '去登录' }}
+      {{ pending ? '重新打开确认页' : message ? '重试登录' : '去登录' }}
     </button>
   </article>
 </template>

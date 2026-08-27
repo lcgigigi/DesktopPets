@@ -127,6 +127,53 @@ describe('notification and task production contracts', () => {
     expect(taskPushListener).toContain('if (needsAuth.value) return')
   })
 
+  it('confirms a reported 401 before clearing the session and makes authentication clicks actionable', () => {
+    const confirmation = section(
+      appSource,
+      'async function confirmSessionAfterUnauthorized',
+      'async function validateAndRestoreSession',
+    )
+    const unauthorizedListener = section(
+      appSource,
+      'removeUnauthorizedListener = onDesktopUnauthorized',
+      'removeDeepLinkListener = await listenDesktopAuthCallbacks',
+    )
+    const authCallback = section(
+      appSource,
+      'removeDeepLinkListener = await listenDesktopAuthCallbacks',
+      'if (!needsAuth.value)',
+    )
+    const mascotToggle = section(
+      mascotWindowSource,
+      'function togglePanel()',
+      'function playTransientAnimation',
+    )
+
+    expectInOrder(
+      confirmation,
+      'context.token !== userStore.token',
+      'if (sessionRecoveryPromise) return sessionRecoveryPromise',
+      'const result = await validateDesktopSession(currentUserId)',
+      "if (result.status === 'unauthorized')",
+      'handleSessionExpired({ token: validatedToken })',
+      "if (result.status === 'valid')",
+      'userStore.setUserInfo(result.userInfo)',
+    )
+    expect(unauthorizedListener).toContain('void confirmSessionAfterUnauthorized(context)')
+    expectInOrder(
+      authCallback,
+      'userStore.setSession(payload)',
+      'stopAuthCallbackTimer()',
+      'const hideGeneration = ++systemNotificationSyncGeneration',
+      'void hideMascotSystemNotificationWindow(hideGeneration)',
+      'connectDesktopSockets({ force: true })',
+    )
+    expectInOrder(mascotToggle, 'if (props.needsAuth)', "emit('login')", 'canOpenMascotTodoPanel(false')
+    expect(appSource).toContain('@login="startDesktopLogin"')
+    expect(appSource).toContain('const AUTH_CALLBACK_TIMEOUT = 2 * 60 * 1000')
+    expect(appSource).toContain('未收到网页确认')
+  })
+
   it('uses one coordinator as the sole task-panel reveal authority', () => {
     const delivery = section(
       appSource,
@@ -371,6 +418,36 @@ describe('notification and task production contracts', () => {
     expectInOrder(nativeShow, 'state.request_show(compact, client_generation)', 'state.transition.lock()', 'state.can_show(generation, compact)', 'position_mascot_system_notification_window', 'show_interactive_window(&notification, false)', 'state.mark_visible(generation, compact)')
     expectInOrder(sync, 'const syncGeneration = ++systemNotificationSyncGeneration', 'if (!presentation)', 'await hideMascotSystemNotificationWindow(syncGeneration)', 'return')
     expect(appSource).toContain('let systemNotificationSyncGeneration = Date.now() * 1000')
+  })
+
+  it('recovers a staged mascot collapse natively if the renderer misses its finish IPC', () => {
+    const recovery = section(
+      rustSource,
+      'fn schedule_mascot_collapse_recovery',
+      '#[tauri::command]\nfn finish_mascot_notification_collapse',
+    )
+    const collapse = section(
+      rustSource,
+      'fn set_mascot_notification_visible',
+      '#[tauri::command]\nfn set_panel_height',
+    )
+
+    expect(rustSource).toContain('const MASCOT_COLLAPSE_RECOVERY_TIMEOUT_MS: u64 = 1500;')
+    expectInOrder(
+      recovery,
+      'thread::sleep',
+      'let was_visible = matches!(window.is_visible(), Ok(true))',
+      'restore_staged_position_for_generation(&window, generation)',
+      'if was_visible',
+      'show_interactive_window(&window, false)',
+    )
+    expectInOrder(
+      collapse,
+      'stage_collapsed_position(target_position)',
+      'PhysicalPosition::new(-32_000, -32_000)',
+      'show_window_without_activation(&window)',
+      'schedule_mascot_collapse_recovery',
+    )
   })
 
   it('shows notification actions and login feedback without ellipsis', () => {

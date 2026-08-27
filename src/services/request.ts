@@ -25,6 +25,7 @@ export class DesktopRequestError extends Error {
 
 interface DesktopRequestOptions {
   params?: Record<string, string | number | boolean | null | undefined>
+  reportUnauthorized?: boolean
 }
 
 export interface DesktopUnauthorizedContext {
@@ -118,7 +119,9 @@ async function send<T>(
   const code = typeof result?.code === 'number' ? result.code : undefined
 
   if (!response.ok || result?.success === false || (code !== undefined && code !== 200)) {
-    notifyUnauthorized(token, response.status, code)
+    if (options.reportUnauthorized !== false) {
+      notifyUnauthorized(token, response.status, code)
+    }
     throw new DesktopRequestError(
       getBusinessMessage(result ?? {}, response.ok ? '接口请求失败' : `请求失败（${response.status}）`),
       { status: response.status, code },

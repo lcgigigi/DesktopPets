@@ -163,6 +163,25 @@ try {
       throw '管理平台的整机安装检测标记缺失或错误。'
     }
 
+    $protocolRows = @(Get-MsiRows `
+      -Sql "SELECT ``Root``, ``Key``, ``Name``, ``Value`` FROM ``Registry`` WHERE ``Key`` LIKE 'Software\Classes\huali-ai-mascot%'" `
+      -ColumnCount 4)
+    if (-not ($protocolRows | Where-Object {
+          $_.Values[0] -eq '2' -and
+          $_.Values[1] -ieq 'Software\Classes\huali-ai-mascot' -and
+          $_.Values[2] -eq 'URL Protocol'
+        })) {
+      throw 'MSI 没有包含机器级 huali-ai-mascot URL Protocol 注册。'
+    }
+    $protocolCommandRows = @($protocolRows | Where-Object {
+      $_.Values[0] -eq '2' -and
+      $_.Values[1] -ieq 'Software\Classes\huali-ai-mascot\shell\open\command'
+    })
+    if (($protocolCommandRows.Count -ne 1) -or
+        ($protocolCommandRows[0].Values[3] -notmatch '\[!Path\].*%1')) {
+      throw 'MSI 的 huali-ai-mascot 协议没有正确指向主程序。'
+    }
+
     $launchCommandRows = @(Get-MsiRows -Sql "SELECT ``Source``, ``Target`` FROM ``CustomAction`` WHERE ``Action`` = 'SetLaunchHualiAfterInstallCommand'" -ColumnCount 2)
     if (($launchCommandRows.Count -ne 1) -or
         ($launchCommandRows[0].Values[0] -ne 'WixQuietExec64CmdLine') -or

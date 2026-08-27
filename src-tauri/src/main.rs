@@ -45,6 +45,8 @@ const MASCOT_CONTEXT_MENU_NAV_LEFT: f64 = 12.0;
 const MASCOT_CONTEXT_MENU_TAIL_MIN: f64 = 18.0;
 const MASCOT_CONTEXT_MENU_TAIL_MAX: f64 = 174.0;
 const MASCOT_CONTEXT_MENU_LAYOUT_ACK_TIMEOUT_MS: u64 = 1200;
+#[cfg(windows)]
+const MASCOT_COLLAPSE_RECOVERY_TIMEOUT_MS: u64 = 1500;
 const MASCOT_SYSTEM_NOTIFICATION_WIDTH: f64 = 320.0;
 const MASCOT_SYSTEM_NOTIFICATION_HEIGHT: f64 = 320.0;
 const MASCOT_AUTH_NOTIFICATION_HEIGHT: f64 = 192.0;
@@ -227,34 +229,68 @@ struct MascotNotificationLayout {
 struct MascotNotificationLayoutState(Arc<Mutex<Option<MascotNotificationLayout>>>);
 
 #[cfg(windows)]
+#[derive(Clone, Copy)]
+struct StagedMascotPosition {
+    generation: u64,
+    position: PhysicalPosition<i32>,
+}
+
+#[cfg(windows)]
 #[derive(Clone, Default)]
-struct MascotNotificationLayoutState(Arc<Mutex<Option<PhysicalPosition<i32>>>>);
+struct MascotNotificationLayoutState {
+    staged: Arc<Mutex<Option<StagedMascotPosition>>>,
+    generation: Arc<AtomicU64>,
+}
 
 #[cfg(windows)]
 impl MascotNotificationLayoutState {
-    fn stage_collapsed_position(&self, position: PhysicalPosition<i32>) -> Result<(), String> {
+    fn stage_collapsed_position(&self, position: PhysicalPosition<i32>) -> Result<u64, String> {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let mut staged = self
-            .0
+            .staged
             .lock()
             .map_err(|_| "mascot notification layout state is unavailable".to_string())?;
-        *staged = Some(position);
-        Ok(())
-    }
-
-    fn take_collapsed_position(&self) -> Result<Option<PhysicalPosition<i32>>, String> {
-        self.0
-            .lock()
-            .map(|mut staged| staged.take())
-            .map_err(|_| "mascot notification layout state is unavailable".to_string())
+        *staged = Some(StagedMascotPosition {
+            generation,
+            position,
+        });
+        Ok(generation)
     }
 
     fn restore_staged_position(&self, window: &tauri::WebviewWindow) -> Result<bool, String> {
-        let Some(position) = self.take_collapsed_position()? else {
+        let mut current = self
+            .staged
+            .lock()
+            .map_err(|_| "mascot notification layout state is unavailable".to_string())?;
+        let Some(staged) = *current else {
             return Ok(false);
         };
         window
-            .set_position(Position::Physical(position))
+            .set_position(Position::Physical(staged.position))
             .map_err(|error| format!("failed to restore staged mascot position: {error}"))?;
+        *current = None;
+        Ok(true)
+    }
+
+    fn restore_staged_position_for_generation(
+        &self,
+        window: &tauri::WebviewWindow,
+        generation: u64,
+    ) -> Result<bool, String> {
+        let mut current = self
+            .staged
+            .lock()
+            .map_err(|_| "mascot notification layout state is unavailable".to_string())?;
+        let Some(staged) = *current else {
+            return Ok(false);
+        };
+        if staged.generation != generation {
+            return Ok(false);
+        }
+        window
+            .set_position(Position::Physical(staged.position))
+            .map_err(|error| format!("failed to recover staged mascot position: {error}"))?;
+        *current = None;
         Ok(true)
     }
 }
@@ -269,6 +305,17 @@ fn mascot_notification_layout_state() -> MascotNotificationLayoutState {
     {
         MascotNotificationLayoutState::default()
     }
+}
+
+fn restore_staged_mascot_position(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    #[cfg(windows)]
+    {
+        let state = app.state::<MascotNotificationLayoutState>();
+        let _ = state.restore_staged_position(window);
+    }
+
+    #[cfg(not(windows))]
+    let _ = (app, window);
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -3510,6 +3557,7 @@ fn show_main_window(
 ) {
     hide_mascot_context_menu_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
+        restore_staged_mascot_position(&app, &window);
         ensure_initial_mascot_placement(&window, initial_placement.inner());
         let (width, height) = mascot_logical_size(&window);
         restore_mascot_if_peeked(&window, motion.inner(), width, height);
@@ -3528,6 +3576,7 @@ fn show_notification_window(
     if let Some(window) = app.get_webview_window("mascot") {
         // A reminder should become visible without stealing focus from the
         // document or business application the user is working in.
+        restore_staged_mascot_position(&app, &window);
         ensure_initial_mascot_placement(&window, initial_placement.inner());
         let (width, height) = mascot_logical_size(&window);
         restore_mascot_if_peeked(&window, motion.inner(), width, height);
@@ -3535,6 +3584,38 @@ fn show_notification_window(
         return show_interactive_window(&window, false);
     }
     false
+}
+
+#[cfg(windows)]
+fn schedule_mascot_collapse_recovery(
+    app: tauri::AppHandle,
+    layout_state: MascotNotificationLayoutState,
+    generation: u64,
+) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(MASCOT_COLLAPSE_RECOVERY_TIMEOUT_MS));
+        let Some(window) = app.get_webview_window("mascot") else {
+            return;
+        };
+        let was_visible = matches!(window.is_visible(), Ok(true));
+        let recovered = layout_state
+            .restore_staged_position_for_generation(&window, generation)
+            .unwrap_or(false);
+        if !recovered {
+            return;
+        }
+
+        // The normal path is completed by the renderer after two painted
+        // frames. If WebView2 is suspended or the IPC is lost, this native
+        // fallback restores hit testing without reopening a mascot the user
+        // deliberately hid while the collapse was pending.
+        if was_visible {
+            let _ = show_interactive_window(&window, false);
+            sync_panel_if_visible(&app);
+        } else {
+            let _ = window.set_ignore_cursor_events(false);
+        }
+    });
 }
 
 #[tauri::command]
@@ -3680,6 +3761,7 @@ fn show_panel_window(
         app.get_webview_window("panel"),
         app.get_webview_window("mascot"),
     ) {
+        restore_staged_mascot_position(&app, &mascot);
         let (width, height) = mascot_logical_size(&mascot);
         restore_mascot_if_peeked(&mascot, motion.inner(), width, height);
         // Task pushes use this command as their reminder surface. If the user
@@ -3791,13 +3873,13 @@ fn set_mascot_notification_visible(
                     return false;
                 }
             };
-            if layout_state
-                .stage_collapsed_position(target_position)
-                .is_err()
-            {
-                let _ = show_interactive_window(&window, false);
-                return false;
-            }
+            let recovery_generation = match layout_state.stage_collapsed_position(target_position) {
+                Ok(generation) => generation,
+                Err(_) => {
+                    let _ = show_interactive_window(&window, false);
+                    return false;
+                }
+            };
             let staged = window
                 .set_position(Position::Physical(PhysicalPosition::new(-32_000, -32_000)))
                 .is_ok()
@@ -3807,6 +3889,11 @@ fn set_mascot_notification_visible(
                 let _ = show_interactive_window(&window, false);
                 return false;
             }
+            schedule_mascot_collapse_recovery(
+                app.clone(),
+                layout_state.inner().clone(),
+                recovery_generation,
+            );
         }
         if !visible && !suspended_for_resize {
             // A panel may be opened while a bubble is fading. Re-anchor it only
@@ -4120,10 +4207,15 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(
             move |app, argv, _cwd| {
                 if let Some(callback_url) = single_instance_desktop_auth.capture(&argv) {
+                    // Remove the stale login HWND before waking the renderer.
+                    // The Vue coordinator will show the next queued message
+                    // after it commits the returned desktop session.
+                    hide_mascot_system_notification_native_window(app);
                     let _ = app.emit("desktop-auth-callback", callback_url);
                 }
 
                 if let Some(window) = app.get_webview_window("mascot") {
+                    restore_staged_mascot_position(app, &window);
                     let initial_placement = app.state::<InitialMascotPlacement>();
                     ensure_initial_mascot_placement(&window, initial_placement.inner());
                     let motion = app.state::<MascotDockMotion>();
@@ -4309,6 +4401,7 @@ fn main() {
                     "show" => {
                         hide_mascot_context_menu_window(app);
                         if let Some(window) = app.get_webview_window("mascot") {
+                            restore_staged_mascot_position(app, &window);
                             let initial_placement = app.state::<InitialMascotPlacement>();
                             ensure_initial_mascot_placement(&window, initial_placement.inner());
                             let motion = app.state::<MascotDockMotion>();
