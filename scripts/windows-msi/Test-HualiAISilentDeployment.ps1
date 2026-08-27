@@ -113,9 +113,22 @@ function Assert-DesktopAuthProtocol {
     }
     try {
       $command = [string]$commandKey.GetValue('')
-      $escapedExecutable = [regex]::Escape([IO.Path]::GetFullPath($ExpectedExecutablePath))
-      if ($command -notmatch $escapedExecutable -or $command -notmatch '%1') {
+      $commandMatch = [regex]::Match($command, '^\s*"(?<executable>[^"]+)"\s+"%1"\s*$')
+      if (-not $commandMatch.Success) {
         throw "huali-ai-mascot 回调命令错误：$command"
+      }
+      $registeredExecutablePath = $commandMatch.Groups['executable'].Value
+      if (-not (Test-Path -LiteralPath $registeredExecutablePath -PathType Leaf)) {
+        throw "huali-ai-mascot 回调程序不存在：$registeredExecutablePath"
+      }
+
+      # MSI's [!Path] formatter is allowed to persist an 8.3 short path. A
+      # content identity check accepts that valid representation while still
+      # proving the protocol launches the installed desktop executable.
+      $registeredHash = (Get-FileHash -LiteralPath $registeredExecutablePath -Algorithm SHA256).Hash
+      $expectedHash = (Get-FileHash -LiteralPath $ExpectedExecutablePath -Algorithm SHA256).Hash
+      if ($registeredHash -ne $expectedHash) {
+        throw "huali-ai-mascot 回调程序与已安装主程序不一致：$registeredExecutablePath"
       }
     } finally {
       $commandKey.Dispose()
