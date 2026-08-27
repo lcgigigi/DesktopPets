@@ -20,7 +20,19 @@ describe('Windows administrator deployment smoke contracts', () => {
     expect(deployment).toContain('$registeredHash = (Get-FileHash -LiteralPath $registeredExecutablePath -Algorithm SHA256).Hash')
     expect(deployment).toContain('$expectedHash = (Get-FileHash -LiteralPath $ExpectedExecutablePath -Algorithm SHA256).Hash')
     expect(deployment).toContain('Assert-DesktopAuthProtocol -ExpectedExecutablePath $installedExecutablePath')
+    expect(deployment).toContain('function Invoke-DesktopAuthProtocolCallbackSmoke')
+    expect(deployment).toContain('Start-Process -FilePath $callbackUrl')
+    expect(deployment).toContain('smokeNonce=$nonce')
+    expect(deployment).toContain('$report.checks.desktopAuthProtocolCallback = Invoke-DesktopAuthProtocolCallbackSmoke')
+    expect(deployment).toContain('tokenValueRecorded = $false')
     expect(deployment).toContain('Assert-NoDesktopAuthProtocol -Stage $Stage')
+
+    const nativeMain = rustSource.replace(/\r\n?/g, '\n')
+    expect(nativeMain).toContain('desktop_auth_callback_query_value(callback_url, "smokeNonce")')
+    expect(nativeMain).toContain('"hasState": desktop_auth_callback_has_value')
+    expect(nativeMain).toContain('"hasToken": desktop_auth_callback_has_value')
+    expect(nativeMain).toContain('"hasUserId": desktop_auth_callback_has_value')
+    expect(nativeMain).not.toContain('"tokenValue"')
   })
 
   it('keeps zero, one and many PowerShell results array-shaped under StrictMode', () => {

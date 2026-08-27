@@ -7,7 +7,7 @@ import MascotMenuWindow from './views/MascotMenuWindow.vue'
 import MascotNotificationWindow from './views/MascotNotificationWindow.vue'
 import PanelWindow from './views/PanelWindow.vue'
 import {
-  createDesktopAuthState,
+  getOrCreateDesktopAuthState,
   listenDesktopAuthCallbacks,
   type DesktopAuthCallbackError,
 } from './services/desktop-auth.service'
@@ -86,7 +86,7 @@ const recentSysMessageKeys = new Set<string>()
 const authPending = ref(false)
 const authErrorMessage = ref('')
 const SESSION_VALIDATION_INTERVAL = 5 * 60 * 1000
-const AUTH_CALLBACK_TIMEOUT = 2 * 60 * 1000
+const AUTH_CALLBACK_REMINDER_DELAY = 2 * 60 * 1000
 const TASK_DELIVERY_ACK_TIMEOUT = 1000
 let removeTaskListener: (() => void) | undefined
 let removeStatusListener: (() => void) | undefined
@@ -825,7 +825,10 @@ function startSessionValidation() {
 
 async function startDesktopLogin() {
   stopAuthCallbackTimer()
-  const state = createDesktopAuthState()
+  // Reopening the confirmation page must keep the same state. Otherwise an
+  // already-open browser tab becomes stale and its later confirmation can
+  // invalidate the user's new attempt.
+  const state = getOrCreateDesktopAuthState()
   authPending.value = true
   authErrorMessage.value = ''
   const opened = await openDesktopLogin(state)
@@ -838,9 +841,11 @@ async function startDesktopLogin() {
   authCallbackTimer = window.setTimeout(() => {
     authCallbackTimer = undefined
     if (!authPending.value) return
-    authPending.value = false
-    authErrorMessage.value = '未收到网页确认，请重新打开并点击“确认登录桌面吉祥物”。'
-  }, AUTH_CALLBACK_TIMEOUT)
+    // Elapsed time alone does not prove that login failed: browser protocol
+    // prompts, page switching and enterprise endpoint protection can all delay
+    // the handoff. Keep accepting the same state and offer a safe retry.
+    authErrorMessage.value = '仍在等待网页确认；页面关闭时可重新打开。'
+  }, AUTH_CALLBACK_REMINDER_DELAY)
 
   void hidePanelWindow()
 }
@@ -862,13 +867,12 @@ function handleLogout() {
 function handleDesktopAuthCallbackError(error: DesktopAuthCallbackError) {
   if (!authPending.value) return
 
-  authPending.value = false
   stopAuthCallbackTimer()
   const message = error === 'expired'
-    ? '登录回调已失效，请重新登录'
+    ? '已忽略旧确认页，请在最近打开的页面再次确认。'
     : error === 'missing-identity'
-      ? '网页登录未返回完整身份，请重试'
-      : 'Windows 已唤起助手，但未传入登录回调链接'
+      ? '网页返回信息不完整，请在当前页面再次确认。'
+      : 'Windows 未传入确认结果，请重新打开确认页。'
   authErrorMessage.value = message
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import appSource from '../App.vue?raw'
+import authLoginTipSource from '../components/AuthLoginTip.vue?raw'
 import taskCardSource from '../components/TaskPushCard.vue?raw'
 import sysMessageTipSource from '../components/SysMessageTip.vue?raw'
 import todoInputSource from '../components/TodoInputBox.vue?raw'
@@ -170,8 +171,11 @@ describe('notification and task production contracts', () => {
     )
     expectInOrder(mascotToggle, 'if (props.needsAuth)', "emit('login')", 'canOpenMascotTodoPanel(false')
     expect(appSource).toContain('@login="startDesktopLogin"')
-    expect(appSource).toContain('const AUTH_CALLBACK_TIMEOUT = 2 * 60 * 1000')
-    expect(appSource).toContain('未收到网页确认')
+    expect(appSource).toContain('const AUTH_CALLBACK_REMINDER_DELAY = 2 * 60 * 1000')
+    expect(appSource).toContain('const state = getOrCreateDesktopAuthState()')
+    expect(appSource).toContain('仍在等待网页确认')
+    expect(appSource).not.toContain("authPending.value = false\n    authErrorMessage.value = '未收到网页确认")
+    expect(authLoginTipSource).toContain("'has-error': message && !pending")
   })
 
   it('uses one coordinator as the sole task-panel reveal authority', () => {

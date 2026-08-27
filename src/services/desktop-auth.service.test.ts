@@ -1,5 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { parseDesktopAuthCallback } from './desktop-auth.service'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  DESKTOP_AUTH_ATTEMPT_MAX_AGE,
+  getOrCreateDesktopAuthState,
+  parseDesktopAuthCallback,
+} from './desktop-auth.service'
 import { storage } from '../utils/storage'
 
 function createLocalStorage() {
@@ -33,6 +37,10 @@ describe('desktop auth callback', () => {
     storage.setDesktopAuthState('expected-state')
   })
 
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('accepts a complete callback with the expected state', () => {
     expect(
       parseDesktopAuthCallback(
@@ -61,5 +69,37 @@ describe('desktop auth callback', () => {
         'huali-ai-mascot://auth-callback?state=expected-state',
       ),
     ).toBeNull()
+  })
+
+  it('reuses one active state when the confirmation page is reopened', () => {
+    storage.setDesktopAuthState('active-state', 10_000)
+
+    expect(getOrCreateDesktopAuthState(20_000)).toBe('active-state')
+    expect(storage.getDesktopAuthAttempt()).toEqual({
+      state: 'active-state',
+      createdAt: 10_000,
+    })
+  })
+
+  it('renews an expired state instead of accepting an old browser tab forever', () => {
+    storage.setDesktopAuthState('expired-state', 10_000)
+    vi.stubGlobal('crypto', {
+      randomUUID: () => 'renewed-state',
+    })
+
+    expect(
+      getOrCreateDesktopAuthState(10_000 + DESKTOP_AUTH_ATTEMPT_MAX_AGE),
+    ).toBe('renewed-state')
+    expect(storage.getDesktopAuthAttempt()).toEqual({
+      state: 'renewed-state',
+      createdAt: 10_000 + DESKTOP_AUTH_ATTEMPT_MAX_AGE,
+    })
+  })
+
+  it('migrates a v1.0.45 raw state without breaking an open confirmation page', () => {
+    localStorage.setItem('huali_ai_desktop_auth_state', 'legacy-state')
+
+    expect(storage.getDesktopAuthState()).toBe('legacy-state')
+    expect(storage.getDesktopAuthAttempt()?.createdAt).toEqual(expect.any(Number))
   })
 })

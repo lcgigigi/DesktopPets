@@ -26,7 +26,7 @@ const body = computed(() => {
 <template>
   <article
     class="auth-login-tip"
-    :class="{ 'is-pending': pending, 'has-error': message }"
+    :class="{ 'is-pending': pending, 'has-error': message && !pending }"
     :aria-busy="pending"
     aria-live="polite"
     @pointerdown.stop
@@ -36,7 +36,7 @@ const body = computed(() => {
   >
     <div class="auth-login-tip__body">
       <strong>{{ headline }}</strong>
-      <p :role="message ? 'alert' : 'status'">{{ body }}</p>
+      <p :role="message && !pending ? 'alert' : 'status'">{{ body }}</p>
     </div>
     <button class="auth-login-tip__button" type="button" @click.stop="emit('login')">
       {{ pending ? '重新打开确认页' : message ? '重试登录' : '去登录' }}

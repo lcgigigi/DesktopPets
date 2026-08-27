@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import unsignedV1045WorkflowSource from '../../.github/workflows/build-windows-msi-unsigned-v1045.yml?raw'
+import unsignedV1046WorkflowSource from '../../.github/workflows/build-windows-msi-unsigned-v1046.yml?raw'
 import visualSmokeSource from '../../scripts/windows-msi/Test-HualiAIWindowsVisualSmoke.ps1?raw'
 
 const FRAME_WIDTH = 120
@@ -115,7 +115,7 @@ function normalizedPowerShell() {
 }
 
 function normalizedWorkflow() {
-  return unsignedV1045WorkflowSource.replace(/\r\n?/g, '\n')
+  return unsignedV1046WorkflowSource.replace(/\r\n?/g, '\n')
 }
 
 function getWorkflowStep(source: string, name: string) {
@@ -342,7 +342,7 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
   })
 })
 
-describe('Windows v1.0.45 workflow visual-gate compiler contract', () => {
+describe('Windows v1.0.46 workflow visual-gate compiler contract', () => {
   it('compiles the gate in PowerShell 7 and 5.1 before Node and Rust setup', () => {
     const workflow = normalizedWorkflow()
     const powerShell7 = getWorkflowStep(workflow, 'Compile visual gate with PowerShell 7')
@@ -376,10 +376,10 @@ describe('Windows v1.0.45 workflow visual-gate compiler contract', () => {
     expect(upload.start).toBeGreaterThan(deployment.start)
     expect(deployment.source).toContain('-ValidateDefaultLaunch `')
     expect(deployment.source).toContain('-RunVisualSmoke `')
-    expect(deployment.source).toContain("-ExpectedVersion '1.0.45' `")
-    expect(deployment.source).toContain("-PreviousVersion '1.0.44' `")
-    expect(workflow).toContain('run-id: 32709882262')
-    expect(workflow).toContain('242556ab1e93900bb8d80619cfa52ed1a02d3a73e1fad4459cad13777b01a281')
+    expect(deployment.source).toContain("-ExpectedVersion '1.0.46' `")
+    expect(deployment.source).toContain("-PreviousVersion '1.0.45' `")
+    expect(workflow).toContain('run-id: 33039129460')
+    expect(workflow).toContain('1c55b682e287dd638aa97cb449279ab0e681869c876d9bb0ba719f61ca5d93f6')
   })
 })
 

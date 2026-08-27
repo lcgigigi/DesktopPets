@@ -156,6 +156,47 @@ function Assert-NoDesktopAuthProtocol {
   }
 }
 
+function Invoke-DesktopAuthProtocolCallbackSmoke {
+  $nonce = [Guid]::NewGuid().ToString('N')
+  $receiptPath = Join-Path $env:TEMP "huali-ai-desktop-auth-smoke-$nonce.json"
+  $callbackUrl = "huali-ai-mascot://auth-callback?state=smoke-state&token=smoke-token&userId=smoke-user&smokeNonce=$nonce"
+
+  try {
+    Remove-Item -LiteralPath $receiptPath -Force -ErrorAction SilentlyContinue
+
+    # This deliberately invokes the registered URI rather than passing the URL
+    # to the executable. The receipt proves Windows shell activation delivered
+    # the complete callback to the newly installed native binary.
+    Start-Process -FilePath $callbackUrl | Out-Null
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+      if ([DateTime]::UtcNow -ge $deadline) {
+        throw 'huali-ai-mascot 真协议唤起未在 20 秒内交付回调。'
+      }
+      Start-Sleep -Milliseconds 200
+    }
+
+    $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+    foreach ($field in @('callbackReceived', 'hasState', 'hasToken', 'hasUserId')) {
+      $property = $receipt.PSObject.Properties[$field]
+      if (-not $property -or $property.Value -ne $true) {
+        throw "huali-ai-mascot 真协议回调缺少必要字段：$field"
+      }
+    }
+
+    return [ordered]@{
+      shellProtocolInvoked = $true
+      nativeCallbackReceived = $true
+      stateDelivered = $true
+      tokenDelivered = $true
+      userIdDelivered = $true
+      tokenValueRecorded = $false
+    }
+  } finally {
+    Remove-Item -LiteralPath $receiptPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Get-HualiProcesses {
   return @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
 }
@@ -599,6 +640,10 @@ try {
   }
 
   $installedBeforeFirstUninstall = Assert-InstalledState -Version $ExpectedVersion
+  Write-Host '验证 Windows 真协议唤起与原生登录回调交付...'
+  $report.checks.desktopAuthProtocolCallback = Invoke-DesktopAuthProtocolCallbackSmoke
+  Stop-HualiProcesses
+  Assert-NoHualiProcesses -Stage '登录回调协议冒烟测试'
   Invoke-UninstallProduct `
     -ProductCode $installedBeforeFirstUninstall.ProductCode `
     -LogPath (Join-Path $resolvedEvidence '03-upgraded-uninstall.log')

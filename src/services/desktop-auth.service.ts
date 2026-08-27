@@ -6,6 +6,7 @@ import { storage } from '../utils/storage'
 
 export const DESKTOP_AUTH_SCHEME = 'huali-ai-mascot'
 const AUTH_CALLBACK_HOST = 'auth-callback'
+export const DESKTOP_AUTH_ATTEMPT_MAX_AGE = 30 * 60 * 1000
 
 export interface DesktopAuthCallbackPayload {
   token: string
@@ -30,10 +31,23 @@ function createFallbackState() {
   return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`
 }
 
-export function createDesktopAuthState() {
+function createDesktopAuthState(now = Date.now()) {
   const state = globalThis.crypto?.randomUUID?.() ?? createFallbackState()
-  storage.setDesktopAuthState(state)
+  storage.setDesktopAuthState(state, now)
   return state
+}
+
+export function getOrCreateDesktopAuthState(now = Date.now()) {
+  const attempt = storage.getDesktopAuthAttempt()
+  if (
+    attempt
+    && attempt.createdAt <= now
+    && now - attempt.createdAt < DESKTOP_AUTH_ATTEMPT_MAX_AGE
+  ) {
+    return attempt.state
+  }
+
+  return createDesktopAuthState(now)
 }
 
 function isAuthCallbackUrl(url: URL) {

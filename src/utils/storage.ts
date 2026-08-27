@@ -10,6 +10,11 @@ export interface StoredUserInfo {
   department?: string
 }
 
+export interface StoredDesktopAuthAttempt {
+  state: string
+  createdAt: number
+}
+
 export interface LastSysMessageDetail {
   messageId: string
   detailId: string
@@ -43,11 +48,42 @@ export const storage = {
   clearUserInfo() {
     localStorage.removeItem(USER_INFO_KEY)
   },
-  getDesktopAuthState() {
-    return localStorage.getItem(DESKTOP_AUTH_STATE_KEY) || ''
+  getDesktopAuthAttempt(): StoredDesktopAuthAttempt | null {
+    const value = localStorage.getItem(DESKTOP_AUTH_STATE_KEY)
+    if (!value) return null
+
+    try {
+      const attempt = JSON.parse(value) as Partial<StoredDesktopAuthAttempt>
+      if (
+        typeof attempt.state === 'string'
+        && attempt.state
+        && typeof attempt.createdAt === 'number'
+        && Number.isFinite(attempt.createdAt)
+      ) {
+        return {
+          state: attempt.state,
+          createdAt: attempt.createdAt,
+        }
+      }
+    } catch {
+      // v1.0.45 and earlier stored only the raw state. Preserve that in-flight
+      // browser confirmation across an upgrade, then migrate it to the timed
+      // attempt format used by current releases.
+      const migrated = {
+        state: value,
+        createdAt: Date.now(),
+      }
+      localStorage.setItem(DESKTOP_AUTH_STATE_KEY, JSON.stringify(migrated))
+      return migrated
+    }
+
+    return null
   },
-  setDesktopAuthState(state: string) {
-    localStorage.setItem(DESKTOP_AUTH_STATE_KEY, state)
+  getDesktopAuthState() {
+    return this.getDesktopAuthAttempt()?.state || ''
+  },
+  setDesktopAuthState(state: string, createdAt = Date.now()) {
+    localStorage.setItem(DESKTOP_AUTH_STATE_KEY, JSON.stringify({ state, createdAt }))
   },
   clearDesktopAuthState() {
     localStorage.removeItem(DESKTOP_AUTH_STATE_KEY)

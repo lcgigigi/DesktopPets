@@ -575,8 +575,56 @@ struct NativeDesktopAuthCallback {
 
 fn find_desktop_auth_callback(args: &[String]) -> Option<String> {
     args.iter()
-        .find(|arg| arg.starts_with(DESKTOP_AUTH_CALLBACK_PREFIX))
-        .cloned()
+        .find_map(|arg| normalize_desktop_auth_callback_argument(arg))
+}
+
+fn normalize_desktop_auth_callback_argument(argument: &str) -> Option<String> {
+    let normalized = argument.trim().trim_matches('"').trim();
+    let prefix = normalized.get(..DESKTOP_AUTH_CALLBACK_PREFIX.len())?;
+    prefix
+        .eq_ignore_ascii_case(DESKTOP_AUTH_CALLBACK_PREFIX)
+        .then(|| normalized.to_owned())
+}
+
+fn desktop_auth_callback_query_value<'a>(callback_url: &'a str, name: &str) -> Option<&'a str> {
+    let (_, query_and_fragment) = callback_url.split_once('?')?;
+    let query = query_and_fragment.split('#').next().unwrap_or_default();
+    query.split('&').find_map(|pair| {
+        pair.split_once('=')
+            .and_then(|(pair_name, pair_value)| (pair_name == name).then_some(pair_value))
+    })
+}
+
+fn desktop_auth_callback_has_value(callback_url: &str, name: &str) -> bool {
+    desktop_auth_callback_query_value(callback_url, name).is_some_and(|value| !value.is_empty())
+}
+
+fn persist_desktop_auth_smoke_receipt(callback_url: &str) {
+    let Some(nonce) = desktop_auth_callback_query_value(callback_url, "smokeNonce") else {
+        return;
+    };
+    if nonce.is_empty()
+        || nonce.len() > 64
+        || !nonce
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return;
+    }
+
+    // The release gate records only field presence, never the callback token or
+    // user identity. Restricting the path to the OS temp directory also avoids
+    // turning the diagnostic into an arbitrary production file writer.
+    let receipt = serde_json::json!({
+        "callbackReceived": true,
+        "hasState": desktop_auth_callback_has_value(callback_url, "state"),
+        "hasToken": desktop_auth_callback_has_value(callback_url, "token"),
+        "hasUserId": desktop_auth_callback_has_value(callback_url, "userId"),
+    });
+    let path = std::env::temp_dir().join(format!("huali-ai-desktop-auth-smoke-{nonce}.json"));
+    if let Ok(serialized) = serde_json::to_vec(&receipt) {
+        let _ = fs::write(path, serialized);
+    }
 }
 
 fn desktop_auth_callback_file() -> PathBuf {
@@ -601,11 +649,13 @@ fn take_persisted_desktop_auth_callback() -> Option<NativeDesktopAuthCallback> {
 impl PendingDesktopAuthCallback {
     fn capture(&self, args: &[String]) -> Option<String> {
         let callback_url = find_desktop_auth_callback(args);
-        if let Ok(mut pending) = self.0.lock() {
-            pending.replace(NativeDesktopAuthCallback {
-                callback_url: callback_url.clone(),
-                argument_count: args.len(),
-            });
+        if callback_url.is_some() {
+            if let Ok(mut pending) = self.0.lock() {
+                pending.replace(NativeDesktopAuthCallback {
+                    callback_url: callback_url.clone(),
+                    argument_count: args.len(),
+                });
+            }
         }
         callback_url
     }
@@ -1065,6 +1115,45 @@ fn peeked_dock_side(
         Some(MascotDockSide::Right)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod desktop_auth_callback_tests {
+    use super::{find_desktop_auth_callback, PendingDesktopAuthCallback};
+
+    #[test]
+    fn callback_argument_accepts_windows_quotes_whitespace_and_case() {
+        let args = vec![
+            "HualiAIDesktopAssistant.exe".to_owned(),
+            "  \"HUALI-AI-MASCOT://AUTH-CALLBACK?state=one&token=two&userId=three\"  ".to_owned(),
+        ];
+
+        assert_eq!(
+            find_desktop_auth_callback(&args).as_deref(),
+            Some("HUALI-AI-MASCOT://AUTH-CALLBACK?state=one&token=two&userId=three")
+        );
+    }
+
+    #[test]
+    fn unrelated_second_launch_does_not_overwrite_a_pending_callback() {
+        let pending = PendingDesktopAuthCallback::default();
+        let callback = vec![
+            "HualiAIDesktopAssistant.exe".to_owned(),
+            "huali-ai-mascot://auth-callback?state=one&token=two&userId=three".to_owned(),
+        ];
+        let unrelated = vec![
+            "HualiAIDesktopAssistant.exe".to_owned(),
+            "--show".to_owned(),
+        ];
+
+        assert!(pending.capture(&callback).is_some());
+        assert!(pending.capture(&unrelated).is_none());
+        let captured = pending
+            .take()
+            .expect("pending callback should be preserved");
+        assert_eq!(captured.callback_url, callback.get(1).cloned());
+        assert_eq!(captured.argument_count, 2);
     }
 }
 
@@ -4163,6 +4252,7 @@ fn main() {
     let startup_args = std::env::args().collect::<Vec<_>>();
     if let Some(callback_url) = find_desktop_auth_callback(&startup_args) {
         persist_startup_desktop_auth_callback(&callback_url);
+        persist_desktop_auth_smoke_receipt(&callback_url);
     }
 
     // Windows Server runners commonly expose the OS reduced-motion preference
