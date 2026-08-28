@@ -157,6 +157,8 @@ function Assert-NoDesktopAuthProtocol {
 }
 
 function Invoke-DesktopAuthProtocolCallbackSmoke {
+  param([Parameter(Mandatory = $true)][string]$ExpectedExecutablePath)
+
   $nonce = [Guid]::NewGuid().ToString('N')
   $receiptPath = Join-Path $env:TEMP "huali-ai-desktop-auth-smoke-$nonce.json"
   $callbackUrl = "huali-ai-mascot://auth-callback?state=smoke-state&token=smoke-token&userId=smoke-user&smokeNonce=$nonce"
@@ -164,29 +166,81 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
   try {
     Remove-Item -LiteralPath $receiptPath -Force -ErrorAction SilentlyContinue
 
+    # Run the real renderer first. Starting only from the protocol URL proves
+    # that a short-lived helper process saw argv, but not that single-instance
+    # forwarding reached the already-running app or its Vue auth listener.
+    $existingProcess = Start-Process -FilePath $ExpectedExecutablePath -PassThru
+    $existingWindowHandle = Wait-ForVisibleApplicationWindow `
+      -Process $existingProcess `
+      -TimeoutSeconds 20
+
     # This deliberately invokes the registered URI rather than passing the URL
-    # to the executable. The receipt proves Windows shell activation delivered
-    # the complete callback to the newly installed native binary.
+    # to the executable. The final receipt proves Windows shell activation,
+    # existing-instance forwarding and renderer-side parsing as one chain.
     Start-Process -FilePath $callbackUrl | Out-Null
-    $deadline = [DateTime]::UtcNow.AddSeconds(20)
-    while (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    $receipt = $null
+    while ($null -eq $receipt) {
       if ([DateTime]::UtcNow -ge $deadline) {
-        throw 'huali-ai-mascot 真协议唤起未在 20 秒内交付回调。'
+        throw 'huali-ai-mascot 真协议回调未在 30 秒内交付到运行中 renderer。'
+      }
+      if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+        try {
+          $candidate = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+          if ($candidate.forwardedToRunningInstance -eq $true -and
+              $candidate.rendererReceived -eq $true) {
+            $receipt = $candidate
+            break
+          }
+        } catch {
+          # The native process may be replacing the tiny JSON receipt between
+          # stages. Retry until the complete renderer receipt is available.
+        }
       }
       Start-Sleep -Milliseconds 200
     }
 
-    $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-    foreach ($field in @('callbackReceived', 'hasState', 'hasToken', 'hasUserId')) {
+    foreach ($field in @(
+        'callbackReceived',
+        'hasState',
+        'hasToken',
+        'hasUserId',
+        'forwardedToRunningInstance',
+        'rendererReceived'
+      )) {
       $property = $receipt.PSObject.Properties[$field]
       if (-not $property -or $property.Value -ne $true) {
         throw "huali-ai-mascot 真协议回调缺少必要字段：$field"
       }
     }
+    if ($receipt.rendererOutcome -ne 'error:expired') {
+      throw "renderer 未完成预期的 state 校验：$($receipt.rendererOutcome)"
+    }
+    # The protocol helper can still be shutting down for a fraction of a
+    # second after the running renderer has written its receipt. Give Windows
+    # a short, bounded grace period before asserting the single-instance gate.
+    $singleInstanceDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+      $runningProcesses = @(Get-HualiProcesses)
+      if ($runningProcesses.Count -eq 1 -and
+          $runningProcesses[0].Id -eq $existingProcess.Id) {
+        break
+      }
+      Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $singleInstanceDeadline)
+
+    if ($runningProcesses.Count -ne 1 -or $runningProcesses[0].Id -ne $existingProcess.Id) {
+      throw "协议回调没有保持单实例：启动前=$($existingProcess.Id)，当前=$($runningProcesses.Id -join ',')"
+    }
 
     return [ordered]@{
       shellProtocolInvoked = $true
       nativeCallbackReceived = $true
+      forwardedToRunningInstance = $true
+      rendererReceived = $true
+      rendererStateValidation = $receipt.rendererOutcome
+      singleInstancePreserved = $true
+      existingWindowHandle = $existingWindowHandle
       stateDelivered = $true
       tokenDelivered = $true
       userIdDelivered = $true
@@ -641,7 +695,8 @@ try {
 
   $installedBeforeFirstUninstall = Assert-InstalledState -Version $ExpectedVersion
   Write-Host '验证 Windows 真协议唤起与原生登录回调交付...'
-  $report.checks.desktopAuthProtocolCallback = Invoke-DesktopAuthProtocolCallbackSmoke
+  $report.checks.desktopAuthProtocolCallback = Invoke-DesktopAuthProtocolCallbackSmoke `
+    -ExpectedExecutablePath $installedBeforeFirstUninstall.ExecutablePath
   Stop-HualiProcesses
   Assert-NoHualiProcesses -Stage '登录回调协议冒烟测试'
   Invoke-UninstallProduct `

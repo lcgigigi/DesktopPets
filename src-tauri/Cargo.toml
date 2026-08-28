@@ -1,6 +1,6 @@
 [package]
 name = "huali-ai-mascot"
-version = "1.0.46"
+version = "1.0.47"
 description = "华力 AI 桌面助手"
 authors = ["Huali"]
 edition = "2021"

@@ -120,17 +120,22 @@ function getDesktopLinkParams() {
   }
 }
 
-export async function openExternal(url: string): Promise<boolean> {
-  try {
-    const reused = await invoke<boolean>('open_or_focus_web_url', {
-      url,
-      matchUrl: getWebBaseUrl()
-    })
+export async function openExternal(
+  url: string,
+  options: { reuseExistingTab?: boolean } = {},
+): Promise<boolean> {
+  if (options.reuseExistingTab !== false) {
+    try {
+      const reused = await invoke<boolean>('open_or_focus_web_url', {
+        url,
+        matchUrl: getWebBaseUrl()
+      })
 
-    if (reused) return true
-  } catch {
-    // Browser tab reuse is implemented by the native desktop shell when the
-    // operating system exposes a supported browser window.
+      if (reused) return true
+    } catch {
+      // Browser tab reuse is implemented by the native desktop shell when the
+      // operating system exposes a supported browser window.
+    }
   }
 
   try {
@@ -170,7 +175,11 @@ export function openDesktopLogin(state: string): Promise<boolean> {
     state
   })
 
-  return openExternal(buildUrl(`/login${query}`))
+  // The login URL carries the one-time desktop state. UI Automation can report
+  // that an existing tab was reused before the browser has actually navigated,
+  // leaving the user visibly signed in but never entering the desktop callback
+  // route. Hand the exact URL to the OS opener for every auth attempt instead.
+  return openExternal(buildUrl(`/login${query}`), { reuseExistingTab: false })
 }
 
 export function openCalendar(taskId?: string): Promise<boolean> {

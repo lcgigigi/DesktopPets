@@ -27,6 +27,24 @@ type DesktopAuthCallbackParseResult =
   | { status: 'error'; error: DesktopAuthCallbackError }
   | { status: 'ignored' }
 
+function recordRendererSmokeReceipt(rawUrl: string, result: DesktopAuthCallbackParseResult) {
+  if (result.status === 'ignored') return
+
+  try {
+    const url = new URL(rawUrl)
+    if (!url.searchParams.get('smokeNonce')) return
+    const outcome = result.status === 'success'
+      ? 'success'
+      : `error:${result.error}`
+    void invoke<boolean>('record_desktop_auth_renderer_receipt', {
+      callbackUrl: rawUrl,
+      outcome,
+    }).catch(() => undefined)
+  } catch {
+    // Only a valid callback URL can reach the native receipt command.
+  }
+}
+
 function createFallbackState() {
   return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`
 }
@@ -111,6 +129,7 @@ async function handleUrls(
     handledUrls.add(url)
 
     const result = parseDesktopAuthCallbackResult(url)
+    recordRendererSmokeReceipt(url, result)
     if (result.status === 'success') {
       handler(result.payload)
     } else if (result.status === 'error') {

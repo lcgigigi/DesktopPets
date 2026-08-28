@@ -156,11 +156,16 @@ describe('notification and task production contracts', () => {
       'if (sessionRecoveryPromise) return sessionRecoveryPromise',
       'const result = await validateDesktopSession(currentUserId)',
       "if (result.status === 'unauthorized')",
+      'recordConfirmedDesktopUnauthorized',
+      'sessionUnauthorizedEvidence = confirmation.evidence',
+      'if (confirmation.shouldExpire)',
       'handleSessionExpired({ token: validatedToken })',
       "if (result.status === 'valid')",
+      'resetSessionUnauthorizedEvidence()',
       'userStore.setUserInfo(result.userInfo)',
     )
     expect(unauthorizedListener).toContain('void confirmSessionAfterUnauthorized(context)')
+    expect(appSource).toContain('A passive five-minute health probe is not user-visible proof')
     expectInOrder(
       authCallback,
       'userStore.setSession(payload)',
@@ -170,10 +175,12 @@ describe('notification and task production contracts', () => {
       'connectDesktopSockets({ force: true })',
     )
     expectInOrder(mascotToggle, 'if (props.needsAuth)', "emit('login')", 'canOpenMascotTodoPanel(false')
+    expect(mascotWindowSource).toContain('if (avatarSingleClickTimer !== undefined) return')
+    expect(mascotWindowSource).not.toContain('void openWorkbench()')
     expect(appSource).toContain('@login="startDesktopLogin"')
     expect(appSource).toContain('const AUTH_CALLBACK_REMINDER_DELAY = 2 * 60 * 1000')
     expect(appSource).toContain('const state = getOrCreateDesktopAuthState()')
-    expect(appSource).toContain('仍在等待网页确认')
+    expect(appSource).toContain('网页已登录不等于桌面授权完成')
     expect(appSource).not.toContain("authPending.value = false\n    authErrorMessage.value = '未收到网页确认")
     expect(authLoginTipSource).toContain("'has-error': message && !pending")
   })

@@ -16,7 +16,6 @@ import {
   type PanelActivityPayload,
   finishMascotNotificationCollapse,
   hidePanelWindow,
-  openWorkbench,
   peekMascotWindow,
   revealMascotWindow,
   setMascotNotificationVisible,
@@ -323,11 +322,11 @@ function clearAvatarSingleClickTimer() {
 }
 
 function scheduleAvatarSingleClick() {
-  if (avatarSingleClickTimer !== undefined) {
-    clearAvatarSingleClickTimer()
-    void openWorkbench()
-    return
-  }
+  // A primary click has exactly one product meaning: open "一句话创建". Some
+  // Windows touchpads/WebView2 builds can deliver a second pointer completion
+  // for one physical click. Treat it as a duplicate instead of promoting it to
+  // the old double-click shortcut that opened the Web workbench.
+  if (avatarSingleClickTimer !== undefined) return
 
   avatarSingleClickTimer = window.setTimeout(() => {
     avatarSingleClickTimer = undefined

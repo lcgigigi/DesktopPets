@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::VecDeque;
 use std::fs;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -54,13 +55,14 @@ const MASCOT_SYSTEM_NOTIFICATION_GAP: f64 = 8.0;
 const MASCOT_SYSTEM_NOTIFICATION_MARGIN: f64 = 8.0;
 const DESKTOP_AUTH_CALLBACK_PREFIX: &str = "huali-ai-mascot://auth-callback";
 const DESKTOP_AUTH_CALLBACK_FILE: &str = "huali-ai-mascot-auth-callback.tmp";
+const DESKTOP_AUTH_CALLBACK_QUEUE_CAPACITY: usize = 8;
 const PANEL_VISIBILITY_EVENT: &str = "huali:panel-visibility";
 const MASCOT_CONTEXT_MENU_VISIBILITY_EVENT: &str = "mascot-context-menu-visibility";
 const MASCOT_SYSTEM_NOTIFICATION_READY_EVENT: &str = "mascot-system-notification-ready";
 const MASCOT_NATIVE_REVEALED_EVENT: &str = "mascot-native-revealed";
 
 #[derive(Clone, Default)]
-struct PendingDesktopAuthCallback(Arc<Mutex<Option<NativeDesktopAuthCallback>>>);
+struct PendingDesktopAuthCallback(Arc<Mutex<VecDeque<NativeDesktopAuthCallback>>>);
 
 #[derive(Clone, Default)]
 struct MascotDockMotion(Arc<AtomicU64>);
@@ -599,9 +601,13 @@ fn desktop_auth_callback_has_value(callback_url: &str, name: &str) -> bool {
     desktop_auth_callback_query_value(callback_url, name).is_some_and(|value| !value.is_empty())
 }
 
-fn persist_desktop_auth_smoke_receipt(callback_url: &str) {
+fn persist_desktop_auth_smoke_receipt(
+    callback_url: &str,
+    forwarded_to_running_instance: Option<bool>,
+    renderer_outcome: Option<&str>,
+) -> bool {
     let Some(nonce) = desktop_auth_callback_query_value(callback_url, "smokeNonce") else {
-        return;
+        return false;
     };
     if nonce.is_empty()
         || nonce.len() > 64
@@ -609,22 +615,47 @@ fn persist_desktop_auth_smoke_receipt(callback_url: &str) {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '-')
     {
-        return;
+        return false;
     }
 
     // The release gate records only field presence, never the callback token or
     // user identity. Restricting the path to the OS temp directory also avoids
     // turning the diagnostic into an arbitrary production file writer.
-    let receipt = serde_json::json!({
-        "callbackReceived": true,
-        "hasState": desktop_auth_callback_has_value(callback_url, "state"),
-        "hasToken": desktop_auth_callback_has_value(callback_url, "token"),
-        "hasUserId": desktop_auth_callback_has_value(callback_url, "userId"),
-    });
     let path = std::env::temp_dir().join(format!("huali-ai-desktop-auth-smoke-{nonce}.json"));
-    if let Ok(serialized) = serde_json::to_vec(&receipt) {
-        let _ = fs::write(path, serialized);
+    let mut receipt = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    receipt.insert("callbackReceived".to_owned(), serde_json::Value::Bool(true));
+    receipt.insert(
+        "hasState".to_owned(),
+        serde_json::Value::Bool(desktop_auth_callback_has_value(callback_url, "state")),
+    );
+    receipt.insert(
+        "hasToken".to_owned(),
+        serde_json::Value::Bool(desktop_auth_callback_has_value(callback_url, "token")),
+    );
+    receipt.insert(
+        "hasUserId".to_owned(),
+        serde_json::Value::Bool(desktop_auth_callback_has_value(callback_url, "userId")),
+    );
+    if forwarded_to_running_instance == Some(true) {
+        receipt.insert(
+            "forwardedToRunningInstance".to_owned(),
+            serde_json::Value::Bool(true),
+        );
     }
+    if let Some(renderer_outcome) = renderer_outcome {
+        receipt.insert("rendererReceived".to_owned(), serde_json::Value::Bool(true));
+        receipt.insert(
+            "rendererOutcome".to_owned(),
+            serde_json::Value::String(renderer_outcome.to_owned()),
+        );
+    }
+    serde_json::to_vec(&receipt)
+        .ok()
+        .is_some_and(|serialized| fs::write(path, serialized).is_ok())
 }
 
 fn desktop_auth_callback_file() -> PathBuf {
@@ -649,20 +680,42 @@ fn take_persisted_desktop_auth_callback() -> Option<NativeDesktopAuthCallback> {
 impl PendingDesktopAuthCallback {
     fn capture(&self, args: &[String]) -> Option<String> {
         let callback_url = find_desktop_auth_callback(args);
-        if callback_url.is_some() {
+        if let Some(callback_url) = callback_url.as_ref() {
             if let Ok(mut pending) = self.0.lock() {
-                pending.replace(NativeDesktopAuthCallback {
-                    callback_url: callback_url.clone(),
-                    argument_count: args.len(),
-                });
+                let duplicate = pending
+                    .iter()
+                    .any(|item| item.callback_url.as_deref() == Some(callback_url.as_str()));
+                if !duplicate {
+                    if pending.len() >= DESKTOP_AUTH_CALLBACK_QUEUE_CAPACITY {
+                        pending.pop_front();
+                    }
+                    pending.push_back(NativeDesktopAuthCallback {
+                        callback_url: Some(callback_url.clone()),
+                        argument_count: args.len(),
+                    });
+                }
             }
         }
         callback_url
     }
 
     fn take(&self) -> Option<NativeDesktopAuthCallback> {
-        self.0.lock().ok()?.take()
+        self.0.lock().ok()?.pop_front()
     }
+}
+
+#[tauri::command]
+fn record_desktop_auth_renderer_receipt(callback_url: String, outcome: String) -> bool {
+    if normalize_desktop_auth_callback_argument(&callback_url).is_none()
+        || !matches!(
+            outcome.as_str(),
+            "success" | "error:expired" | "error:missing-identity"
+        )
+    {
+        return false;
+    }
+
+    persist_desktop_auth_smoke_receipt(&callback_url, None, Some(&outcome))
 }
 
 #[tauri::command]
@@ -1154,6 +1207,32 @@ mod desktop_auth_callback_tests {
             .expect("pending callback should be preserved");
         assert_eq!(captured.callback_url, callback.get(1).cloned());
         assert_eq!(captured.argument_count, 2);
+    }
+
+    #[test]
+    fn distinct_callbacks_are_delivered_in_order_instead_of_overwriting_each_other() {
+        let pending = PendingDesktopAuthCallback::default();
+        let first = vec![
+            "HualiAIDesktopAssistant.exe".to_owned(),
+            "huali-ai-mascot://auth-callback?state=old&token=one&userId=user".to_owned(),
+        ];
+        let second = vec![
+            "HualiAIDesktopAssistant.exe".to_owned(),
+            "huali-ai-mascot://auth-callback?state=current&token=two&userId=user".to_owned(),
+        ];
+
+        pending.capture(&first);
+        pending.capture(&second);
+
+        assert_eq!(
+            pending.take().and_then(|item| item.callback_url),
+            first.get(1).cloned()
+        );
+        assert_eq!(
+            pending.take().and_then(|item| item.callback_url),
+            second.get(1).cloned()
+        );
+        assert!(pending.take().is_none());
     }
 }
 
@@ -4252,7 +4331,7 @@ fn main() {
     let startup_args = std::env::args().collect::<Vec<_>>();
     if let Some(callback_url) = find_desktop_auth_callback(&startup_args) {
         persist_startup_desktop_auth_callback(&callback_url);
-        persist_desktop_auth_smoke_receipt(&callback_url);
+        persist_desktop_auth_smoke_receipt(&callback_url, None, None);
     }
 
     // Windows Server runners commonly expose the OS reduced-motion preference
@@ -4297,10 +4376,11 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(
             move |app, argv, _cwd| {
                 if let Some(callback_url) = single_instance_desktop_auth.capture(&argv) {
-                    // Remove the stale login HWND before waking the renderer.
-                    // The Vue coordinator will show the next queued message
-                    // after it commits the returned desktop session.
-                    hide_mascot_system_notification_native_window(app);
+                    // Receipt is not authentication. Keep the login card visible
+                    // until Vue validates state + identity and commits the new
+                    // session; otherwise a malformed callback looks successful
+                    // for two minutes before the waiting card reappears.
+                    persist_desktop_auth_smoke_receipt(&callback_url, Some(true), None);
                     let _ = app.emit("desktop-auth-callback", callback_url);
                 }
 
@@ -4352,6 +4432,7 @@ fn main() {
             set_panel_activity,
             exit_app,
             open_or_focus_web_url,
+            record_desktop_auth_renderer_receipt,
             take_desktop_auth_callback
         ])
         .setup(move |app| {

@@ -12,6 +12,10 @@ import {
   type DesktopAuthCallbackError,
 } from './services/desktop-auth.service'
 import { onDesktopUnauthorized, type DesktopUnauthorizedContext } from './services/request'
+import {
+  recordConfirmedDesktopUnauthorized,
+  type DesktopUnauthorizedEvidence,
+} from './services/session-recovery.service'
 import { validateDesktopSession } from './services/session.service'
 import { getSysMessageFallback, resolveSysMessageContent } from './services/sys-message-content.service'
 import { sysMessageService } from './services/sys-message.service'
@@ -107,6 +111,7 @@ let removeDeepLinkListener: UnlistenFn | undefined
 let removeUnauthorizedListener: (() => void) | undefined
 let sessionValidationTimer: number | undefined
 let sessionRecoveryPromise: Promise<void> | undefined
+let sessionUnauthorizedEvidence: DesktopUnauthorizedEvidence | undefined
 let authCallbackTimer: number | undefined
 let sysMessageExpiryTimer: number | undefined
 let sysMessageEnrichmentGeneration = 0
@@ -719,12 +724,17 @@ function stopAuthCallbackTimer() {
   authCallbackTimer = undefined
 }
 
+function resetSessionUnauthorizedEvidence() {
+  sessionUnauthorizedEvidence = undefined
+}
+
 function clearDesktopSession(message: string, status: MascotStatus = 'remind') {
   websocketService.disconnect()
   sysMessageService.disconnect()
   userStore.clearSession()
   authPending.value = false
   stopAuthCallbackTimer()
+  resetSessionUnauthorizedEvidence()
   sysMessageEnrichmentGeneration += 1
   window.clearTimeout(sysMessageExpiryTimer)
   sysMessageExpiryTimer = undefined
@@ -771,7 +781,14 @@ async function confirmSessionAfterUnauthorized(context: DesktopUnauthorizedConte
     ) return
 
     if (result.status === 'unauthorized') {
-      handleSessionExpired({ token: validatedToken })
+      const confirmation = recordConfirmedDesktopUnauthorized(
+        sessionUnauthorizedEvidence,
+        validatedToken,
+      )
+      sessionUnauthorizedEvidence = confirmation.evidence
+      if (confirmation.shouldExpire) {
+        handleSessionExpired({ token: validatedToken })
+      }
       return
     }
 
@@ -779,6 +796,7 @@ async function confirmSessionAfterUnauthorized(context: DesktopUnauthorizedConte
     // the dedicated identity endpoint still accepts. Temporary validation
     // failures also keep the local session and will be retried periodically.
     if (result.status === 'valid') {
+      resetSessionUnauthorizedEvidence()
       userStore.setUserInfo(result.userInfo)
       connectDesktopSockets({ force: true })
     }
@@ -803,11 +821,14 @@ async function validateAndRestoreSession(options: { forceReconnect?: boolean } =
   ) return
 
   if (result.status === 'unauthorized') {
-    handleSessionExpired()
+    // A passive five-minute health probe is not user-visible proof that the
+    // desktop login expired. Keep the persisted session; a real protected API
+    // 401 must be confirmed twice before logout.
     return
   }
 
   if (result.status === 'valid') {
+    resetSessionUnauthorizedEvidence()
     userStore.setUserInfo(result.userInfo)
   }
 
@@ -844,7 +865,7 @@ async function startDesktopLogin() {
     // Elapsed time alone does not prove that login failed: browser protocol
     // prompts, page switching and enterprise endpoint protection can all delay
     // the handoff. Keep accepting the same state and offer a safe retry.
-    authErrorMessage.value = '仍在等待网页确认；页面关闭时可重新打开。'
+    authErrorMessage.value = '网页已登录不等于桌面授权完成；请回到刚打开的授权页点击确认。'
   }, AUTH_CALLBACK_REMINDER_DELAY)
 
   void hidePanelWindow()
@@ -954,6 +975,7 @@ onMounted(async () => {
         // 连续缩放中出现窗口尺寸与 WebView 渲染尺寸不同步。
         mascotStore.resetStatus()
         userStore.setSession(payload)
+        resetSessionUnauthorizedEvidence()
         authPending.value = false
         stopAuthCallbackTimer()
         authErrorMessage.value = ''

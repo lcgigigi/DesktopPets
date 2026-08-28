@@ -27,6 +27,7 @@ import {
   finishMascotNotificationCollapse,
   hideMascotSystemNotificationWindow,
   isMascotSystemNotificationReady,
+  openDesktopLogin,
   openExternal,
   setMascotSystemNotificationReady,
   showMascotSystemNotificationWindow,
@@ -56,6 +57,20 @@ describe('external window opening', () => {
     mocks.openUrl.mockResolvedValue(undefined)
 
     await expect(openExternal('https://workbench.example.com/calendar')).resolves.toBe(true)
+  })
+
+  it('opens the exact desktop authorization URL without best-effort tab reuse', async () => {
+    mocks.openUrl.mockResolvedValue(undefined)
+
+    await expect(openDesktopLogin('desktop-state')).resolves.toBe(true)
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith('open_or_focus_web_url', expect.anything())
+    expect(mocks.openUrl).toHaveBeenCalledOnce()
+    const openedUrl = new URL(mocks.openUrl.mock.calls[0]?.[0] as string)
+    expect(openedUrl.pathname).toBe('/login')
+    expect(openedUrl.searchParams.get('from')).toBe('desktop')
+    expect(openedUrl.searchParams.get('desktopCallback')).toBe('huali-ai-mascot://auth-callback')
+    expect(openedUrl.searchParams.get('state')).toBe('desktop-state')
   })
 
   it('returns false when native reuse, opener, and browser fallback all fail', async () => {
