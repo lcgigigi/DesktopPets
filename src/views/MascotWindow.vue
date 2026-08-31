@@ -7,6 +7,7 @@ import MascotAvatar from '../components/MascotAvatar.vue'
 import MascotBubble from '../components/MascotBubble.vue'
 import {
   MASCOT_NATIVE_DRAG_ENDED_EVENT,
+  MASCOT_NATIVE_HOVER_REVEALED_EVENT,
   MASCOT_NATIVE_REVEALED_EVENT,
   MASCOT_CONTEXT_MENU_VISIBILITY_EVENT,
   MASCOT_REVEAL_EVENT,
@@ -16,6 +17,7 @@ import {
   type PanelActivityPayload,
   finishMascotNotificationCollapse,
   hidePanelWindow,
+  openWorkbench,
   peekMascotWindow,
   revealMascotWindow,
   setMascotNotificationVisible,
@@ -35,6 +37,11 @@ import {
 import { mascotAnimationTiming, mascotWaitingInteractionMs } from '../utils/mascot-animation-timing'
 import { canOpenMascotTodoPanel } from '../utils/mascot-panel-access'
 import { shouldPauseMascotIdleHide } from '../utils/mascot-idle-policy'
+import {
+  MASCOT_DOUBLE_CLICK_MAX_INTERVAL_MS,
+  classifyMascotClickContinuation,
+  type MascotCompletedClick,
+} from '../utils/mascot-click-gesture'
 
 const props = defineProps<{
   needsAuth: boolean
@@ -43,6 +50,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   login: []
+  ready: []
 }>()
 
 const mascotStore = useMascotStore()
@@ -72,7 +80,6 @@ const previewAnimationState = requestedPreviewAnimation
 const isDragging = ref(false)
 const animationState = ref<MascotAnimationState>()
 const dragThreshold = 8
-const avatarSingleClickDelayMs = 280
 const idleHideDelayMs = 60 * 1000
 // Use the same authored clock for the sprite frames and the native-window
 // transition state. The contract test keeps these values aligned with Rust.
@@ -94,6 +101,8 @@ let dragState:
       pointerId: number
       startScreenX: number
       startScreenY: number
+      pressedAt: number
+      pointerType: string
       startedOnAvatar: boolean
       dragging: boolean
       nativeDragStarted: boolean
@@ -102,6 +111,7 @@ let dragState:
   | undefined
 let transientAnimationTimer: number | undefined
 let avatarSingleClickTimer: number | undefined
+let pendingAvatarClick: MascotCompletedClick | undefined
 let idleHideTimer: number | undefined
 let peekTransitionTimer: number | undefined
 let nativeDragIdleTimer: number | undefined
@@ -113,6 +123,7 @@ let removePanelVisibilityListener: UnlistenFn | undefined
 let removeWindowMovedListener: UnlistenFn | undefined
 let removeWindowScaleChangedListener: UnlistenFn | undefined
 let removeNativeDragEndedListener: UnlistenFn | undefined
+let removeNativeHoverRevealedListener: UnlistenFn | undefined
 let removeNativeRevealedListener: UnlistenFn | undefined
 let removeContextMenuVisibilityListener: UnlistenFn | undefined
 let nativeNotificationLayout = { visible: false, compact: false }
@@ -311,27 +322,47 @@ function startPeekReveal(moveWindow = true) {
   const reducedMotion = prefersReducedMotion()
   peekTransitionTimer = window.setTimeout(() => {
     peekTransition.value = undefined
+    refreshIdleHideSchedule()
   }, reducedMotion ? 0 : peekRevealDurationMs)
   if (moveWindow) void revealMascotWindow(reducedMotion)
   return true
 }
 
-function clearAvatarSingleClickTimer() {
+function clearAvatarClickSequence() {
   window.clearTimeout(avatarSingleClickTimer)
   avatarSingleClickTimer = undefined
+  pendingAvatarClick = undefined
 }
 
-function scheduleAvatarSingleClick() {
-  // A primary click has exactly one product meaning: open "一句话创建". Some
-  // Windows touchpads/WebView2 builds can deliver a second pointer completion
-  // for one physical click. Treat it as a duplicate instead of promoting it to
-  // the old double-click shortcut that opened the Web workbench.
-  if (avatarSingleClickTimer !== undefined) return
-
+function armAvatarSingleClick(click: MascotCompletedClick) {
+  pendingAvatarClick = click
   avatarSingleClickTimer = window.setTimeout(() => {
     avatarSingleClickTimer = undefined
+    pendingAvatarClick = undefined
     togglePanel()
-  }, avatarSingleClickDelayMs)
+  }, MASCOT_DOUBLE_CLICK_MAX_INTERVAL_MS)
+}
+
+function scheduleAvatarClick(click: MascotCompletedClick) {
+  if (!pendingAvatarClick) {
+    armAvatarSingleClick(click)
+    return
+  }
+
+  const continuation = classifyMascotClickContinuation(pendingAvatarClick, click)
+  if (continuation === 'duplicate') return
+  if (continuation === 'double') {
+    clearAvatarClickSequence()
+    void openWorkbench()
+    return
+  }
+
+  // The new press is outside the double-click envelope. Complete the first
+  // click now and arm this genuinely separate click instead of dropping either
+  // user action.
+  clearAvatarClickSequence()
+  togglePanel()
+  armAvatarSingleClick(click)
 }
 
 function dismissTransientOverlays() {
@@ -400,6 +431,8 @@ function handlePointerDown(event: PointerEvent) {
     pointerId: event.pointerId,
     startScreenX: event.screenX,
     startScreenY: event.screenY,
+    pressedAt: event.timeStamp,
+    pointerType: event.pointerType || 'mouse',
     startedOnAvatar,
     dragging: false,
     nativeDragStarted: false,
@@ -455,7 +488,7 @@ function handlePointerMove(event: PointerEvent) {
   dragState.lastScreenX = event.screenX
 
   const startedDragging = !dragState.dragging
-  if (startedDragging) clearAvatarSingleClickTimer()
+  if (startedDragging) clearAvatarClickSequence()
   dragState.dragging = true
   isDragging.value = true
   updateRunningMotion(startedDragging ? deltaX : incrementalDeltaX, startedDragging)
@@ -483,6 +516,12 @@ function finishPointer(event: PointerEvent) {
 
   const wasDragging = dragState.dragging
   const startedOnAvatar = dragState.startedOnAvatar
+  const completedClick: MascotCompletedClick = {
+    pressedAt: dragState.pressedAt,
+    screenX: dragState.startScreenX,
+    screenY: dragState.startScreenY,
+    pointerType: dragState.pointerType,
+  }
 
   if (wasDragging) {
     finishNativeDrag()
@@ -493,7 +532,7 @@ function finishPointer(event: PointerEvent) {
   isDragging.value = false
 
   if (startedOnAvatar) {
-    scheduleAvatarSingleClick()
+    scheduleAvatarClick(completedClick)
     return
   }
 
@@ -524,7 +563,7 @@ function cancelPointer(event: PointerEvent) {
 async function handleContextMenu(event: MouseEvent) {
   event.preventDefault()
   if (!(event.target instanceof Element) || !event.target.closest('.mascot-avatar')) return
-  clearAvatarSingleClickTimer()
+  clearAvatarClickSequence()
 
   if (isPeeked.value || peekTransition.value) {
     // A context menu needs a stable anchor immediately. Revealing without an
@@ -690,6 +729,9 @@ onMounted(async () => {
   removeNativeDragEndedListener = await listen(MASCOT_NATIVE_DRAG_ENDED_EVENT, () => {
     finishNativeDrag()
   })
+  removeNativeHoverRevealedListener = await listen(MASCOT_NATIVE_HOVER_REVEALED_EVENT, () => {
+    startPeekReveal(false)
+  })
   removeNativeRevealedListener = await listen(MASCOT_NATIVE_REVEALED_EVENT, () => {
     isPeeked.value = false
     peekTransition.value = undefined
@@ -726,6 +768,13 @@ onMounted(async () => {
     { force: true }
   )
   notificationCoordinatorReady = true
+  await nextTick()
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  })
+  // App.vue does not reveal the native HWND until pointer handlers, Tauri
+  // listeners and the collapsed WebView layout have all survived two paints.
+  emit('ready')
   scheduleIdleHide()
 })
 
@@ -737,7 +786,7 @@ onUnmounted(() => {
   window.clearTimeout(scaleChangeLayoutTimer)
   scaleChangeLayoutPending = false
   notificationRevealGeneration += 1
-  clearAvatarSingleClickTimer()
+  clearAvatarClickSequence()
   clearIdleHideTimer()
   window.removeEventListener(MASCOT_REVEAL_EVENT, handleExternalReveal)
   window.removeEventListener('pointerup', finishGlobalNativeDrag, true)
@@ -748,6 +797,7 @@ onUnmounted(() => {
   removeWindowMovedListener?.()
   removeWindowScaleChangedListener?.()
   removeNativeDragEndedListener?.()
+  removeNativeHoverRevealedListener?.()
   removeNativeRevealedListener?.()
   removeContextMenuVisibilityListener?.()
   void syncNativeNotificationLayout(false, false, { force: true })

@@ -92,6 +92,7 @@ const authErrorMessage = ref('')
 const SESSION_VALIDATION_INTERVAL = 5 * 60 * 1000
 const AUTH_CALLBACK_REMINDER_DELAY = 2 * 60 * 1000
 const TASK_DELIVERY_ACK_TIMEOUT = 1000
+const MASCOT_INTERACTION_READY_TIMEOUT = 4000
 let removeTaskListener: (() => void) | undefined
 let removeStatusListener: (() => void) | undefined
 let removeTrayListener: (() => void) | undefined
@@ -128,6 +129,31 @@ const deferredTaskEvents: TaskCreatedEvent[] = []
 const panelHasTask = ref(false)
 const panelSessionEpoch = ref<number | null>(null)
 let taskSessionEpoch = Date.now()
+let mascotInteractionReadyResolved = false
+let resolveMascotInteractionReady: (() => void) | undefined
+const mascotInteractionReady = new Promise<void>((resolve) => {
+  resolveMascotInteractionReady = resolve
+})
+
+function handleMascotInteractionReady() {
+  if (mascotInteractionReadyResolved) return
+  mascotInteractionReadyResolved = true
+  resolveMascotInteractionReady?.()
+  resolveMascotInteractionReady = undefined
+}
+
+async function waitForMascotInteractionReady() {
+  if (mascotInteractionReadyResolved) return
+
+  let timeout: number | undefined
+  await Promise.race([
+    mascotInteractionReady,
+    new Promise<void>((resolve) => {
+      timeout = window.setTimeout(resolve, MASCOT_INTERACTION_READY_TIMEOUT)
+    }),
+  ])
+  window.clearTimeout(timeout)
+}
 let awaitingTaskDelivery: PanelTaskDeliveredPayload | null = null
 let taskDeliveryRetryTimer: number | undefined
 let taskDeliveryFailureEventId = ''
@@ -1000,6 +1026,7 @@ onMounted(async () => {
     // mascot's own topmost window at its 120x104 collapsed bounds on startup so
     // transparent pixels cannot become a desktop-wide click interceptor.
     await setMascotNotificationVisible(false, false)
+    await waitForMascotInteractionReady()
     await showAssistant()
   }
 
@@ -1095,6 +1122,7 @@ onUnmounted(() => {
       :needs-auth="needsAuth"
       :sys-message="currentSysMessage"
       @login="startDesktopLogin"
+      @ready="handleMascotInteractionReady"
     />
     <MascotMenuWindow v-else-if="windowMode === 'mascot-menu'" />
     <MascotNotificationWindow v-else-if="windowMode === 'mascot-notification'" />

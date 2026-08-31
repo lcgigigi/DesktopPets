@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import unsignedV1047WorkflowSource from '../../.github/workflows/build-windows-msi-unsigned-v1047.yml?raw'
+import unsignedV1048WorkflowSource from '../../.github/workflows/build-windows-msi-unsigned-v1048.yml?raw'
 import visualSmokeSource from '../../scripts/windows-msi/Test-HualiAIWindowsVisualSmoke.ps1?raw'
 
 const FRAME_WIDTH = 120
@@ -115,7 +115,7 @@ function normalizedPowerShell() {
 }
 
 function normalizedWorkflow() {
-  return unsignedV1047WorkflowSource.replace(/\r\n?/g, '\n')
+  return unsignedV1048WorkflowSource.replace(/\r\n?/g, '\n')
 }
 
 function getWorkflowStep(source: string, name: string) {
@@ -325,6 +325,39 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     expect(cycle).toContain('clickThrough = $true')
   })
 
+  it('proves first-appearance hit testing and half-head hover reveal on the same HWND', () => {
+    const source = normalizedPowerShell()
+    const hoverStart = source.indexOf("-ArgumentList '--huali-visual-smoke-peek'")
+    const hoverEnd = source.indexOf('$report.checks.peekHoverReveal', hoverStart)
+    const hoverGate = source.slice(hoverStart, hoverEnd)
+
+    expect(source).toContain('$report.checks.firstAppearanceHitTesting')
+    expect(source).toContain('interactiveBeforeWarmup = $true')
+    expect(source).toContain('机器人首次出现时不可命中')
+    expect(hoverStart).toBeGreaterThanOrEqual(0)
+    expect(hoverEnd).toBeGreaterThan(hoverStart)
+    expect(hoverGate).toContain('SetCursorPos($peekHoverX, $peekAvatarPoint.Y)')
+    expect(hoverGate).not.toContain('SendMouseClick')
+    expect(hoverGate).toContain('RootWindowFromPoint(')
+    expect(source).toContain('hoverOnly = $true')
+    expect(source).toContain('sameHwnd = ([long]$revealedMascot.Handle -eq $mascotHandle)')
+  })
+
+  it('drives a real double-click through WebView2 and records the workbench action', () => {
+    const source = normalizedPowerShell()
+    const doubleClickStart = source.indexOf('$workbenchReceiptPath = Join-Path')
+    const doubleClickEnd = source.indexOf('$report.checks.doubleClickWorkbench', doubleClickStart)
+    const doubleClickGate = source.slice(doubleClickStart, doubleClickEnd)
+
+    expect(doubleClickStart).toBeGreaterThanOrEqual(0)
+    expect(doubleClickEnd).toBeGreaterThan(doubleClickStart)
+    expect(doubleClickGate.match(/-Button Left/g)).toHaveLength(2)
+    expect(doubleClickGate).toContain('Start-Sleep -Milliseconds 140')
+    expect(doubleClickGate).toContain('workbenchOpened -ne $true')
+    expect(source).toContain('browserSuppressedForGate = $true')
+    expect(source).toContain('receiptContainsUrl = $false')
+  })
+
   it('samples the downward menu shadow separately from the flipped pointer', () => {
     const source = normalizedPowerShell()
     const metricsStart = source.indexOf('function Get-MenuVisualMetrics')
@@ -342,7 +375,7 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
   })
 })
 
-describe('Windows v1.0.47 workflow visual-gate compiler contract', () => {
+describe('Windows v1.0.48 workflow visual-gate compiler contract', () => {
   it('compiles the gate in PowerShell 7 and 5.1 before Node and Rust setup', () => {
     const workflow = normalizedWorkflow()
     const powerShell7 = getWorkflowStep(workflow, 'Compile visual gate with PowerShell 7')
@@ -376,10 +409,10 @@ describe('Windows v1.0.47 workflow visual-gate compiler contract', () => {
     expect(upload.start).toBeGreaterThan(deployment.start)
     expect(deployment.source).toContain('-ValidateDefaultLaunch `')
     expect(deployment.source).toContain('-RunVisualSmoke `')
-    expect(deployment.source).toContain("-ExpectedVersion '1.0.47' `")
-    expect(deployment.source).toContain("-PreviousVersion '1.0.46' `")
-    expect(workflow).toContain('run-id: 33057135520')
-    expect(workflow).toContain('2c4aad23f8f77ae15e9c0b3b288214a226d42e3f38d7770a0485bb315f42df3d')
+    expect(deployment.source).toContain("-ExpectedVersion '1.0.48' `")
+    expect(deployment.source).toContain("-PreviousVersion '1.0.47' `")
+    expect(workflow).toContain('run-id: 33157410163')
+    expect(workflow).toContain('2256cd94b05eb9c55f1de28d574a2065d95c285f148b36c390560eb82bec4906')
   })
 })
 

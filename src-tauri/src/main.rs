@@ -33,6 +33,8 @@ const MASCOT_PEEK_VISIBLE_WIDTH: f64 = 84.0;
 const MASCOT_PEEK_ANIMATION_DURATION_MS: u64 = 560;
 const MASCOT_REVEAL_ANIMATION_DURATION_MS: u64 = 480;
 const MASCOT_DOCK_ANIMATION_FRAME_MS: u64 = 12;
+#[cfg(windows)]
+const MASCOT_PEEK_HOVER_POLL_INTERVAL_MS: u64 = 40;
 // WebView2 can report a fractional logical position after a DPI-aware resize.
 // Treat that sub-pixel drift as resize noise instead of a user drag.
 #[cfg(any(not(windows), test))]
@@ -60,6 +62,9 @@ const PANEL_VISIBILITY_EVENT: &str = "huali:panel-visibility";
 const MASCOT_CONTEXT_MENU_VISIBILITY_EVENT: &str = "mascot-context-menu-visibility";
 const MASCOT_SYSTEM_NOTIFICATION_READY_EVENT: &str = "mascot-system-notification-ready";
 const MASCOT_NATIVE_REVEALED_EVENT: &str = "mascot-native-revealed";
+#[cfg(windows)]
+const MASCOT_NATIVE_HOVER_REVEALED_EVENT: &str = "mascot-native-hover-revealed";
+const VISUAL_SMOKE_PEEK_ARGUMENT: &str = "--huali-visual-smoke-peek";
 
 #[derive(Clone, Default)]
 struct PendingDesktopAuthCallback(Arc<Mutex<VecDeque<NativeDesktopAuthCallback>>>);
@@ -470,6 +475,9 @@ impl MascotContextMenuState {
 #[derive(Clone, Default)]
 struct MascotDragMonitor(Arc<AtomicU64>);
 
+#[derive(Clone, Default)]
+struct MascotPeekHoverMonitor(Arc<AtomicU64>);
+
 #[derive(Clone, Copy, Default)]
 struct PanelActivity {
     has_text: bool,
@@ -521,6 +529,16 @@ impl PanelActivityState {
 impl MascotDragMonitor {
     fn start(&self) -> u64 {
         self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+}
+
+impl MascotPeekHoverMonitor {
+    fn start(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn cancel(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -833,6 +851,38 @@ fn show_interactive_window(window: &tauri::WebviewWindow, activate: bool) -> boo
         return false;
     }
     true
+}
+
+#[cfg(windows)]
+fn schedule_mascot_interactivity_recovery(
+    window: tauri::WebviewWindow,
+    interaction_generation: MascotPeekHoverMonitor,
+    token: u64,
+) {
+    thread::spawn(move || {
+        for delay in [120_u64, 300_u64] {
+            thread::sleep(Duration::from_millis(delay));
+            if interaction_generation.0.load(Ordering::SeqCst) != token {
+                return;
+            }
+            if !matches!(window.is_visible(), Ok(true)) {
+                return;
+            }
+            // On a cold WebView2 start, the hosted child HWND can finish its
+            // style transition after the Tauri show call. Reassert hit testing
+            // while the same mascot HWND is still visible; a user hide cancels
+            // this recovery naturally through the visibility check above.
+            let _ = window.set_ignore_cursor_events(false);
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn schedule_mascot_interactivity_recovery(
+    _window: tauri::WebviewWindow,
+    _interaction_generation: MascotPeekHoverMonitor,
+    _token: u64,
+) {
 }
 
 fn mascot_logical_size(mascot: &tauri::WebviewWindow) -> (f64, f64) {
@@ -1245,11 +1295,11 @@ mod mascot_position_tests {
         mascot_context_menu_physical_geometry, mascot_dock_eased_progress,
         mascot_dock_physical_target, mascot_dock_x, nearest_dock_side, notification_drag_delta,
         notification_physical_geometry, panel_physical_geometry, peeked_dock_side,
-        system_notification_physical_geometry, LogicalPosition, LogicalSize,
-        MascotContextMenuPlacement, MascotContextMenuState, MascotDockSide,
-        MascotSystemNotificationState, PanelActivityState, PanelLayoutState, PhysicalPosition,
-        PhysicalRect, PhysicalSize, MASCOT_AUTH_NOTIFICATION_HEIGHT, MASCOT_AVATAR_HEIGHT,
-        MASCOT_AVATAR_WIDTH, MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM,
+        physical_rect_contains, physical_rect_intersection, system_notification_physical_geometry,
+        LogicalPosition, LogicalSize, MascotContextMenuPlacement, MascotContextMenuState,
+        MascotDockSide, MascotSystemNotificationState, PanelActivityState, PanelLayoutState,
+        PhysicalPosition, PhysicalRect, PhysicalSize, MASCOT_AUTH_NOTIFICATION_HEIGHT,
+        MASCOT_AVATAR_HEIGHT, MASCOT_AVATAR_WIDTH, MASCOT_CONTEXT_MENU_ABOVE_VISIBLE_BOTTOM,
         MASCOT_CONTEXT_MENU_BELOW_VISIBLE_TOP, MASCOT_CONTEXT_MENU_GAP, MASCOT_CONTEXT_MENU_HEIGHT,
         MASCOT_CONTEXT_MENU_TAIL_MAX, MASCOT_CONTEXT_MENU_TAIL_MIN, MASCOT_CONTEXT_MENU_WIDTH,
         MASCOT_HEIGHT, MASCOT_MESSAGE_HEIGHT, MASCOT_MESSAGE_WIDTH,
@@ -1296,6 +1346,37 @@ mod mascot_position_tests {
             peeked_dock_side(1824.0, 168.0, 0.0, 1920.0),
             Some(MascotDockSide::Right)
         );
+    }
+
+    #[test]
+    fn hover_hit_testing_uses_only_the_avatar_pixels_visible_inside_the_work_area() {
+        let work_area = PhysicalRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        let right_peeked_avatar = PhysicalRect {
+            x: 1848,
+            y: 820,
+            width: 96,
+            height: 88,
+        };
+        let visible = physical_rect_intersection(right_peeked_avatar, work_area)
+            .expect("the half-head must retain a visible hover target");
+
+        assert_eq!(
+            visible,
+            PhysicalRect {
+                x: 1848,
+                y: 820,
+                width: 72,
+                height: 88
+            }
+        );
+        assert!(physical_rect_contains(visible, 1900, 860));
+        assert!(!physical_rect_contains(visible, 1830, 860));
+        assert!(!physical_rect_contains(visible, 1920, 860));
     }
 
     #[test]
@@ -2862,6 +2943,36 @@ struct PhysicalRect {
 }
 
 #[cfg(any(windows, test))]
+fn physical_rect_intersection(first: PhysicalRect, second: PhysicalRect) -> Option<PhysicalRect> {
+    let left = i64::from(first.x).max(i64::from(second.x));
+    let top = i64::from(first.y).max(i64::from(second.y));
+    let right = (i64::from(first.x) + i64::from(first.width))
+        .min(i64::from(second.x) + i64::from(second.width));
+    let bottom = (i64::from(first.y) + i64::from(first.height))
+        .min(i64::from(second.y) + i64::from(second.height));
+    if right <= left || bottom <= top {
+        return None;
+    }
+
+    Some(PhysicalRect {
+        x: left.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        y: top.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        width: (right - left).min(i64::from(u32::MAX)) as u32,
+        height: (bottom - top).min(i64::from(u32::MAX)) as u32,
+    })
+}
+
+#[cfg(any(windows, test))]
+fn physical_rect_contains(rect: PhysicalRect, x: i32, y: i32) -> bool {
+    let x = i64::from(x);
+    let y = i64::from(y);
+    x >= i64::from(rect.x)
+        && x < i64::from(rect.x) + i64::from(rect.width)
+        && y >= i64::from(rect.y)
+        && y < i64::from(rect.y) + i64::from(rect.height)
+}
+
+#[cfg(any(windows, test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PanelPhysicalGeometry {
     position: PhysicalPosition<i32>,
@@ -3147,6 +3258,89 @@ fn mascot_avatar_physical_rect(
         height: logical_to_physical(MASCOT_AVATAR_HEIGHT, scale).clamp(1, i64::from(u32::MAX))
             as u32,
     }
+}
+
+#[cfg(windows)]
+fn monitor_mascot_peek_hover(
+    app: tauri::AppHandle,
+    hover_monitor: MascotPeekHoverMonitor,
+    motion: MascotDockMotion,
+    token: u64,
+    reduced_motion: bool,
+) {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    thread::spawn(move || {
+        let started_at = Instant::now();
+        let arm_after = Duration::from_millis(if reduced_motion {
+            MASCOT_PEEK_HOVER_POLL_INTERVAL_MS
+        } else {
+            MASCOT_PEEK_ANIMATION_DURATION_MS
+        });
+
+        loop {
+            if hover_monitor.0.load(Ordering::SeqCst) != token {
+                return;
+            }
+            if started_at.elapsed() < arm_after {
+                thread::sleep(Duration::from_millis(MASCOT_PEEK_HOVER_POLL_INTERVAL_MS));
+                continue;
+            }
+
+            let Some(window) = app.get_webview_window("mascot") else {
+                return;
+            };
+            if !matches!(window.is_visible(), Ok(true)) {
+                return;
+            }
+            let (width, height) = mascot_logical_size(&window);
+            if !mascot_is_partly_offscreen(&window, width) {
+                // A newer show/reveal path restored the HWND without needing
+                // this monitor. Do not let the old peek generation revive it.
+                return;
+            }
+
+            let Ok(scale) = window.scale_factor() else {
+                return;
+            };
+            let Ok(client_origin) = mascot_client_origin_physical(&window) else {
+                return;
+            };
+            let Ok(client_size) = window.inner_size() else {
+                return;
+            };
+            let Some(native_monitor) = window.current_monitor().ok().flatten() else {
+                return;
+            };
+            let work_area = native_monitor.work_area();
+            let avatar = mascot_avatar_physical_rect(client_origin, client_size, scale);
+            let visible_avatar = physical_rect_intersection(
+                avatar,
+                PhysicalRect {
+                    x: work_area.position.x,
+                    y: work_area.position.y,
+                    width: work_area.size.width,
+                    height: work_area.size.height,
+                },
+            );
+            let mut cursor = POINT { x: 0, y: 0 };
+            if visible_avatar.is_some_and(|rect| {
+                (unsafe { GetCursorPos(&mut cursor) }) != 0
+                    && physical_rect_contains(rect, cursor.x, cursor.y)
+            }) {
+                hover_monitor.cancel();
+                if !show_interactive_window(&window, false) {
+                    return;
+                }
+                animate_mascot_dock(window, motion, width, height, false, reduced_motion);
+                let _ = app.emit_to("mascot", MASCOT_NATIVE_HOVER_REVEALED_EVENT, ());
+                return;
+            }
+
+            thread::sleep(Duration::from_millis(MASCOT_PEEK_HOVER_POLL_INTERVAL_MS));
+        }
+    });
 }
 
 #[cfg(windows)]
@@ -3708,7 +3902,11 @@ fn hide_mascot_system_notification_window(
 }
 
 #[tauri::command]
-fn hide_main_window(app: tauri::AppHandle) {
+fn hide_main_window(
+    app: tauri::AppHandle,
+    hover_monitor: tauri::State<'_, MascotPeekHoverMonitor>,
+) {
+    hover_monitor.cancel();
     hide_mascot_context_menu_window(&app);
     hide_mascot_system_notification_native_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
@@ -3722,16 +3920,27 @@ fn show_main_window(
     app: tauri::AppHandle,
     motion: tauri::State<'_, MascotDockMotion>,
     initial_placement: tauri::State<'_, InitialMascotPlacement>,
-) {
+    hover_monitor: tauri::State<'_, MascotPeekHoverMonitor>,
+) -> bool {
+    let interaction_token = hover_monitor.start();
     hide_mascot_context_menu_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
         restore_staged_mascot_position(&app, &window);
         ensure_initial_mascot_placement(&window, initial_placement.inner());
         let (width, height) = mascot_logical_size(&window);
         restore_mascot_if_peeked(&window, motion.inner(), width, height);
+        if !show_interactive_window(&window, true) {
+            return false;
+        }
         let _ = app.emit_to("mascot", MASCOT_NATIVE_REVEALED_EVENT, ());
-        let _ = show_interactive_window(&window, true);
+        schedule_mascot_interactivity_recovery(
+            window,
+            hover_monitor.inner().clone(),
+            interaction_token,
+        );
+        return true;
     }
+    false
 }
 
 #[tauri::command]
@@ -3739,7 +3948,9 @@ fn show_notification_window(
     app: tauri::AppHandle,
     motion: tauri::State<'_, MascotDockMotion>,
     initial_placement: tauri::State<'_, InitialMascotPlacement>,
+    hover_monitor: tauri::State<'_, MascotPeekHoverMonitor>,
 ) -> bool {
+    hover_monitor.cancel();
     hide_mascot_context_menu_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
         // A reminder should become visible without stealing focus from the
@@ -3807,14 +4018,14 @@ fn finish_mascot_notification_collapse(
     true
 }
 
-#[tauri::command]
-fn peek_mascot_window(
-    app: tauri::AppHandle,
-    motion: tauri::State<'_, MascotDockMotion>,
-    panel_activity: tauri::State<'_, PanelActivityState>,
+fn start_mascot_peek(
+    app: &tauri::AppHandle,
+    motion: &MascotDockMotion,
+    hover_monitor: &MascotPeekHoverMonitor,
+    panel_activity: &PanelActivityState,
     reduced_motion: bool,
 ) -> Option<String> {
-    hide_mascot_context_menu_window(&app);
+    hide_mascot_context_menu_window(app);
     if let Some(window) = app.get_webview_window("mascot") {
         let (width, height) = mascot_logical_size(&window);
         // Expanded reminders and menus must remain fully visible until handled.
@@ -3826,15 +4037,26 @@ fn peek_mascot_window(
                 return None;
             }
         }
-        hide_panel_and_notify(&app);
+        hide_panel_and_notify(app);
         let side = animate_mascot_dock(
-            window,
-            motion.inner().clone(),
+            window.clone(),
+            motion.clone(),
             MASCOT_WIDTH,
             MASCOT_HEIGHT,
             true,
             reduced_motion,
         )?;
+        let token = hover_monitor.start();
+        #[cfg(windows)]
+        monitor_mascot_peek_hover(
+            app.clone(),
+            hover_monitor.clone(),
+            motion.clone(),
+            token,
+            reduced_motion,
+        );
+        #[cfg(not(windows))]
+        let _ = token;
         return Some(side.as_str().to_string());
     }
 
@@ -3842,11 +4064,31 @@ fn peek_mascot_window(
 }
 
 #[tauri::command]
+fn peek_mascot_window(
+    app: tauri::AppHandle,
+    motion: tauri::State<'_, MascotDockMotion>,
+    hover_monitor: tauri::State<'_, MascotPeekHoverMonitor>,
+    panel_activity: tauri::State<'_, PanelActivityState>,
+    reduced_motion: bool,
+) -> Option<String> {
+    hide_mascot_context_menu_window(&app);
+    start_mascot_peek(
+        &app,
+        motion.inner(),
+        hover_monitor.inner(),
+        panel_activity.inner(),
+        reduced_motion,
+    )
+}
+
+#[tauri::command]
 fn reveal_mascot_window(
     app: tauri::AppHandle,
     motion: tauri::State<'_, MascotDockMotion>,
+    hover_monitor: tauri::State<'_, MascotPeekHoverMonitor>,
     reduced_motion: bool,
 ) {
+    hover_monitor.cancel();
     hide_mascot_context_menu_window(&app);
     if let Some(window) = app.get_webview_window("mascot") {
         let (width, height) = mascot_logical_size(&window);
@@ -3868,7 +4110,9 @@ fn reveal_mascot_window(
 fn start_mascot_drag(
     app: tauri::AppHandle,
     monitor: tauri::State<'_, MascotDragMonitor>,
+    hover_monitor: tauri::State<'_, MascotPeekHoverMonitor>,
 ) -> Result<(), String> {
+    hover_monitor.cancel();
     hide_mascot_context_menu_window(&app);
     let window = app
         .get_webview_window("mascot")
@@ -3889,7 +4133,9 @@ fn toggle_panel_window(
     app: tauri::AppHandle,
     motion: tauri::State<'_, MascotDockMotion>,
     panel_layout: tauri::State<'_, PanelLayoutState>,
+    hover_monitor: tauri::State<'_, MascotPeekHoverMonitor>,
 ) -> bool {
+    hover_monitor.cancel();
     hide_mascot_context_menu_window(&app);
     if let (Some(panel), Some(mascot)) = (
         app.get_webview_window("panel"),
@@ -3922,8 +4168,10 @@ fn show_panel_window(
     app: tauri::AppHandle,
     motion: tauri::State<'_, MascotDockMotion>,
     panel_layout: tauri::State<'_, PanelLayoutState>,
+    hover_monitor: tauri::State<'_, MascotPeekHoverMonitor>,
     focus: Option<bool>,
 ) -> bool {
+    hover_monitor.cancel();
     hide_mascot_context_menu_window(&app);
     if let (Some(panel), Some(mascot)) = (
         app.get_webview_window("panel"),
@@ -3971,12 +4219,14 @@ fn set_mascot_notification_visible(
     motion: tauri::State<'_, MascotDockMotion>,
     layout_state: tauri::State<'_, MascotNotificationLayoutState>,
     initial_placement: tauri::State<'_, InitialMascotPlacement>,
+    hover_monitor: tauri::State<'_, MascotPeekHoverMonitor>,
     visible: bool,
     compact: Option<bool>,
     reveal: Option<bool>,
     reduced_motion: Option<bool>,
     hide_during_resize: Option<bool>,
 ) -> bool {
+    hover_monitor.cancel();
     if visible {
         hide_mascot_context_menu_window(&app);
     }
@@ -4102,6 +4352,31 @@ fn exit_app(app: tauri::AppHandle) {
 
 fn is_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
+}
+
+#[cfg(windows)]
+fn record_visual_smoke_workbench_open(url: &str) -> bool {
+    if !matches!(
+        std::env::var("HUALI_AI_VISUAL_SMOKE_FORCE_MOTION").as_deref(),
+        Ok("1")
+    ) || !url
+        .split('?')
+        .next()
+        .is_some_and(|path| path.ends_with("/workbench"))
+    {
+        return false;
+    }
+
+    // The interaction gate needs proof that the real pointer sequence reached
+    // the workbench command, but it must never persist the URL or user fields.
+    let receipt = serde_json::json!({ "workbenchOpened": true });
+    let path = std::env::temp_dir().join(format!(
+        "huali-ai-workbench-smoke-{}.json",
+        std::process::id()
+    ));
+    serde_json::to_vec(&receipt)
+        .ok()
+        .is_some_and(|serialized| fs::write(path, serialized).is_ok())
 }
 
 #[cfg(target_os = "macos")]
@@ -4322,6 +4597,11 @@ async fn open_or_focus_web_url(url: String, match_url: String) -> bool {
         return false;
     }
 
+    #[cfg(windows)]
+    if record_visual_smoke_workbench_open(&url) {
+        return true;
+    }
+
     tauri::async_runtime::spawn_blocking(move || focus_existing_browser_tab(&url, &match_url))
         .await
         .unwrap_or(false)
@@ -4345,6 +4625,8 @@ fn main() {
         std::env::var("HUALI_AI_VISUAL_SMOKE_FORCE_MOTION").as_deref(),
         Ok("1")
     );
+    #[cfg(not(windows))]
+    let visual_smoke_force_motion = false;
     #[cfg(windows)]
     let context = {
         let mut context = tauri::generate_context!();
@@ -4384,7 +4666,24 @@ fn main() {
                     let _ = app.emit("desktop-auth-callback", callback_url);
                 }
 
+                if visual_smoke_force_motion
+                    && argv.iter().any(|arg| arg == VISUAL_SMOKE_PEEK_ARGUMENT)
+                {
+                    let motion = app.state::<MascotDockMotion>();
+                    let hover_monitor = app.state::<MascotPeekHoverMonitor>();
+                    let panel_activity = app.state::<PanelActivityState>();
+                    let _ = start_mascot_peek(
+                        app,
+                        motion.inner(),
+                        hover_monitor.inner(),
+                        panel_activity.inner(),
+                        false,
+                    );
+                    return;
+                }
+
                 if let Some(window) = app.get_webview_window("mascot") {
+                    app.state::<MascotPeekHoverMonitor>().cancel();
                     restore_staged_mascot_position(app, &window);
                     let initial_placement = app.state::<InitialMascotPlacement>();
                     ensure_initial_mascot_placement(&window, initial_placement.inner());
@@ -4405,6 +4704,7 @@ fn main() {
         .manage(mascot_notification_layout_state())
         .manage(MascotContextMenuState::default())
         .manage(MascotDragMonitor::default())
+        .manage(MascotPeekHoverMonitor::default())
         .manage(PanelActivityState::default())
         .manage(PanelLayoutState::default())
         .invoke_handler(tauri::generate_handler![
@@ -4469,6 +4769,7 @@ fn main() {
                 window.on_window_event(move |event| match event {
                     tauri::WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
+                        close_app.state::<MascotPeekHoverMonitor>().cancel();
                         hide_mascot_context_menu_window(&close_app);
                         hide_mascot_system_notification_native_window(&close_app);
                         let _ = hide_transparent_window_safely(&close_window);
@@ -4571,6 +4872,7 @@ fn main() {
                     }
                     "show" => {
                         hide_mascot_context_menu_window(app);
+                        app.state::<MascotPeekHoverMonitor>().cancel();
                         if let Some(window) = app.get_webview_window("mascot") {
                             restore_staged_mascot_position(app, &window);
                             let initial_placement = app.state::<InitialMascotPlacement>();
@@ -4584,6 +4886,7 @@ fn main() {
                     }
                     "hide" => {
                         hide_mascot_context_menu_window(app);
+                        app.state::<MascotPeekHoverMonitor>().cancel();
                         hide_mascot_system_notification_native_window(app);
                         if let Some(window) = app.get_webview_window("mascot") {
                             let _ = hide_transparent_window_safely(&window);

@@ -149,6 +149,11 @@ describe('notification and task production contracts', () => {
       'function togglePanel()',
       'function playTransientAnimation',
     )
+    const mascotClick = section(
+      mascotWindowSource,
+      'function scheduleAvatarClick',
+      'function dismissTransientOverlays',
+    )
 
     expectInOrder(
       confirmation,
@@ -175,8 +180,14 @@ describe('notification and task production contracts', () => {
       'connectDesktopSockets({ force: true })',
     )
     expectInOrder(mascotToggle, 'if (props.needsAuth)', "emit('login')", 'canOpenMascotTodoPanel(false')
-    expect(mascotWindowSource).toContain('if (avatarSingleClickTimer !== undefined) return')
-    expect(mascotWindowSource).not.toContain('void openWorkbench()')
+    expectInOrder(
+      mascotClick,
+      'classifyMascotClickContinuation(pendingAvatarClick, click)',
+      "continuation === 'duplicate'",
+      "continuation === 'double'",
+      'clearAvatarClickSequence()',
+      'void openWorkbench()',
+    )
     expect(appSource).toContain('@login="startDesktopLogin"')
     expect(appSource).toContain('const AUTH_CALLBACK_REMINDER_DELAY = 2 * 60 * 1000')
     expect(appSource).toContain('const state = getOrCreateDesktopAuthState()')
@@ -308,6 +319,9 @@ describe('notification and task production contracts', () => {
     expect(rustSource).toContain('const MASCOT_AUTH_NOTIFICATION_HEIGHT: f64 = 192.0;')
     expect(mascotResize).toContain('let compact = visible')
     expect(startup).toContain('await setMascotNotificationVisible(false, false)')
+    expect(startup).toContain('await waitForMascotInteractionReady()')
+    expect(appSource).toContain('@ready="handleMascotInteractionReady"')
+    expect(mascotWindowSource).toContain("emit('ready')")
     expect(startup).not.toContain("请先登录后接收消息")
     expect(nativeShow).toContain('get_webview_window("mascot-notification")')
     expect(nativeShow).toContain('position_mascot_system_notification_window')
@@ -368,6 +382,42 @@ describe('notification and task production contracts', () => {
     expect(mascotWindowSource).toContain('const peekRevealDurationMs = mascotAnimationTiming.revealing.durationMs')
     expect(rustSource).toContain('const MASCOT_PEEK_ANIMATION_DURATION_MS: u64 = 560;')
     expect(rustSource).toContain('const MASCOT_REVEAL_ANIMATION_DURATION_MS: u64 = 480;')
+    expect(rustSource).toContain('fn monitor_mascot_peek_hover(')
+    expect(rustSource).toContain('GetCursorPos(&mut cursor)')
+    expect(rustSource).toContain('physical_rect_intersection(')
+    expect(rustSource).toContain('MASCOT_NATIVE_HOVER_REVEALED_EVENT')
+    expect(mascotWindowSource).toContain('listen(MASCOT_NATIVE_HOVER_REVEALED_EVENT')
+    expect(mascotWindowSource).toContain('startPeekReveal(false)')
+  })
+
+  it('reveals the first mascot HWND only after renderer readiness and reasserts hit testing', () => {
+    const nativeShow = section(
+      rustSource,
+      'fn show_main_window(',
+      '#[tauri::command]\nfn show_notification_window',
+    )
+    const rendererReady = section(
+      mascotWindowSource,
+      'onMounted(async () =>',
+      'onUnmounted(() =>',
+    )
+
+    expectInOrder(
+      rendererReady,
+      'await syncNativeNotificationLayout(',
+      'notificationCoordinatorReady = true',
+      'await nextTick()',
+      'requestAnimationFrame(() => requestAnimationFrame(() => resolve()))',
+      "emit('ready')",
+    )
+    expectInOrder(
+      nativeShow,
+      'show_interactive_window(&window, true)',
+      'MASCOT_NATIVE_REVEALED_EVENT',
+      'schedule_mascot_interactivity_recovery(',
+      'return true',
+    )
+    expect(windowServiceSource).toContain("invoke<boolean>('show_main_window')")
   })
 
   it('drops stale reminders and schedules the nearest 30-minute expiry', () => {

@@ -9,6 +9,7 @@ import { storage } from '../utils/storage'
 export const MASCOT_REVEAL_EVENT = 'huali:mascot-reveal'
 export const MASCOT_NATIVE_DRAG_ENDED_EVENT = 'mascot-native-drag-ended'
 export const MASCOT_NATIVE_REVEALED_EVENT = 'mascot-native-revealed'
+export const MASCOT_NATIVE_HOVER_REVEALED_EVENT = 'mascot-native-hover-revealed'
 export const PANEL_REVEAL_EVENT = 'huali:panel-reveal'
 export const PANEL_ACTIVITY_EVENT = 'huali:panel-activity'
 export const PANEL_VISIBILITY_EVENT = 'huali:panel-visibility'
@@ -287,13 +288,20 @@ export async function hideMascotSystemNotificationWindow(clientGeneration?: numb
   }
 }
 
-export async function showAssistant() {
+export async function showAssistant(): Promise<boolean> {
   announceMascotReveal()
-  try {
-    await invoke('show_main_window')
-  } catch {
-    return
+  for (const retryDelay of [0, 100, 300]) {
+    if (retryDelay > 0) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, retryDelay))
+    }
+    try {
+      if (await invoke<boolean>('show_main_window')) return true
+    } catch {
+      // A first-show WebView2 transition can race native window creation on a
+      // cold machine. Retry the same idempotent show before reporting failure.
+    }
   }
+  return false
 }
 
 export async function showNotificationWindow(): Promise<boolean> {

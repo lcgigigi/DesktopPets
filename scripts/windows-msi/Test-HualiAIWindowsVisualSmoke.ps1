@@ -1275,6 +1275,21 @@ try {
     mascotLogicalHeight = $mascotLogicalHeight
     helperHandlesExcluded = $menuExcludedHandles.Count - 1
   }
+  $startupAvatarPoint = Get-AvatarClickPoint -MascotWindow $mascotBefore -Scale $scale
+  $startupHitRoot = [HualiVisualSmokeNative]::RootWindowFromPoint(
+    $startupAvatarPoint.X,
+    $startupAvatarPoint.Y
+  )
+  if ($startupHitRoot -ne $mascotHandle) {
+    throw "机器人首次出现时不可命中：实际 HWND=$startupHitRoot，预期 HWND=$mascotHandle。"
+  }
+  $report.checks.firstAppearanceHitTesting = [ordered]@{
+    x = $startupAvatarPoint.X
+    y = $startupAvatarPoint.Y
+    hitTestRoot = $startupHitRoot
+    mascotRoot = $mascotHandle
+    interactiveBeforeWarmup = $true
+  }
   Save-ScreenCapture -FileName '01-startup-login-card.png' | Out-Null
   $animationRegionWidth = [int][Math]::Round(120 * $scale)
   $animationRegionHeight = [int][Math]::Round(104 * $scale)
@@ -1348,15 +1363,48 @@ try {
   $report.motionValidation.animationProgressionObserved = $true
 
   $avatarPoint = Get-AvatarClickPoint -MascotWindow $mascotBefore -Scale $scale
-  # Notifications deliberately appear without stealing focus. Give the first
-  # click to the WebView, then send the real context click before the 280 ms
-  # single-click timer fires; the context handler cancels that timer.
+  # Exercise the real WebView pointer path twice. The visual-smoke-only native
+  # receipt records no URL or identity fields; it proves that double-click
+  # reached openWorkbench without launching a browser on the runner.
+  $workbenchReceiptPath = Join-Path `
+    ([IO.Path]::GetTempPath()) `
+    "huali-ai-workbench-smoke-$($process.Id).json"
+  if (Test-Path -LiteralPath $workbenchReceiptPath) {
+    Remove-Item -LiteralPath $workbenchReceiptPath -Force
+  }
   Invoke-MouseClick `
     -X $avatarPoint.X `
     -Y $avatarPoint.Y `
     -Button Left `
     -ExpectedRootHandle $mascotHandle
-  Start-Sleep -Milliseconds 100
+  Start-Sleep -Milliseconds 140
+  Invoke-MouseClick `
+    -X $avatarPoint.X `
+    -Y $avatarPoint.Y `
+    -Button Left `
+    -ExpectedRootHandle $mascotHandle
+  $workbenchReceiptDeadline = [DateTime]::UtcNow.AddSeconds(5)
+  while (-not (Test-Path -LiteralPath $workbenchReceiptPath) -and
+      [DateTime]::UtcNow -lt $workbenchReceiptDeadline) {
+    Start-Sleep -Milliseconds 100
+  }
+  if (-not (Test-Path -LiteralPath $workbenchReceiptPath)) {
+    throw '双击机器人后没有到达打开 Web 工作台动作。'
+  }
+  $workbenchReceipt = Get-Content -LiteralPath $workbenchReceiptPath -Raw | ConvertFrom-Json
+  if ($workbenchReceipt.workbenchOpened -ne $true) {
+    throw '双击工作台回执内容无效。'
+  }
+  Remove-Item -LiteralPath $workbenchReceiptPath -Force
+  $report.checks.doubleClickWorkbench = [ordered]@{
+    firstIntervalMs = 140
+    workbenchOpened = $true
+    browserSuppressedForGate = $true
+    receiptContainsUrl = $false
+  }
+
+  # Right-click must work immediately after the double-click flow and still use
+  # the same persistent mascot HWND.
   Invoke-MouseClick `
     -X $avatarPoint.X `
     -Y $avatarPoint.Y `
@@ -1545,6 +1593,66 @@ try {
     allHiddenStatesClickThrough = $true
     details = $notificationCycleChecks
   }
+
+  # Trigger the production native peek path through the existing single-instance
+  # process, then move (but do not click) the cursor onto the visible half-head.
+  # The same fixed HWND must return fully inside the work area without relying
+  # on a WebView pointerenter event.
+  $peekWorkArea = Get-MonitorWorkArea -WindowHandle $mascotHandle
+  $peekTrigger = Start-Process `
+    -FilePath $resolvedExecutable `
+    -ArgumentList '--huali-visual-smoke-peek' `
+    -PassThru
+  if (-not $peekTrigger.WaitForExit(10000)) {
+    Stop-Process -Id $peekTrigger.Id -Force -ErrorAction SilentlyContinue
+    throw '触发半头悬停验收的单实例子进程未及时退出。'
+  }
+  $peekedWindows = Wait-ForWindows -Process $process -Condition {
+    param($windows)
+    $candidate = Find-WindowByHandle -Windows $windows -Handle $mascotHandle
+    $null -ne $candidate -and (
+      $candidate.Left -lt ($peekWorkArea.Left - 1) -or
+      $candidate.Right -gt ($peekWorkArea.Right + 1)
+    )
+  }
+  $peekedMascot = Find-WindowByHandle -Windows $peekedWindows -Handle $mascotHandle
+  if (-not $peekedMascot) {
+    throw '机器人进入半头状态后固定 HWND 意外消失。'
+  }
+  $peekSide = if ($peekedMascot.Left -lt $peekWorkArea.Left) { 'left' } else { 'right' }
+  $peekAvatarPoint = Get-AvatarClickPoint -MascotWindow $peekedMascot -Scale $scale
+  $peekHoverX = if ($peekSide -eq 'left') {
+    $peekWorkArea.Left + [int][Math]::Round(24 * $scale)
+  } else {
+    $peekWorkArea.Right - [int][Math]::Round(24 * $scale)
+  }
+  if (-not [HualiVisualSmokeNative]::SetCursorPos($peekHoverX, $peekAvatarPoint.Y)) {
+    throw '无法把鼠标移动到机器人可见半头区域。'
+  }
+  $revealedWindows = Wait-ForWindows -Process $process -Condition {
+    param($windows)
+    $candidate = Find-WindowByHandle -Windows $windows -Handle $mascotHandle
+    $null -ne $candidate -and
+      $candidate.Left -ge $peekWorkArea.Left -and
+      $candidate.Right -le $peekWorkArea.Right
+  }
+  $revealedMascot = Find-WindowByHandle -Windows $revealedWindows -Handle $mascotHandle
+  $hoverHitRoot = [HualiVisualSmokeNative]::RootWindowFromPoint(
+    $peekHoverX,
+    $peekAvatarPoint.Y
+  )
+  if (-not $revealedMascot -or $hoverHitRoot -ne $mascotHandle) {
+    throw "半头悬停恢复后机器人不可交互：命中 HWND=$hoverHitRoot，预期 HWND=$mascotHandle。"
+  }
+  $report.checks.peekHoverReveal = [ordered]@{
+    side = $peekSide
+    peeked = $peekedMascot
+    revealed = $revealedMascot
+    sameHwnd = ([long]$revealedMascot.Handle -eq $mascotHandle)
+    hoverOnly = $true
+    hitTestRoot = $hoverHitRoot
+  }
+  Save-ScreenCapture -FileName '05-half-head-hover-revealed.png' | Out-Null
 
   # Place the mascot window partly above the work area so its visible avatar
   # sits near the top edge. The context menu must flip below the avatar.
