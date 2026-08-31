@@ -1636,12 +1636,22 @@ try {
       $candidate.Left -ge $peekWorkArea.Left -and
       $candidate.Right -le $peekWorkArea.Right
   }
+  # Entering the work area happens before the 480 ms reveal animation reaches
+  # its final dock point. Let that production animation settle before the next
+  # gate deliberately repositions the HWND; otherwise the in-flight animation
+  # can pull the top-edge fixture back to the desktop corner.
+  $hoverRevealSettleMs = 650
+  Start-Sleep -Milliseconds $hoverRevealSettleMs
+  $revealedWindows = @(Get-WindowSnapshot -Process $process)
   $revealedMascot = Find-WindowByHandle -Windows $revealedWindows -Handle $mascotHandle
   $hoverHitRoot = [HualiVisualSmokeNative]::RootWindowFromPoint(
     $peekHoverX,
     $peekAvatarPoint.Y
   )
-  if (-not $revealedMascot -or $hoverHitRoot -ne $mascotHandle) {
+  if (-not $revealedMascot -or
+      $revealedMascot.Left -lt $peekWorkArea.Left -or
+      $revealedMascot.Right -gt $peekWorkArea.Right -or
+      $hoverHitRoot -ne $mascotHandle) {
     throw "半头悬停恢复后机器人不可交互：命中 HWND=$hoverHitRoot，预期 HWND=$mascotHandle。"
   }
   $report.checks.peekHoverReveal = [ordered]@{
@@ -1650,6 +1660,7 @@ try {
     revealed = $revealedMascot
     sameHwnd = ([long]$revealedMascot.Handle -eq $mascotHandle)
     hoverOnly = $true
+    settledForMs = $hoverRevealSettleMs
     hitTestRoot = $hoverHitRoot
   }
   Save-ScreenCapture -FileName '05-half-head-hover-revealed.png' | Out-Null

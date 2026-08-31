@@ -338,8 +338,11 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     expect(hoverEnd).toBeGreaterThan(hoverStart)
     expect(hoverGate).toContain('SetCursorPos($peekHoverX, $peekAvatarPoint.Y)')
     expect(hoverGate).not.toContain('SendMouseClick')
+    expect(hoverGate).toContain('Start-Sleep -Milliseconds $hoverRevealSettleMs')
+    expect(hoverGate).toContain('$revealedWindows = @(Get-WindowSnapshot -Process $process)')
     expect(hoverGate).toContain('RootWindowFromPoint(')
     expect(source).toContain('hoverOnly = $true')
+    expect(source).toContain('settledForMs = $hoverRevealSettleMs')
     expect(source).toContain('sameHwnd = ([long]$revealedMascot.Handle -eq $mascotHandle)')
   })
 
