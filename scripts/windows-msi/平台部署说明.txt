@@ -118,3 +118,10 @@ WINDOWS_CERTIFICATE_PASSWORD    PFX 密码
 7. 采用 5–20 台小范围灰度后，再推向全部电脑。
 
 注意：公司组策略或终端安全软件可以禁止 HKLM Run，这种情况安装包仍会正确写入自启动项，但组策略优先级更高，需由桌面管理员放行。
+
+十、登录与提醒诊断日志
+
+发生“网页已登录但桌面仍等待”或“没有主动提醒”时，请收集当前 Windows 用户目录下的：
+%LOCALAPPDATA%\com.huali.ai.mascot\logs\desktop-diagnostic.jsonl
+
+日志包含版本号、PID、callback 字段是否存在、会话状态、订阅/轮询/WebSocket 状态和原生提醒窗口调用结果。token、完整 userId、callback URL 和一次性 state 均不会落盘；单文件达到 5 MB 后保留一份轮转日志。

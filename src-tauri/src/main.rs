@@ -2,6 +2,8 @@
 
 use std::collections::VecDeque;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -9,10 +11,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::window::Color;
@@ -58,6 +60,11 @@ const MASCOT_SYSTEM_NOTIFICATION_MARGIN: f64 = 8.0;
 const DESKTOP_AUTH_CALLBACK_PREFIX: &str = "huali-ai-mascot://auth-callback";
 const DESKTOP_AUTH_CALLBACK_FILE: &str = "huali-ai-mascot-auth-callback.tmp";
 const DESKTOP_AUTH_CALLBACK_QUEUE_CAPACITY: usize = 8;
+const DESKTOP_DIAGNOSTIC_LOG_FILE: &str = "desktop-diagnostic.jsonl";
+const DESKTOP_DIAGNOSTIC_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+const DESKTOP_RELEASE_SMOKE_ENABLED_ENV: &str = "HUALI_AI_RELEASE_SMOKE";
+const DESKTOP_RELEASE_SMOKE_AUTH_STATE_ENV: &str = "HUALI_AI_RELEASE_SMOKE_AUTH_STATE";
+const DESKTOP_RELEASE_SMOKE_NONCE_ENV: &str = "HUALI_AI_RELEASE_SMOKE_NONCE";
 const PANEL_VISIBILITY_EVENT: &str = "huali:panel-visibility";
 const MASCOT_CONTEXT_MENU_VISIBILITY_EVENT: &str = "mascot-context-menu-visibility";
 const MASCOT_SYSTEM_NOTIFICATION_READY_EVENT: &str = "mascot-system-notification-ready";
@@ -65,6 +72,9 @@ const MASCOT_NATIVE_REVEALED_EVENT: &str = "mascot-native-revealed";
 #[cfg(windows)]
 const MASCOT_NATIVE_HOVER_REVEALED_EVENT: &str = "mascot-native-hover-revealed";
 const VISUAL_SMOKE_PEEK_ARGUMENT: &str = "--huali-visual-smoke-peek";
+
+static DESKTOP_DIAGNOSTIC_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static DESKTOP_AUTH_SMOKE_RECEIPT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Clone, Default)]
 struct PendingDesktopAuthCallback(Arc<Mutex<VecDeque<NativeDesktopAuthCallback>>>);
@@ -593,6 +603,226 @@ struct NativeDesktopAuthCallback {
     argument_count: usize,
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopReleaseSmokeConfig {
+    auth_state: String,
+}
+
+fn desktop_diagnostic_log_path(app: &tauri::AppHandle) -> PathBuf {
+    app.path()
+        .app_log_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("huali-ai-desktop-logs"))
+        .join(DESKTOP_DIAGNOSTIC_LOG_FILE)
+}
+
+fn truncate_diagnostic_string(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(200)
+        .collect::<String>();
+    if value.chars().count() > 200 {
+        format!("{sanitized}...")
+    } else {
+        sanitized
+    }
+}
+
+fn sanitize_diagnostic_fields(
+    fields: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    fields
+        .into_iter()
+        .map(|(key, value)| {
+            let normalized_key = key.to_ascii_lowercase();
+            let safe_presence_field = matches!(
+                normalized_key.as_str(),
+                "tokenpresent"
+                    | "tokenlength"
+                    | "tokenvalid"
+                    | "useridmasked"
+                    | "useridpresent"
+                    | "statepresent"
+                    | "statelength"
+                    | "hasstate"
+                    | "hastoken"
+                    | "hasuserid"
+            );
+            let sensitive_key = normalized_key.contains("token")
+                || normalized_key.contains("authorization")
+                || normalized_key.contains("password")
+                || normalized_key.contains("secret")
+                || normalized_key.contains("callbackurl")
+                || normalized_key.contains("rawurl")
+                || normalized_key.contains("userid")
+                || normalized_key == "state"
+                || normalized_key.contains("authstate");
+            let sanitized_value = if sensitive_key && !safe_presence_field {
+                serde_json::Value::String("[redacted]".to_owned())
+            } else {
+                match value {
+                    serde_json::Value::String(value) => {
+                        serde_json::Value::String(truncate_diagnostic_string(&value))
+                    }
+                    serde_json::Value::Null
+                    | serde_json::Value::Bool(_)
+                    | serde_json::Value::Number(_) => value,
+                    _ => serde_json::Value::String("[unsupported]".to_owned()),
+                }
+            };
+            (truncate_diagnostic_string(&key), sanitized_value)
+        })
+        .collect()
+}
+
+fn write_desktop_diagnostic_event(
+    app: &tauri::AppHandle,
+    event: &str,
+    fields: serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    if event.is_empty()
+        || event.len() > 80
+        || !event
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+    {
+        return false;
+    }
+
+    let Ok(_log_guard) = DESKTOP_DIAGNOSTIC_LOG_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+    else {
+        return false;
+    };
+    let path = desktop_diagnostic_log_path(app);
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return false;
+    }
+    if fs::metadata(&path)
+        .map(|metadata| metadata.len() >= DESKTOP_DIAGNOSTIC_LOG_MAX_BYTES)
+        .unwrap_or(false)
+    {
+        let rotated_path = path.with_extension("jsonl.1");
+        let _ = fs::remove_file(&rotated_path);
+        let _ = fs::rename(&path, rotated_path);
+    }
+
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let record = serde_json::json!({
+        "unixMs": unix_ms,
+        "appVersion": app.package_info().version.to_string(),
+        "pid": std::process::id(),
+        "event": event,
+        "fields": sanitize_diagnostic_fields(fields),
+    });
+    let Ok(serialized) = serde_json::to_vec(&record) else {
+        return false;
+    };
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return false;
+    };
+    file.write_all(&serialized).is_ok() && file.write_all(b"\n").is_ok()
+}
+
+fn diagnostic_fields(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    value.as_object().cloned().unwrap_or_default()
+}
+
+#[tauri::command]
+fn record_desktop_diagnostic_event(
+    app: tauri::AppHandle,
+    event: String,
+    fields: serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    write_desktop_diagnostic_event(&app, &event, fields)
+}
+
+#[tauri::command]
+fn get_desktop_diagnostic_log_path(app: tauri::AppHandle) -> String {
+    desktop_diagnostic_log_path(&app)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn valid_release_smoke_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+}
+
+fn desktop_release_smoke_nonce() -> Option<String> {
+    if !matches!(
+        std::env::var(DESKTOP_RELEASE_SMOKE_ENABLED_ENV).as_deref(),
+        Ok("1")
+    ) {
+        return None;
+    }
+    std::env::var(DESKTOP_RELEASE_SMOKE_NONCE_ENV)
+        .ok()
+        .filter(|value| valid_release_smoke_value(value))
+}
+
+#[tauri::command]
+fn get_desktop_release_smoke_config() -> Option<DesktopReleaseSmokeConfig> {
+    desktop_release_smoke_nonce()?;
+    let auth_state = std::env::var(DESKTOP_RELEASE_SMOKE_AUTH_STATE_ENV).ok()?;
+    valid_release_smoke_value(&auth_state).then_some(DesktopReleaseSmokeConfig { auth_state })
+}
+
+fn persist_desktop_release_smoke_fields(fields: serde_json::Value) -> bool {
+    let Some(nonce) = desktop_release_smoke_nonce() else {
+        return false;
+    };
+    let Ok(_receipt_guard) = DESKTOP_AUTH_SMOKE_RECEIPT_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+    else {
+        return false;
+    };
+    let path = std::env::temp_dir().join(format!("huali-ai-desktop-auth-smoke-{nonce}.json"));
+    let mut receipt = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    if let Some(fields) = fields.as_object() {
+        receipt.extend(fields.clone());
+    }
+    serde_json::to_vec(&receipt)
+        .ok()
+        .is_some_and(|serialized| fs::write(path, serialized).is_ok())
+}
+
+#[tauri::command]
+fn record_desktop_release_smoke_session(
+    session_committed: bool,
+    subscriptions_started: bool,
+    reminder_types_queued: u64,
+) -> bool {
+    persist_desktop_release_smoke_fields(serde_json::json!({
+        "sessionCommitted": session_committed,
+        "subscriptionsStarted": subscriptions_started,
+        "reminderTypesQueued": reminder_types_queued,
+    }))
+}
+
+#[tauri::command]
+fn record_desktop_release_smoke_restart(session_restored: bool) -> bool {
+    persist_desktop_release_smoke_fields(serde_json::json!({
+        "sessionRestoredAfterRestart": session_restored,
+    }))
+}
+
 fn find_desktop_auth_callback(args: &[String]) -> Option<String> {
     args.iter()
         .find_map(|arg| normalize_desktop_auth_callback_argument(arg))
@@ -635,6 +865,13 @@ fn persist_desktop_auth_smoke_receipt(
     {
         return false;
     }
+
+    let Ok(_receipt_guard) = DESKTOP_AUTH_SMOKE_RECEIPT_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+    else {
+        return false;
+    };
 
     // The release gate records only field presence, never the callback token or
     // user identity. Restricting the path to the OS temp directory also avoids
@@ -723,7 +960,11 @@ impl PendingDesktopAuthCallback {
 }
 
 #[tauri::command]
-fn record_desktop_auth_renderer_receipt(callback_url: String, outcome: String) -> bool {
+fn record_desktop_auth_renderer_receipt(
+    app: tauri::AppHandle,
+    callback_url: String,
+    outcome: String,
+) -> bool {
     if normalize_desktop_auth_callback_argument(&callback_url).is_none()
         || !matches!(
             outcome.as_str(),
@@ -733,14 +974,36 @@ fn record_desktop_auth_renderer_receipt(callback_url: String, outcome: String) -
         return false;
     }
 
+    write_desktop_diagnostic_event(
+        &app,
+        "auth.callback.renderer_outcome",
+        diagnostic_fields(serde_json::json!({
+            "outcome": outcome,
+            "hasState": desktop_auth_callback_has_value(&callback_url, "state"),
+            "hasToken": desktop_auth_callback_has_value(&callback_url, "token"),
+            "hasUserId": desktop_auth_callback_has_value(&callback_url, "userId"),
+        })),
+    );
     persist_desktop_auth_smoke_receipt(&callback_url, None, Some(&outcome))
 }
 
 #[tauri::command]
 fn take_desktop_auth_callback(
+    app: tauri::AppHandle,
     state: tauri::State<'_, PendingDesktopAuthCallback>,
 ) -> Option<NativeDesktopAuthCallback> {
-    state.take().or_else(take_persisted_desktop_auth_callback)
+    let callback = state.take().or_else(take_persisted_desktop_auth_callback);
+    if let Some(callback) = callback.as_ref() {
+        write_desktop_diagnostic_event(
+            &app,
+            "auth.callback.native_dequeued",
+            diagnostic_fields(serde_json::json!({
+                "argumentCount": callback.argument_count,
+                "callbackPresent": callback.callback_url.is_some(),
+            })),
+        );
+    }
+    callback
 }
 const MASCOT_NOTIFICATION_WIDTH: f64 = 320.0;
 const MASCOT_NOTIFICATION_HEIGHT: f64 = 480.0;
@@ -1223,7 +1486,9 @@ fn peeked_dock_side(
 
 #[cfg(test)]
 mod desktop_auth_callback_tests {
-    use super::{find_desktop_auth_callback, PendingDesktopAuthCallback};
+    use super::{
+        find_desktop_auth_callback, sanitize_diagnostic_fields, PendingDesktopAuthCallback,
+    };
 
     #[test]
     fn callback_argument_accepts_windows_quotes_whitespace_and_case() {
@@ -1283,6 +1548,33 @@ mod desktop_auth_callback_tests {
             second.get(1).cloned()
         );
         assert!(pending.take().is_none());
+    }
+
+    #[test]
+    fn diagnostic_fields_redact_credentials_and_raw_identity() {
+        let fields = serde_json::json!({
+            "token": "secret-token-value",
+            "tokenPresent": true,
+            "tokenLength": 18,
+            "userId": "employee-10002",
+            "userIdMasked": "em***02",
+            "state": "one-time-state",
+            "statePresent": true,
+            "callbackUrl": "huali-ai-mascot://auth-callback?token=secret",
+        })
+        .as_object()
+        .cloned()
+        .expect("diagnostic fixture must be an object");
+
+        let sanitized = sanitize_diagnostic_fields(fields);
+        assert_eq!(sanitized["token"], "[redacted]");
+        assert_eq!(sanitized["tokenPresent"], true);
+        assert_eq!(sanitized["tokenLength"], 18);
+        assert_eq!(sanitized["userId"], "[redacted]");
+        assert_eq!(sanitized["userIdMasked"], "em***02");
+        assert_eq!(sanitized["state"], "[redacted]");
+        assert_eq!(sanitized["statePresent"], true);
+        assert_eq!(sanitized["callbackUrl"], "[redacted]");
     }
 }
 
@@ -3838,28 +4130,49 @@ fn show_mascot_system_notification_window(
     client_generation: Option<u64>,
 ) -> bool {
     let compact = compact.unwrap_or(false);
+    let record_result = |success: bool, reason: &str| {
+        write_desktop_diagnostic_event(
+            &app,
+            "notification.native_window_show",
+            diagnostic_fields(serde_json::json!({
+                "success": success,
+                "compact": compact,
+                "reason": reason,
+                "clientGenerationPresent": client_generation.is_some(),
+            })),
+        );
+        if success && !compact {
+            persist_desktop_release_smoke_fields(serde_json::json!({
+                "notificationWindowShown": true,
+                "notificationCompact": false,
+                "notificationProcessId": std::process::id(),
+            }));
+        }
+        success
+    };
     let generation = match state.request_show(compact, client_generation) {
         Ok(Some(generation)) => generation,
-        Ok(None) | Err(_) => return false,
+        Ok(None) => return record_result(false, "not-ready-or-stale"),
+        Err(_) => return record_result(false, "state-unavailable"),
     };
     let Ok(_transition) = state.transition.lock() else {
         state.cancel_show(generation);
-        return false;
+        return record_result(false, "transition-unavailable");
     };
     if !state.can_show(generation, compact) {
-        return false;
+        return record_result(false, "superseded-before-window");
     }
     let Some(mascot) = app.get_webview_window("mascot") else {
         state.cancel_show(generation);
-        return false;
+        return record_result(false, "mascot-window-unavailable");
     };
     if !matches!(mascot.is_visible(), Ok(true)) {
         state.cancel_show(generation);
-        return false;
+        return record_result(false, "mascot-window-hidden");
     }
     let Some(notification) = app.get_webview_window("mascot-notification") else {
         state.cancel_show(generation);
-        return false;
+        return record_result(false, "notification-window-unavailable");
     };
     harden_transparent_window(&notification);
     if matches!(state.visible_compact(), Some(visible_compact) if visible_compact != compact) {
@@ -3873,23 +4186,23 @@ fn show_mascot_system_notification_window(
         state.cancel_show(generation);
         let _ = hide_transparent_window_safely(&notification);
         state.mark_physical_hidden();
-        return false;
+        return record_result(false, "position-failed");
     }
     if !state.can_show(generation, compact) {
         let _ = hide_transparent_window_safely(&notification);
         state.mark_physical_hidden();
-        return false;
+        return record_result(false, "superseded-after-position");
     }
     if !show_interactive_window(&notification, false) {
         state.cancel_show(generation);
-        return false;
+        return record_result(false, "native-show-failed");
     }
     if !state.mark_visible(generation, compact) {
         let _ = hide_transparent_window_safely(&notification);
         state.mark_physical_hidden();
-        return false;
+        return record_result(false, "superseded-after-show");
     }
-    true
+    record_result(true, "shown")
 }
 
 #[tauri::command]
@@ -3960,8 +4273,22 @@ fn show_notification_window(
         let (width, height) = mascot_logical_size(&window);
         restore_mascot_if_peeked(&window, motion.inner(), width, height);
         let _ = app.emit_to("mascot", MASCOT_NATIVE_REVEALED_EVENT, ());
-        return show_interactive_window(&window, false);
+        let shown = show_interactive_window(&window, false);
+        write_desktop_diagnostic_event(
+            &app,
+            "notification.mascot_window_show",
+            diagnostic_fields(serde_json::json!({ "success": shown })),
+        );
+        return shown;
     }
+    write_desktop_diagnostic_event(
+        &app,
+        "notification.mascot_window_show",
+        diagnostic_fields(serde_json::json!({
+            "success": false,
+            "reason": "mascot-window-unavailable",
+        })),
+    );
     false
 }
 
@@ -4658,6 +4985,16 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(
             move |app, argv, _cwd| {
                 if let Some(callback_url) = single_instance_desktop_auth.capture(&argv) {
+                    write_desktop_diagnostic_event(
+                        app,
+                        "auth.callback.single_instance_received",
+                        diagnostic_fields(serde_json::json!({
+                            "argumentCount": argv.len(),
+                            "hasState": desktop_auth_callback_has_value(&callback_url, "state"),
+                            "hasToken": desktop_auth_callback_has_value(&callback_url, "token"),
+                            "hasUserId": desktop_auth_callback_has_value(&callback_url, "userId"),
+                        })),
+                    );
                     // Receipt is not authentication. Keep the login card visible
                     // until Vue validates state + identity and commits the new
                     // session; otherwise a malformed callback looks successful
@@ -4732,8 +5069,13 @@ fn main() {
             set_panel_activity,
             exit_app,
             open_or_focus_web_url,
+            record_desktop_diagnostic_event,
+            get_desktop_diagnostic_log_path,
             record_desktop_auth_renderer_receipt,
-            take_desktop_auth_callback
+            take_desktop_auth_callback,
+            get_desktop_release_smoke_config,
+            record_desktop_release_smoke_session,
+            record_desktop_release_smoke_restart
         ])
         .setup(move |app| {
             #[cfg(windows)]
@@ -4751,6 +5093,15 @@ fn main() {
             let startup_args = std::env::args().collect::<Vec<_>>();
             app.state::<PendingDesktopAuthCallback>()
                 .capture(&startup_args);
+            write_desktop_diagnostic_event(
+                app.handle(),
+                "process.start",
+                diagnostic_fields(serde_json::json!({
+                    "argumentCount": startup_args.len(),
+                    "startupCallbackPresent": find_desktop_auth_callback(&startup_args).is_some(),
+                    "releaseSmoke": desktop_release_smoke_nonce().is_some(),
+                })),
+            );
 
             #[cfg(any(windows, target_os = "linux"))]
             {

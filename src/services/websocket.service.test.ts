@@ -17,6 +17,7 @@ class FakeWebSocket {
   static readonly CLOSING = 2
   static readonly CLOSED = 3
   static instances: FakeWebSocket[] = []
+  static failNextConstruction = false
 
   readonly url: string
   readyState = FakeWebSocket.CONNECTING
@@ -24,6 +25,10 @@ class FakeWebSocket {
   private listeners = new Map<string, FakeSocketListener[]>()
 
   constructor(url: string) {
+    if (FakeWebSocket.failNextConstruction) {
+      FakeWebSocket.failNextConstruction = false
+      throw new TypeError('invalid websocket endpoint')
+    }
     this.url = url
     FakeWebSocket.instances.push(this)
   }
@@ -87,6 +92,7 @@ describe('websocketService connection generations', () => {
     vi.useFakeTimers()
     vi.resetModules()
     FakeWebSocket.instances = []
+    FakeWebSocket.failNextConstruction = false
     vi.stubGlobal('WebSocket', FakeWebSocket)
     vi.stubGlobal('window', {
       setTimeout: globalThis.setTimeout,
@@ -157,6 +163,22 @@ describe('websocketService connection generations', () => {
 
     await vi.advanceTimersByTimeAsync(3_000)
     expect(FakeWebSocket.instances).toHaveLength(2)
+
+    removeStatusListener()
+  })
+
+  it('contains a synchronous socket construction failure and retries without escaping', async () => {
+    service = (await import('./websocket.service')).websocketService
+    const statusListener = vi.fn()
+    const removeStatusListener = service.onStatus(statusListener)
+    FakeWebSocket.failNextConstruction = true
+
+    expect(() => service?.connect()).not.toThrow()
+    expect(statusListener).toHaveBeenCalledWith('reconnecting')
+    expect(FakeWebSocket.instances).toHaveLength(0)
+
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(FakeWebSocket.instances).toHaveLength(1)
 
     removeStatusListener()
   })

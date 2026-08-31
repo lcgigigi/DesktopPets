@@ -2,6 +2,7 @@ import { isTauri } from '@tauri-apps/api/core'
 import { fetch as nativeFetch } from '@tauri-apps/plugin-http'
 import { env } from '../utils/env'
 import { storage } from '../utils/storage'
+import { getDiagnosticCredentialMetadata, recordDesktopDiagnostic } from './diagnostic.service'
 
 interface BusinessResponse<T = unknown> {
   code?: number
@@ -37,6 +38,13 @@ type DesktopRequestMethod = 'GET' | 'POST' | 'PUT'
 
 const unauthorizedListeners = new Set<UnauthorizedListener>()
 const REQUEST_TIMEOUT = 12_000
+
+function getDiagnosticRoute(path: string) {
+  const pathname = path.split('?')[0]
+  if (pathname.startsWith('/smart-todo/complete/')) return '/smart-todo/complete/:id'
+  if (/^\/smart-todo\/[^/]+$/.test(pathname)) return '/smart-todo/:id'
+  return pathname
+}
 
 function notifyUnauthorized(token: string, status?: number, code?: number) {
   // 401 means the token is no longer accepted. A 403 can instead mean this
@@ -96,6 +104,7 @@ async function send<T>(
 ): Promise<T> {
   const headers = new Headers({ Accept: 'application/json' })
   const token = storage.getToken() || env.mockToken
+  const diagnosticRoute = getDiagnosticRoute(path)
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (body !== undefined) headers.set('Content-Type', 'application/json')
 
@@ -107,6 +116,14 @@ async function send<T>(
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch (error) {
+    recordDesktopDiagnostic('request.transport_failed', {
+      method,
+      route: diagnosticRoute,
+      tokenPresent: Boolean(token),
+      tokenLength: token.length,
+      errorName: error instanceof Error ? error.name : 'unknown',
+      ...getDiagnosticCredentialMetadata(token),
+    })
     const message = error instanceof Error && error.name === 'AbortError'
       ? '连接后台服务超时'
       : error instanceof Error
@@ -119,6 +136,16 @@ async function send<T>(
   const code = typeof result?.code === 'number' ? result.code : undefined
 
   if (!response.ok || result?.success === false || (code !== undefined && code !== 200)) {
+    recordDesktopDiagnostic('request.rejected', {
+      method,
+      route: diagnosticRoute,
+      responseStatus: response.status,
+      businessCode: code ?? null,
+      reportUnauthorized: options.reportUnauthorized !== false,
+      tokenPresent: Boolean(token),
+      tokenLength: token.length,
+      ...getDiagnosticCredentialMetadata(token),
+    })
     if (options.reportUnauthorized !== false) {
       notifyUnauthorized(token, response.status, code)
     }

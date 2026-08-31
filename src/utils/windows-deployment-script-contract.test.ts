@@ -26,6 +26,12 @@ describe('Windows administrator deployment smoke contracts', () => {
     expect(deployment).toContain('smokeNonce=$nonce')
     expect(deployment).toContain('forwardedToRunningInstance')
     expect(deployment).toContain('rendererReceived')
+    expect(deployment).toContain("$candidate.rendererOutcome -eq 'success'")
+    expect(deployment).toContain('$candidate.sessionCommitted -eq $true')
+    expect(deployment).toContain('$candidate.subscriptionsStarted -eq $true')
+    expect(deployment).toContain('$candidate.reminderTypesQueued -eq 3')
+    expect(deployment).toContain('$candidate.notificationWindowShown -eq $true')
+    expect(deployment).toContain('$restartReceipt.sessionRestoredAfterRestart -eq $true')
     expect(deployment).toContain('singleInstancePreserved = $true')
     expect(deployment).toContain('$report.checks.desktopAuthProtocolCallback = Invoke-DesktopAuthProtocolCallbackSmoke `')
     expect(deployment).toContain('tokenValueRecorded = $false')
@@ -39,6 +45,10 @@ describe('Windows administrator deployment smoke contracts', () => {
     expect(nativeMain).toContain('"forwardedToRunningInstance".to_owned()')
     expect(nativeMain).toContain('"rendererReceived".to_owned()')
     expect(nativeMain).toContain('record_desktop_auth_renderer_receipt')
+    expect(nativeMain).toContain('record_desktop_release_smoke_session')
+    expect(nativeMain).toContain('record_desktop_release_smoke_restart')
+    expect(nativeMain).toContain('DESKTOP_RELEASE_SMOKE_ENABLED_ENV')
+    expect(nativeMain).toContain('"notificationWindowShown": true')
     expect(nativeMain).toContain('Receipt is not authentication')
     expect(nativeMain).not.toMatch(
       /if let Some\(callback_url\) = single_instance_desktop_auth\.capture[\s\S]{0,700}hide_mascot_system_notification_native_window\(app\)/

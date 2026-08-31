@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import type { UserInfo } from '../types/api'
 import { env } from '../utils/env'
 import { storage } from '../utils/storage'
+import { maskDiagnosticIdentifier, recordDesktopDiagnostic } from '../services/diagnostic.service'
 
 interface UserState {
   token: string
@@ -58,6 +59,10 @@ export const useUserStore = defineStore('user', {
     setToken(token: string) {
       this.token = token
       storage.setToken(token)
+      recordDesktopDiagnostic('session.store.token_set', {
+        tokenPresent: Boolean(token),
+        tokenLength: token.length,
+      })
     },
     setSession(params: { token: string; userInfo: UserInfo }) {
       this.token = params.token
@@ -65,17 +70,33 @@ export const useUserStore = defineStore('user', {
       storage.setToken(params.token)
       storage.setUserInfo(params.userInfo)
       storage.clearDesktopAuthState()
+      recordDesktopDiagnostic('session.store.committed', {
+        tokenPresent: Boolean(params.token),
+        tokenLength: params.token.length,
+        userIdPresent: Boolean(params.userInfo.userId),
+        userIdMasked: maskDiagnosticIdentifier(params.userInfo.userId),
+      })
     },
     setUserInfo(userInfo: UserInfo) {
       this.userInfo = userInfo
       storage.setUserInfo(userInfo)
+      recordDesktopDiagnostic('session.store.user_updated', {
+        userIdPresent: Boolean(userInfo.userId),
+        userIdMasked: maskDiagnosticIdentifier(userInfo.userId),
+      })
     },
     clearSession() {
+      const tokenPresent = Boolean(this.token)
+      const userIdMasked = maskDiagnosticIdentifier(this.userInfo?.userId)
       this.token = ''
       this.userInfo = null
       storage.clearToken()
       storage.clearUserInfo()
       storage.clearDesktopAuthState()
+      recordDesktopDiagnostic('session.store.cleared', {
+        tokenPresent,
+        userIdMasked,
+      })
     }
   }
 })

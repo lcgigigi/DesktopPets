@@ -9,10 +9,15 @@ import PanelWindow from './views/PanelWindow.vue'
 import {
   getOrCreateDesktopAuthState,
   listenDesktopAuthCallbacks,
+  prepareDesktopReleaseSmokeState,
+  recordDesktopReleaseSmokeRestart,
+  recordDesktopReleaseSmokeSession,
   type DesktopAuthCallbackError,
 } from './services/desktop-auth.service'
+import { maskDiagnosticIdentifier, recordDesktopDiagnostic } from './services/diagnostic.service'
 import { onDesktopUnauthorized, type DesktopUnauthorizedContext } from './services/request'
 import {
+  DESKTOP_UNAUTHORIZED_CONFIRMATION_WINDOW_MS,
   recordConfirmedDesktopUnauthorized,
   type DesktopUnauthorizedEvidence,
 } from './services/session-recovery.service'
@@ -114,6 +119,7 @@ let sessionValidationTimer: number | undefined
 let sessionRecoveryPromise: Promise<void> | undefined
 let sessionUnauthorizedEvidence: DesktopUnauthorizedEvidence | undefined
 let authCallbackTimer: number | undefined
+let releaseSmokePrepared = false
 let sysMessageExpiryTimer: number | undefined
 let sysMessageEnrichmentGeneration = 0
 let systemNotificationPresentationGeneration = 0
@@ -499,7 +505,13 @@ async function enrichSysMessage(message: SysMessageNotification, generation: num
 }
 
 function pushSysMessage(message: SysMessageNotification) {
-  if (recentSysMessageKeys.has(message.dedupeKey)) return
+  if (recentSysMessageKeys.has(message.dedupeKey)) {
+    recordDesktopDiagnostic('notification.renderer_duplicate', {
+      messageIdMasked: maskDiagnosticIdentifier(message.id),
+      bizType: message.bizType ?? null,
+    })
+    return
+  }
   rememberSysMessageKey(message.dedupeKey)
 
   const generation = sysMessageEnrichmentGeneration
@@ -508,7 +520,19 @@ function pushSysMessage(message: SysMessageNotification) {
     displayContent: getSysMessageFallback(message),
     expiresAt: resolveSysMessageExpiresAt(message.createTime),
   }
-  if (!showIncomingSysMessage(resolvedMessage)) return
+  if (!showIncomingSysMessage(resolvedMessage)) {
+    recordDesktopDiagnostic('notification.renderer_rejected', {
+      reason: 'expired',
+      messageIdMasked: maskDiagnosticIdentifier(message.id),
+      bizType: message.bizType ?? null,
+    })
+    return
+  }
+  recordDesktopDiagnostic('notification.renderer_queued', {
+    messageIdMasked: maskDiagnosticIdentifier(message.id),
+    bizType: message.bizType ?? null,
+    queueLength: sysMessageQueue.value.length,
+  })
   // Each message enriches independently, so one 12-second detail request can
   // never block the first card or later cards behind it.
   void enrichSysMessage(message, generation)
@@ -661,7 +685,13 @@ function buildSystemNotificationPresentation(): MascotSystemNotificationPresenta
 }
 
 async function syncSystemNotificationWindow() {
-  if (windowMode !== 'mascot' || !systemNotificationWindowReady.value) return
+  if (windowMode !== 'mascot' || !systemNotificationWindowReady.value) {
+    recordDesktopDiagnostic('notification.sync.skipped', {
+      windowMode,
+      notificationWindowReady: systemNotificationWindowReady.value,
+    })
+    return
+  }
 
   const syncGeneration = ++systemNotificationSyncGeneration
   const presentation = buildSystemNotificationPresentation()
@@ -677,16 +707,26 @@ async function syncSystemNotificationWindow() {
     // after-leave callback: a suspended WebView2 renderer could otherwise leave
     // a transparent always-on-top window intercepting clicks after the card is
     // gone.
-    await hideMascotSystemNotificationWindow(syncGeneration)
+    const hidden = await hideMascotSystemNotificationWindow(syncGeneration)
+    recordDesktopDiagnostic('notification.sync.hidden', {
+      success: hidden,
+      generation: syncGeneration,
+    })
     return
   }
   if (presentation && !contextMenuWindowVisible.value) {
-    await showNotificationWindow()
+    const mascotShown = await showNotificationWindow()
     if (syncGeneration !== systemNotificationSyncGeneration) return
-    await showMascotSystemNotificationWindow(
+    const notificationShown = await showMascotSystemNotificationWindow(
       presentation.kind === 'auth',
       syncGeneration,
     )
+    recordDesktopDiagnostic('notification.sync.completed', {
+      kind: presentation.kind,
+      mascotShown,
+      notificationShown,
+      generation: syncGeneration,
+    })
   }
 }
 
@@ -734,10 +774,39 @@ watch(
 )
 
 function connectDesktopSockets(options: { force?: boolean } = {}) {
-  if (needsAuth.value) return
+  if (needsAuth.value) {
+    recordDesktopDiagnostic('subscription.start_blocked', {
+      reason: 'desktop-session-missing',
+      tokenPresent: Boolean(userStore.token),
+      userIdPresent: Boolean(userStore.userInfo?.userId),
+    })
+    return
+  }
 
-  websocketService.connect()
-  sysMessageService.connect(sysMessageUserId.value, options)
+  recordDesktopDiagnostic('subscription.start', {
+    force: Boolean(options.force),
+    tokenPresent: Boolean(userStore.token),
+    tokenLength: userStore.token.length,
+    userIdPresent: Boolean(sysMessageUserId.value),
+    userIdMasked: maskDiagnosticIdentifier(sysMessageUserId.value),
+  })
+  // These are independent channels. A construction/configuration failure in
+  // the legacy task socket must never suppress the sys_message polling/socket
+  // channel that carries todo, meeting and message reminders.
+  try {
+    websocketService.connect()
+  } catch (error) {
+    recordDesktopDiagnostic('task.websocket.connect_unhandled', {
+      errorName: error instanceof Error ? error.name : 'unknown',
+    })
+  }
+  try {
+    sysMessageService.connect(sysMessageUserId.value, options)
+  } catch (error) {
+    recordDesktopDiagnostic('reminder.subscription.connect_unhandled', {
+      errorName: error instanceof Error ? error.name : 'unknown',
+    })
+  }
 }
 
 function stopSessionValidation() {
@@ -755,6 +824,11 @@ function resetSessionUnauthorizedEvidence() {
 }
 
 function clearDesktopSession(message: string, status: MascotStatus = 'remind') {
+  recordDesktopDiagnostic('session.clear_requested', {
+    status,
+    tokenPresent: Boolean(userStore.token),
+    userIdMasked: maskDiagnosticIdentifier(userStore.userInfo?.userId),
+  })
   websocketService.disconnect()
   sysMessageService.disconnect()
   userStore.clearSession()
@@ -801,6 +875,10 @@ async function confirmSessionAfterUnauthorized(context: DesktopUnauthorizedConte
   const currentUserId = userStore.userInfo?.userId || ''
   sessionRecoveryPromise = (async () => {
     const result = await validateDesktopSession(currentUserId)
+    recordDesktopDiagnostic('session.validation.after_401', {
+      result: result.status,
+      userIdMasked: maskDiagnosticIdentifier(currentUserId),
+    })
     if (
       userStore.token !== validatedToken
       || (userStore.userInfo?.userId || '') !== currentUserId
@@ -812,6 +890,11 @@ async function confirmSessionAfterUnauthorized(context: DesktopUnauthorizedConte
         validatedToken,
       )
       sessionUnauthorizedEvidence = confirmation.evidence
+      recordDesktopDiagnostic('session.unauthorized_confirmed', {
+        confirmations: confirmation.evidence.confirmations,
+        confirmationWindowMs: DESKTOP_UNAUTHORIZED_CONFIRMATION_WINDOW_MS,
+        shouldExpire: confirmation.shouldExpire,
+      })
       if (confirmation.shouldExpire) {
         handleSessionExpired({ token: validatedToken })
       }
@@ -834,11 +917,23 @@ async function confirmSessionAfterUnauthorized(context: DesktopUnauthorizedConte
 }
 
 async function validateAndRestoreSession(options: { forceReconnect?: boolean } = {}) {
-  if (env.enableMock || !userStore.isAuthenticated) return
+  if (env.enableMock || !userStore.isAuthenticated) {
+    recordDesktopDiagnostic('session.validation.skipped', {
+      mockMode: env.enableMock,
+      tokenPresent: Boolean(userStore.token),
+      userIdPresent: Boolean(userStore.userInfo?.userId),
+    })
+    return
+  }
 
   const validatedToken = userStore.token
   const currentUserId = userStore.userInfo?.userId || ''
   const result = await validateDesktopSession(currentUserId)
+  recordDesktopDiagnostic('session.validation.completed', {
+    result: result.status,
+    userIdMasked: maskDiagnosticIdentifier(currentUserId),
+    forceReconnect: Boolean(options.forceReconnect),
+  })
   // A validation started for an older session must never clear or overwrite a
   // login callback that completed while the request was in flight.
   if (
@@ -876,9 +971,14 @@ async function startDesktopLogin() {
   // already-open browser tab becomes stale and its later confirmation can
   // invalidate the user's new attempt.
   const state = getOrCreateDesktopAuthState()
+  recordDesktopDiagnostic('auth.login.open_requested', {
+    statePresent: Boolean(state),
+    stateLength: state.length,
+  })
   authPending.value = true
   authErrorMessage.value = ''
   const opened = await openDesktopLogin(state)
+  recordDesktopDiagnostic('auth.login.open_completed', { opened })
   if (!opened) {
     authPending.value = false
     authErrorMessage.value = '未能打开登录页面，请检查默认浏览器后重试。'
@@ -912,6 +1012,10 @@ function handleLogout() {
 }
 
 function handleDesktopAuthCallbackError(error: DesktopAuthCallbackError) {
+  recordDesktopDiagnostic('auth.callback.rejected', {
+    error,
+    authPending: authPending.value,
+  })
   if (!authPending.value) return
 
   stopAuthCallbackTimer()
@@ -923,8 +1027,45 @@ function handleDesktopAuthCallbackError(error: DesktopAuthCallbackError) {
   authErrorMessage.value = message
 }
 
+function queueDesktopReleaseSmokeReminders() {
+  const reminders: SysMessageNotification[] = [
+    { bizType: 1, subject: '待办提醒' },
+    { bizType: 2, subject: '会议提醒' },
+    { bizType: 3, subject: '消息提醒' },
+  ].map(({ bizType, subject }) => ({
+    id: `release-smoke-${bizType}`,
+    rawId: `release-smoke-${bizType}`,
+    dedupeKey: `release-smoke-${bizType}-${Date.now()}`,
+    msgSubject: subject,
+    msgContent: '发布门禁消息，不包含真实用户数据。',
+    msgStatus: 0,
+    msgType: 1,
+    bizType,
+    bizId: `release-smoke-${bizType}`,
+  }))
+
+  reminders.forEach((message) => pushSysMessage(message))
+  recordDesktopReleaseSmokeSession(
+    userStore.isAuthenticated,
+    !needsAuth.value,
+    reminders.length,
+  )
+}
+
 onMounted(async () => {
   if (windowMode === 'mascot') {
+    releaseSmokePrepared = await prepareDesktopReleaseSmokeState()
+    recordDesktopDiagnostic('renderer.mascot_mounted', {
+      tokenPresent: Boolean(userStore.token),
+      tokenLength: userStore.token.length,
+      userIdPresent: Boolean(userStore.userInfo?.userId),
+      userIdMasked: maskDiagnosticIdentifier(userStore.userInfo?.userId),
+      authenticated: userStore.isAuthenticated,
+      releaseSmokePrepared,
+    })
+    if (releaseSmokePrepared && userStore.isAuthenticated) {
+      recordDesktopReleaseSmokeRestart(true)
+    }
     removeSystemNotificationActionListener = await listen<MascotSystemNotificationAction>(
       MASCOT_SYSTEM_NOTIFICATION_ACTION_EVENT,
       (event) => handleSystemNotificationAction(event.payload),
@@ -933,6 +1074,7 @@ onMounted(async () => {
       MASCOT_SYSTEM_NOTIFICATION_READY_EVENT,
       () => {
         systemNotificationWindowReady.value = true
+        recordDesktopDiagnostic('notification.renderer_ready', { ready: true })
         void syncSystemNotificationWindow()
       },
     )
@@ -949,6 +1091,9 @@ onMounted(async () => {
       },
     )
     systemNotificationWindowReady.value = await isMascotSystemNotificationReady()
+    recordDesktopDiagnostic('notification.native_ready_checked', {
+      ready: systemNotificationWindowReady.value,
+    })
     if (systemNotificationWindowReady.value) void syncSystemNotificationWindow()
 
     removePanelTaskDeliveredListener = await listen<PanelTaskDeliveredPayload>(
@@ -990,6 +1135,10 @@ onMounted(async () => {
       void emitTo('panel', 'socket-status', status)
     })
     removeSysMessageListener = sysMessageService.onMessage((message) => {
+      recordDesktopDiagnostic('reminder.listener.received', {
+        messageIdMasked: maskDiagnosticIdentifier(message.id),
+        bizType: message.bizType ?? null,
+      })
       pushSysMessage(message)
     })
     removeUnauthorizedListener = onDesktopUnauthorized((context) => {
@@ -997,10 +1146,22 @@ onMounted(async () => {
     })
     removeDeepLinkListener = await listenDesktopAuthCallbacks(
       (payload) => {
+        recordDesktopDiagnostic('auth.callback.accepted', {
+          tokenPresent: Boolean(payload.token),
+          tokenLength: payload.token.length,
+          userIdPresent: Boolean(payload.userInfo.userId),
+          userIdMasked: maskDiagnosticIdentifier(payload.userInfo.userId),
+        })
         // 登录卡消失时直接恢复普通窗口，避免 Windows 在“大卡片 -> 小气泡”
         // 连续缩放中出现窗口尺寸与 WebView 渲染尺寸不同步。
         mascotStore.resetStatus()
         userStore.setSession(payload)
+        recordDesktopDiagnostic('auth.callback.session_committed', {
+          authenticated: userStore.isAuthenticated,
+          tokenPresent: Boolean(userStore.token),
+          tokenLength: userStore.token.length,
+          userIdMasked: maskDiagnosticIdentifier(userStore.userInfo?.userId),
+        })
         resetSessionUnauthorizedEvidence()
         authPending.value = false
         stopAuthCallbackTimer()
@@ -1012,6 +1173,7 @@ onMounted(async () => {
         void hideMascotSystemNotificationWindow(hideGeneration)
         connectDesktopSockets({ force: true })
         startSessionValidation()
+        if (releaseSmokePrepared) queueDesktopReleaseSmokeReminders()
         // The state-checked callback is the login completion signal. Socket and
         // message channels connect above; periodic validation continues later.
         mascotStore.showMessage('登录成功，消息提醒已开启', 'success', true)

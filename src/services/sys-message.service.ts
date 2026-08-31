@@ -1,6 +1,7 @@
 import type { SysMessageNotification, SysMessagePushPayload, SysMessageStatus } from '../types/sys-message'
 import { env } from '../utils/env'
 import { request } from './request'
+import { maskDiagnosticIdentifier, recordDesktopDiagnostic } from './diagnostic.service'
 
 type MessageListener = (message: SysMessageNotification) => void
 
@@ -39,7 +40,13 @@ interface SysMessagePagePayload {
   list?: SysMessageBackendItem[] | null
 }
 
-function notifyMessage(message: SysMessageNotification) {
+function notifyMessage(message: SysMessageNotification, source: string) {
+  recordDesktopDiagnostic('reminder.message_dispatched', {
+    source,
+    messageIdMasked: maskDiagnosticIdentifier(message.id),
+    bizType: message.bizType ?? null,
+    listenerCount: messageListeners.size,
+  })
   messageListeners.forEach((listener) => listener(message))
 }
 
@@ -54,8 +61,15 @@ function rememberMessage(message: SysMessageNotification) {
   return true
 }
 
-function deliverMessage(message: SysMessageNotification) {
-  if (rememberMessage(message)) notifyMessage(message)
+function deliverMessage(message: SysMessageNotification, source = 'websocket') {
+  if (rememberMessage(message)) {
+    notifyMessage(message, source)
+  } else {
+    recordDesktopDiagnostic('reminder.message_duplicate', {
+      source,
+      messageIdMasked: maskDiagnosticIdentifier(message.id),
+    })
+  }
 }
 
 function toId(value?: string | number | null) {
@@ -173,22 +187,34 @@ async function pollUnreadMessages() {
     // notification after the desktop session has changed.
     if (generation !== pollGeneration || userId !== activeUserId) return
 
+    recordDesktopDiagnostic('reminder.poll.succeeded', {
+      userIdMasked: maskDiagnosticIdentifier(userId),
+      messageCount: messages.length,
+      initialized: pollInitialized,
+      generation,
+    })
+
     if (!pollInitialized) {
       pollInitialized = true
       const newestMessage = messages[0]
       const shouldNotifyNewest = Boolean(newestMessage && !knownMessageIds.has(newestMessage.id))
       messages.forEach((message) => rememberMessage(message))
-      if (newestMessage && shouldNotifyNewest) notifyMessage(newestMessage)
+      if (newestMessage && shouldNotifyNewest) notifyMessage(newestMessage, 'poll-initial')
       return
     }
 
     messages
       .filter((message) => !knownMessageIds.has(message.id))
       .reverse()
-      .forEach((message) => deliverMessage(message))
+      .forEach((message) => deliverMessage(message, 'poll'))
   } catch (error) {
     if (generation === pollGeneration) {
       console.warn('Sys message polling failed', error)
+      recordDesktopDiagnostic('reminder.poll.failed', {
+        userIdMasked: maskDiagnosticIdentifier(userId),
+        errorName: error instanceof Error ? error.name : 'unknown',
+        generation,
+      })
     }
   } finally {
     if (generation === pollGeneration) {
@@ -206,6 +232,12 @@ function startPolling(reset: boolean) {
     knownMessageIds.clear()
   }
 
+  recordDesktopDiagnostic('reminder.poll.started', {
+    userIdMasked: maskDiagnosticIdentifier(activeUserId),
+    reset,
+    generation: pollGeneration,
+  })
+
   void pollUnreadMessages()
   pollTimer = window.setInterval(() => {
     void pollUnreadMessages()
@@ -219,6 +251,9 @@ function stopPolling() {
   polling = false
   pollInitialized = false
   knownMessageIds.clear()
+  recordDesktopDiagnostic('reminder.poll.stopped', {
+    generation: pollGeneration,
+  })
 }
 
 function teardownSocket() {
@@ -235,6 +270,11 @@ function scheduleReconnect() {
 
   window.clearTimeout(reconnectTimer)
   const delay = Math.min(30000, 3000 + reconnectAttempts * 2000)
+  recordDesktopDiagnostic('reminder.websocket.reconnect_scheduled', {
+    userIdMasked: maskDiagnosticIdentifier(activeUserId),
+    attempt: reconnectAttempts + 1,
+    delayMs: delay,
+  })
   reconnectTimer = window.setTimeout(() => {
     reconnectAttempts += 1
     connectSocket()
@@ -242,18 +282,36 @@ function scheduleReconnect() {
 }
 
 function connectSocket() {
-  if (!activeUserId.trim()) return
+  if (!activeUserId.trim()) {
+    recordDesktopDiagnostic('reminder.websocket.skipped', { reason: 'missing-user-id' })
+    return
+  }
 
   const url = buildSysMessageWebSocketUrl(activeUserId)
-  if (!url) return
+  if (!url) {
+    recordDesktopDiagnostic('reminder.websocket.skipped', {
+      reason: 'missing-endpoint',
+      userIdMasked: maskDiagnosticIdentifier(activeUserId),
+    })
+    return
+  }
 
   teardownSocket()
 
   let nextSocket: WebSocket
   try {
     nextSocket = new WebSocket(url)
+    recordDesktopDiagnostic('reminder.websocket.connecting', {
+      userIdMasked: maskDiagnosticIdentifier(activeUserId),
+      secure: url.startsWith('wss:'),
+      attempt: reconnectAttempts + 1,
+    })
   } catch (error) {
     console.warn('Sys message websocket connection failed', error)
+    recordDesktopDiagnostic('reminder.websocket.failed', {
+      phase: 'construct',
+      errorName: error instanceof Error ? error.name : 'unknown',
+    })
     scheduleReconnect()
     return
   }
@@ -262,23 +320,47 @@ function connectSocket() {
   nextSocket.addEventListener('open', () => {
     if (socket !== nextSocket) return
     reconnectAttempts = 0
+    recordDesktopDiagnostic('reminder.websocket.authenticated', {
+      userIdMasked: maskDiagnosticIdentifier(activeUserId),
+    })
   })
   nextSocket.addEventListener('message', (event) => {
     if (socket !== nextSocket || typeof event.data !== 'string') return
 
     try {
       const message = normalizeSysMessage(JSON.parse(event.data) as SysMessagePushPayload)
-      if (message) deliverMessage(message)
+      if (message) {
+        recordDesktopDiagnostic('reminder.websocket.payload_received', {
+          messageIdMasked: maskDiagnosticIdentifier(message.id),
+          bizType: message.bizType ?? null,
+        })
+        deliverMessage(message)
+      } else {
+        recordDesktopDiagnostic('reminder.websocket.payload_ignored', {
+          reason: 'unsupported-type-or-invalid-id',
+        })
+      }
     } catch (error) {
       console.warn('Invalid sys_message websocket payload', error)
+      recordDesktopDiagnostic('reminder.websocket.payload_invalid', {
+        errorName: error instanceof Error ? error.name : 'unknown',
+      })
     }
   })
   nextSocket.addEventListener('close', () => {
     if (socket !== nextSocket) return
     socket = null
+    recordDesktopDiagnostic('reminder.websocket.closed', {
+      reconnect: shouldReconnect,
+      userIdMasked: maskDiagnosticIdentifier(activeUserId),
+    })
     if (shouldReconnect) scheduleReconnect()
   })
   nextSocket.addEventListener('error', () => {
+    recordDesktopDiagnostic('reminder.websocket.failed', {
+      phase: 'runtime',
+      userIdMasked: maskDiagnosticIdentifier(activeUserId),
+    })
     if (socket === nextSocket) nextSocket.close()
   })
 }
@@ -289,14 +371,26 @@ export const sysMessageService = {
     return () => messageListeners.delete(listener)
   },
   connect(userId: string, options: { force?: boolean } = {}) {
-    if (env.enableMock) return
+    if (env.enableMock) {
+      recordDesktopDiagnostic('reminder.subscription.skipped', { reason: 'mock-mode' })
+      return
+    }
 
     const nextUserId = userId.trim()
-    if (!nextUserId) return
+    if (!nextUserId) {
+      recordDesktopDiagnostic('reminder.subscription.skipped', { reason: 'missing-user-id' })
+      return
+    }
     const userChanged = activeUserId !== nextUserId
 
     activeUserId = nextUserId
     shouldReconnect = true
+    recordDesktopDiagnostic('reminder.subscription.started', {
+      userIdMasked: maskDiagnosticIdentifier(nextUserId),
+      userChanged,
+      force: Boolean(options.force),
+      websocketEndpointConfigured: Boolean(env.sysMessageWsBaseUrl.trim()),
+    })
     startPolling(userChanged)
 
     if (
@@ -336,9 +430,11 @@ export const sysMessageService = {
     return true
   },
   disconnect() {
+    const userIdMasked = maskDiagnosticIdentifier(activeUserId)
     shouldReconnect = false
     activeUserId = ''
     stopPolling()
     teardownSocket()
+    recordDesktopDiagnostic('reminder.subscription.stopped', { userIdMasked })
   }
 }

@@ -431,7 +431,9 @@ describe('notification and task production contracts', () => {
     expectInOrder(
       pushHandler,
       'resolveSysMessageExpiresAt(message.createTime)',
-      'if (!showIncomingSysMessage(resolvedMessage)) return',
+      'if (!showIncomingSysMessage(resolvedMessage)) {',
+      "reason: 'expired'",
+      'return',
       'void enrichSysMessage(message, generation)',
     )
     expectInOrder(

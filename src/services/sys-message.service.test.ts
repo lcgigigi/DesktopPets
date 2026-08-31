@@ -19,6 +19,7 @@ vi.mock('../utils/env', () => ({
 class FakeWebSocket {
   static CONNECTING = 0
   static OPEN = 1
+  static instances: FakeWebSocket[] = []
 
   readonly url: string
   readyState = FakeWebSocket.OPEN
@@ -26,6 +27,7 @@ class FakeWebSocket {
 
   constructor(url: string) {
     this.url = url
+    FakeWebSocket.instances.push(this)
   }
 
   addEventListener(type: string, listener: (event: Event) => void) {
@@ -35,6 +37,21 @@ class FakeWebSocket {
   }
 
   close() {
+    this.readyState = 3
+    this.listeners.get('close')?.forEach((listener) => listener(new Event('close')))
+  }
+
+  open() {
+    this.readyState = FakeWebSocket.OPEN
+    this.listeners.get('open')?.forEach((listener) => listener(new Event('open')))
+  }
+
+  message(payload: unknown) {
+    const event = Object.assign(new Event('message'), { data: JSON.stringify(payload) })
+    this.listeners.get('message')?.forEach((listener) => listener(event))
+  }
+
+  serverClose() {
     this.readyState = 3
     this.listeners.get('close')?.forEach((listener) => listener(new Event('close')))
   }
@@ -53,6 +70,7 @@ describe('sysMessageService', () => {
       clearTimeout: globalThis.clearTimeout,
     })
     vi.stubGlobal('WebSocket', FakeWebSocket)
+    FakeWebSocket.instances = []
     mocks.get.mockReset()
     mocks.put.mockReset()
   })
@@ -220,6 +238,37 @@ describe('sysMessageService', () => {
 
     expect(listener).toHaveBeenCalledTimes(1)
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({ id: '202' }))
+
+    removeListener()
+  })
+
+  it('通过同一鉴权连接接收待办、会议、消息并在断线后重连', async () => {
+    mocks.get.mockResolvedValue({ rows: [] })
+    const listener = vi.fn()
+    const removeListener = sysMessageService.onMessage(listener)
+
+    sysMessageService.connect('10002')
+    const firstSocket = FakeWebSocket.instances[0]
+    firstSocket.open()
+    for (const bizType of [1, 2, 3]) {
+      firstSocket.message({
+        type: 'sys_message',
+        id: `message-${bizType}`,
+        msgSubject: `提醒 ${bizType}`,
+        msgContent: '测试消息',
+        msgStatus: 0,
+        msgType: 1,
+        bizType,
+      })
+    }
+
+    expect(listener.mock.calls.map(([message]) => message.bizType)).toEqual([1, 2, 3])
+
+    firstSocket.serverClose()
+    await vi.advanceTimersByTimeAsync(2_999)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(FakeWebSocket.instances).toHaveLength(2)
 
     removeListener()
   })

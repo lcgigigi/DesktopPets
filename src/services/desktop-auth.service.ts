@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { UserInfo } from '../types/api'
 import { storage } from '../utils/storage'
+import { maskDiagnosticIdentifier, recordDesktopDiagnostic } from './diagnostic.service'
 
 export const DESKTOP_AUTH_SCHEME = 'huali-ai-mascot'
 const AUTH_CALLBACK_HOST = 'auth-callback'
@@ -20,6 +21,10 @@ type AuthCallbackErrorHandler = (error: DesktopAuthCallbackError) => void
 interface NativeDesktopAuthCallback {
   callbackUrl?: string | null
   argumentCount: number
+}
+
+interface DesktopReleaseSmokeConfig {
+  authState: string
 }
 
 type DesktopAuthCallbackParseResult =
@@ -121,6 +126,7 @@ async function handleUrls(
   handler: AuthCallbackHandler,
   onError: AuthCallbackErrorHandler | undefined,
   handledUrls: Set<string>,
+  source: 'deep-link' | 'event' | 'startup' | 'native-poll',
 ) {
   if (!urls) return
 
@@ -129,13 +135,62 @@ async function handleUrls(
     handledUrls.add(url)
 
     const result = parseDesktopAuthCallbackResult(url)
-    recordRendererSmokeReceipt(url, result)
+    let parsedUrl: URL | undefined
+    try {
+      parsedUrl = new URL(url)
+    } catch {
+      parsedUrl = undefined
+    }
+    recordDesktopDiagnostic('auth.callback.renderer_parsed', {
+      source,
+      outcome: result.status === 'error' ? `error:${result.error}` : result.status,
+      hasState: Boolean(parsedUrl?.searchParams.get('state')),
+      hasToken: Boolean(parsedUrl?.searchParams.get('token')),
+      hasUserId: Boolean(parsedUrl?.searchParams.get('userId')),
+      userIdMasked: maskDiagnosticIdentifier(parsedUrl?.searchParams.get('userId')),
+    })
     if (result.status === 'success') {
       handler(result.payload)
     } else if (result.status === 'error') {
       onError?.(result.error)
     }
+    // A success receipt is written only after the session callback has returned.
+    // This closes the old gate's gap where URL parsing passed but the Pinia/local
+    // storage session had not yet been committed.
+    recordRendererSmokeReceipt(url, result)
   })
+}
+
+export async function prepareDesktopReleaseSmokeState() {
+  try {
+    const config = await invoke<DesktopReleaseSmokeConfig | null>('get_desktop_release_smoke_config')
+    if (!config?.authState) return false
+    storage.setDesktopAuthState(config.authState)
+    recordDesktopDiagnostic('release_smoke.auth_state_prepared', {
+      statePresent: true,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function recordDesktopReleaseSmokeSession(
+  sessionCommitted: boolean,
+  subscriptionsStarted: boolean,
+  reminderTypesQueued: number,
+) {
+  void invoke<boolean>('record_desktop_release_smoke_session', {
+    sessionCommitted,
+    subscriptionsStarted,
+    reminderTypesQueued,
+  }).catch(() => false)
+}
+
+export function recordDesktopReleaseSmokeRestart(sessionRestored: boolean) {
+  void invoke<boolean>('record_desktop_release_smoke_restart', {
+    sessionRestored,
+  }).catch(() => false)
 }
 
 export async function listenDesktopAuthCallbacks(
@@ -152,7 +207,7 @@ export async function listenDesktopAuthCallbacks(
       if (!callback) return
 
       if (callback.callbackUrl) {
-        await handleUrls([callback.callbackUrl], handler, onError, handledUrls)
+        await handleUrls([callback.callbackUrl], handler, onError, handledUrls, 'native-poll')
       } else if (callback.argumentCount > 1) {
         onError?.('missing-callback-url')
       }
@@ -165,7 +220,7 @@ export async function listenDesktopAuthCallbacks(
 
   try {
     unlisteners.push(await onOpenUrl((urls) => {
-      void handleUrls(urls, handler, onError, handledUrls)
+      void handleUrls(urls, handler, onError, handledUrls, 'deep-link')
     }))
   } catch (error) {
     console.warn('Desktop auth deep link listener failed', error)
@@ -173,14 +228,14 @@ export async function listenDesktopAuthCallbacks(
 
   try {
     unlisteners.push(await listen<string>('desktop-auth-callback', (event) => {
-      void handleUrls([event.payload], handler, onError, handledUrls)
+      void handleUrls([event.payload], handler, onError, handledUrls, 'event')
     }))
   } catch (error) {
     console.warn('Desktop auth native callback listener failed', error)
   }
 
   try {
-    await handleUrls(await getCurrent(), handler, onError, handledUrls)
+    await handleUrls(await getCurrent(), handler, onError, handledUrls, 'startup')
   } catch (error) {
     console.warn('Desktop auth startup callback failed', error)
   }

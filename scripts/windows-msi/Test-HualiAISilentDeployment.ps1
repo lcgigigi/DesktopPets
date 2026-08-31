@@ -161,10 +161,17 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
 
   $nonce = [Guid]::NewGuid().ToString('N')
   $receiptPath = Join-Path $env:TEMP "huali-ai-desktop-auth-smoke-$nonce.json"
-  $callbackUrl = "huali-ai-mascot://auth-callback?state=smoke-state&token=smoke-token&userId=smoke-user&smokeNonce=$nonce"
+  $authState = "smoke-$nonce"
+  $callbackUrl = "huali-ai-mascot://auth-callback?state=$authState&token=smoke-token&userId=smoke-user&smokeNonce=$nonce"
+  $previousSmokeEnabled = $env:HUALI_AI_RELEASE_SMOKE
+  $previousSmokeState = $env:HUALI_AI_RELEASE_SMOKE_AUTH_STATE
+  $previousSmokeNonce = $env:HUALI_AI_RELEASE_SMOKE_NONCE
 
   try {
     Remove-Item -LiteralPath $receiptPath -Force -ErrorAction SilentlyContinue
+    $env:HUALI_AI_RELEASE_SMOKE = '1'
+    $env:HUALI_AI_RELEASE_SMOKE_AUTH_STATE = $authState
+    $env:HUALI_AI_RELEASE_SMOKE_NONCE = $nonce
 
     # Run the real renderer first. Starting only from the protocol URL proves
     # that a short-lived helper process saw argv, but not that single-instance
@@ -188,7 +195,12 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
         try {
           $candidate = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
           if ($candidate.forwardedToRunningInstance -eq $true -and
-              $candidate.rendererReceived -eq $true) {
+              $candidate.rendererReceived -eq $true -and
+              $candidate.rendererOutcome -eq 'success' -and
+              $candidate.sessionCommitted -eq $true -and
+              $candidate.subscriptionsStarted -eq $true -and
+              $candidate.reminderTypesQueued -eq 3 -and
+              $candidate.notificationWindowShown -eq $true) {
             $receipt = $candidate
             break
           }
@@ -206,15 +218,24 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
         'hasToken',
         'hasUserId',
         'forwardedToRunningInstance',
-        'rendererReceived'
+        'rendererReceived',
+        'sessionCommitted',
+        'subscriptionsStarted',
+        'notificationWindowShown'
       )) {
       $property = $receipt.PSObject.Properties[$field]
       if (-not $property -or $property.Value -ne $true) {
         throw "huali-ai-mascot 真协议回调缺少必要字段：$field"
       }
     }
-    if ($receipt.rendererOutcome -ne 'error:expired') {
-      throw "renderer 未完成预期的 state 校验：$($receipt.rendererOutcome)"
+    if ($receipt.rendererOutcome -ne 'success') {
+      throw "renderer 未完成有效 state 的登录提交：$($receipt.rendererOutcome)"
+    }
+    if ($receipt.reminderTypesQueued -ne 3) {
+      throw "待办、会议、消息三类提醒未全部进入 renderer 队列：$($receipt.reminderTypesQueued)"
+    }
+    if ($receipt.notificationCompact -ne $false) {
+      throw '原生提醒窗口仍是登录卡片尺寸，系统消息提醒未真正展示。'
     }
     # The protocol helper can still be shutting down for a fraction of a
     # second after the running renderer has written its receipt. Give Windows
@@ -233,14 +254,52 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
       throw "协议回调没有保持单实例：启动前=$($existingProcess.Id)，当前=$($runningProcesses.Id -join ',')"
     }
 
+    # A successful callback is not sufficient if the session disappears with
+    # the renderer process. Restart the installed executable against the same
+    # WebView2 profile and require the persisted session to be restored.
+    Stop-Process -Id $existingProcess.Id -Force
+    $stoppedDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (@(Get-HualiProcesses).Count -gt 0 -and [DateTime]::UtcNow -lt $stoppedDeadline) {
+      Start-Sleep -Milliseconds 200
+    }
+    Assert-NoHualiProcesses -Stage '有效登录 callback 后重启'
+    $restartProcess = Start-Process -FilePath $ExpectedExecutablePath -PassThru
+    $restartWindowHandle = Wait-ForVisibleApplicationWindow `
+      -Process $restartProcess `
+      -TimeoutSeconds 20
+    $restartDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    $sessionRestoredAfterRestart = $false
+    while (-not $sessionRestoredAfterRestart -and [DateTime]::UtcNow -lt $restartDeadline) {
+      if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+        try {
+          $restartReceipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+          $sessionRestoredAfterRestart = $restartReceipt.sessionRestoredAfterRestart -eq $true
+        } catch {
+          $sessionRestoredAfterRestart = $false
+        }
+      }
+      if (-not $sessionRestoredAfterRestart) { Start-Sleep -Milliseconds 200 }
+    }
+    if (-not $sessionRestoredAfterRestart) {
+      throw '有效 callback 写入的桌面 session 在进程重启后没有恢复。'
+    }
+
     return [ordered]@{
       shellProtocolInvoked = $true
       nativeCallbackReceived = $true
       forwardedToRunningInstance = $true
       rendererReceived = $true
       rendererStateValidation = $receipt.rendererOutcome
+      sessionCommitted = $true
+      subscriptionsStarted = $true
+      todoMeetingMessageQueued = $true
+      notificationWindowShown = $true
+      notificationProcessId = $receipt.notificationProcessId
       singleInstancePreserved = $true
       existingWindowHandle = $existingWindowHandle
+      sessionRestoredAfterRestart = $true
+      restartProcessId = $restartProcess.Id
+      restartWindowHandle = $restartWindowHandle
       stateDelivered = $true
       tokenDelivered = $true
       userIdDelivered = $true
@@ -248,6 +307,21 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
     }
   } finally {
     Remove-Item -LiteralPath $receiptPath -Force -ErrorAction SilentlyContinue
+    if ($null -eq $previousSmokeEnabled) {
+      Remove-Item Env:HUALI_AI_RELEASE_SMOKE -ErrorAction SilentlyContinue
+    } else {
+      $env:HUALI_AI_RELEASE_SMOKE = $previousSmokeEnabled
+    }
+    if ($null -eq $previousSmokeState) {
+      Remove-Item Env:HUALI_AI_RELEASE_SMOKE_AUTH_STATE -ErrorAction SilentlyContinue
+    } else {
+      $env:HUALI_AI_RELEASE_SMOKE_AUTH_STATE = $previousSmokeState
+    }
+    if ($null -eq $previousSmokeNonce) {
+      Remove-Item Env:HUALI_AI_RELEASE_SMOKE_NONCE -ErrorAction SilentlyContinue
+    } else {
+      $env:HUALI_AI_RELEASE_SMOKE_NONCE = $previousSmokeNonce
+    }
   }
 }
 
