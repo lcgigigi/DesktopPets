@@ -1644,14 +1644,21 @@ try {
   Start-Sleep -Milliseconds $hoverRevealSettleMs
   $revealedWindows = @(Get-WindowSnapshot -Process $process)
   $revealedMascot = Find-WindowByHandle -Windows $revealedWindows -Handle $mascotHandle
-  $hoverHitRoot = [HualiVisualSmokeNative]::RootWindowFromPoint(
-    $peekHoverX,
-    $peekAvatarPoint.Y
-  )
   if (-not $revealedMascot -or
       $revealedMascot.Left -lt $peekWorkArea.Left -or
-      $revealedMascot.Right -gt $peekWorkArea.Right -or
-      $hoverHitRoot -ne $mascotHandle) {
+      $revealedMascot.Right -gt $peekWorkArea.Right) {
+    throw '半头悬停恢复动画结束后，固定机器人 HWND 未完全回到工作区。'
+  }
+  # A fully revealed right-docked mascot intentionally leaves a 30-DIP safety
+  # margin, so the cursor that triggered the edge hover is no longer over the
+  # final avatar. Query hit testing at the settled avatar without moving or
+  # clicking the cursor; the reveal itself must still have been hover-only.
+  $settledAvatarPoint = Get-AvatarClickPoint -MascotWindow $revealedMascot -Scale $scale
+  $hoverHitRoot = [HualiVisualSmokeNative]::RootWindowFromPoint(
+    $settledAvatarPoint.X,
+    $settledAvatarPoint.Y
+  )
+  if ($hoverHitRoot -ne $mascotHandle) {
     throw "半头悬停恢复后机器人不可交互：命中 HWND=$hoverHitRoot，预期 HWND=$mascotHandle。"
   }
   $report.checks.peekHoverReveal = [ordered]@{
@@ -1661,6 +1668,8 @@ try {
     sameHwnd = ([long]$revealedMascot.Handle -eq $mascotHandle)
     hoverOnly = $true
     settledForMs = $hoverRevealSettleMs
+    settledHitX = $settledAvatarPoint.X
+    settledHitY = $settledAvatarPoint.Y
     hitTestRoot = $hoverHitRoot
   }
   Save-ScreenCapture -FileName '05-half-head-hover-revealed.png' | Out-Null
