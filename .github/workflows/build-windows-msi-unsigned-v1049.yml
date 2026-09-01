@@ -41,7 +41,6 @@ jobs:
         run: |
           & .\scripts\windows-msi\Test-HualiAIWindowsVisualSmoke.ps1 -CompileBackdropOnly
           foreach ($gate in @(
-            '.\scripts\windows-msi\Collect-HualiAIDiagnostics.ps1',
             '.\scripts\windows-msi\Test-HualiAIMsi.ps1',
             '.\scripts\windows-msi\Test-HualiAISilentDeployment.ps1'
           )) {
@@ -53,7 +52,6 @@ jobs:
         run: |
           & .\scripts\windows-msi\Test-HualiAIWindowsVisualSmoke.ps1 -CompileBackdropOnly
           foreach ($gate in @(
-            '.\scripts\windows-msi\Collect-HualiAIDiagnostics.ps1',
             '.\scripts\windows-msi\Test-HualiAIMsi.ps1',
             '.\scripts\windows-msi\Test-HualiAISilentDeployment.ps1'
           )) {

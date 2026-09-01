@@ -208,7 +208,6 @@ try {
 
   Copy-Item -LiteralPath $builtMsi.FullName -Destination $outputMsi
   Copy-Item -LiteralPath (Join-Path $Root 'scripts\windows-msi\Install-HualiAI.ps1') -Destination $stagingDirectory
-  Copy-Item -LiteralPath (Join-Path $Root 'scripts\windows-msi\Collect-HualiAIDiagnostics.ps1') -Destination $stagingDirectory
   Copy-Item -LiteralPath (Join-Path $Root 'scripts\windows-msi\Uninstall-HualiAI.ps1') -Destination $stagingDirectory
   Copy-Item -LiteralPath (Join-Path $Root 'scripts\windows-msi\Test-HualiAIMsi.ps1') -Destination $stagingDirectory
   Copy-Item -LiteralPath (Join-Path $Root 'scripts\windows-msi\Test-HualiAISilentDeployment.ps1') -Destination $stagingDirectory

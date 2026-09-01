@@ -2,9 +2,6 @@ import { describe, expect, it } from 'vitest'
 import msiValidationSource from '../../scripts/windows-msi/Test-HualiAIMsi.ps1?raw'
 import deploymentSmokeSource from '../../scripts/windows-msi/Test-HualiAISilentDeployment.ps1?raw'
 import visualSmokeSource from '../../scripts/windows-msi/Test-HualiAIWindowsVisualSmoke.ps1?raw'
-import diagnosticCollectorSource from '../../scripts/windows-msi/Collect-HualiAIDiagnostics.ps1?raw'
-import buildMsiSource from '../../scripts/build-windows-msi.ps1?raw'
-import deploymentGuideSource from '../../scripts/windows-msi/平台部署说明.txt?raw'
 import rustSource from '../../src-tauri/src/main.rs?raw'
 
 describe('Windows administrator deployment smoke contracts', () => {
@@ -72,25 +69,6 @@ describe('Windows administrator deployment smoke contracts', () => {
     expect(normalized).not.toMatch(
       /(?<!@)\(Get-(?:InstalledProducts|HualiProcesses|InteractiveExplorerSessions)\)\.Count/
     )
-  })
-
-  it('lets administrators collect redacted runtime evidence without end-user installation work', () => {
-    const collector = diagnosticCollectorSource.replace(/\r\n?/g, '\n')
-    const buildScript = buildMsiSource.replace(/\r\n?/g, '\n')
-    const guide = deploymentGuideSource.replace(/\r\n?/g, '\n')
-
-    expect(collector).toContain('请由管理平台以管理员或 SYSTEM 身份运行该脚本')
-    expect(collector).toContain('Get-CimInstance -ClassName Win32_UserProfile')
-    expect(collector).toContain("'AppData\\Local\\com.huali.ai.mascot\\logs'")
-    expect(collector).toContain("@('desktop-diagnostic.jsonl', 'desktop-diagnostic.jsonl.1')")
-    expect(collector).toContain("Join-Path $env:ProgramData 'HualiAI\\Diagnostics'")
-    expect(collector).toContain('Compress-Archive')
-    expect(collector).toContain('collection-manifest.json')
-    expect(collector).not.toContain('localStorage')
-    expect(collector).not.toContain('AppData\\Local\\Google\\Chrome')
-    expect(buildScript).toContain("scripts\\windows-msi\\Collect-HualiAIDiagnostics.ps1")
-    expect(guide).toContain('管理平台以管理员或 SYSTEM 身份静默执行')
-    expect(guide).toContain('C:\\ProgramData\\HualiAI\\Diagnostics\\')
   })
 
   it('uses isolated programmatic WebView2 options only for the visual child process', () => {

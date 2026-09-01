@@ -121,17 +121,7 @@ WINDOWS_CERTIFICATE_PASSWORD    PFX 密码
 
 十、登录与提醒诊断日志
 
-发生“网页已登录但桌面仍等待”或“没有主动提醒”时，不需要终端用户安装程序或手工查找日志。请由管理平台以管理员或 SYSTEM 身份静默执行：
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Collect-HualiAIDiagnostics.ps1
-
-脚本会从实际用户配置目录收集当前日志和一份轮转日志，输出单个 ZIP 到：
-C:\ProgramData\HualiAI\Diagnostics\
-
-如只需指定用户，可追加：
--ProfileName "Windows登录名"
-
-管理平台回收 ZIP 即可。脚本不弹窗口、不读取浏览器存储，也不要求用户具备管理员权限。原始日志位于：
+发生“网页已登录但桌面仍等待”或“没有主动提醒”时，请收集当前 Windows 用户目录下的：
 %LOCALAPPDATA%\com.huali.ai.mascot\logs\desktop-diagnostic.jsonl
 
 日志包含版本号、PID、callback 字段是否存在、会话状态、订阅/轮询/WebSocket 状态和原生提醒窗口调用结果。token、完整 userId、callback URL 和一次性 state 均不会落盘；单文件达到 5 MB 后保留一份轮转日志。
