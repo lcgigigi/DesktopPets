@@ -297,31 +297,34 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
             } |
             Select-Object -Last 1
           $nativeDiagnostic = if ($nativeDiagnosticLine) {
-            $nativeDiagnosticLine | ConvertFrom-Json
+            $nativeDiagnosticLine | ConvertFrom-Json -AsHashtable
           } else { $null }
           $rendererDiagnostic = if ($rendererDiagnosticLine) {
-            $rendererDiagnosticLine | ConvertFrom-Json
+            $rendererDiagnosticLine | ConvertFrom-Json -AsHashtable
           } else { $null }
           $sessionDiagnostic = if ($sessionDiagnosticLine) {
-            $sessionDiagnosticLine | ConvertFrom-Json
+            $sessionDiagnosticLine | ConvertFrom-Json -AsHashtable
           } else { $null }
+          $nativeFields = if ($nativeDiagnostic) { $nativeDiagnostic['fields'] } else { $null }
+          $rendererFields = if ($rendererDiagnostic) { $rendererDiagnostic['fields'] } else { $null }
+          $sessionFields = if ($sessionDiagnostic) { $sessionDiagnostic['fields'] } else { $null }
           $nativeFieldsMatch = $null -ne $nativeDiagnostic -and
-            $nativeDiagnostic.fields.callbackPrefixMatches -eq $true -and
-            $nativeDiagnostic.fields.token -eq 'smoke-token' -and
-            $nativeDiagnostic.fields.state -eq $authState
+            $nativeFields['callbackPrefixMatches'] -eq $true -and
+            $nativeFields['token'] -eq 'smoke-token' -and
+            $nativeFields['state'] -eq $authState
           $rendererFieldsMatch = $null -ne $rendererDiagnostic -and
-            $rendererDiagnostic.fields.receivedState -eq $authState -and
-            $rendererDiagnostic.fields.expectedState -eq $authState -and
-            $rendererDiagnostic.fields.stateMatches -eq $true
+            $rendererFields['receivedState'] -eq $authState -and
+            $rendererFields['expectedState'] -eq $authState -and
+            $rendererFields['stateMatches'] -eq $true
           $sessionFieldsMatch = $null -ne $sessionDiagnostic -and
-            $sessionDiagnostic.fields.token -eq 'smoke-token' -and
-            $sessionDiagnostic.fields.userId -eq 'smoke-user'
+            $sessionFields['token'] -eq 'smoke-token' -and
+            $sessionFields['userId'] -eq 'smoke-user'
           $nativeRawComplete = $nativeFieldsMatch -and
-            [string]$nativeDiagnostic.fields.callbackUrl -notin @('', '[redacted]') -and
-            $nativeDiagnostic.fields.callbackUrlLength -eq ([string]$nativeDiagnostic.fields.callbackUrl).Length
+            [string]$nativeFields['callbackUrl'] -notin @('', '[redacted]') -and
+            $nativeFields['callbackUrlLength'] -eq ([string]$nativeFields['callbackUrl']).Length
           $rendererRawComplete = $rendererFieldsMatch -and
-            [string]$rendererDiagnostic.fields.rawUrl -notin @('', '[redacted]') -and
-            $rendererDiagnostic.fields.rawUrlLength -eq ([string]$rendererDiagnostic.fields.rawUrl).Length
+            [string]$rendererFields['rawUrl'] -notin @('', '[redacted]') -and
+            $rendererFields['rawUrlLength'] -eq ([string]$rendererFields['rawUrl']).Length
           if ($nativeRawComplete -and $rendererRawComplete -and $sessionFieldsMatch) {
             $rawDiagnosticsVerified = $true
             break
