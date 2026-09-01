@@ -161,6 +161,8 @@ function Assert-NoDesktopAuthProtocol {
 function Invoke-DesktopAuthProtocolCallbackSmoke {
   param(
     [Parameter(Mandatory = $true)][string]$ExpectedExecutablePath,
+    [Parameter(Mandatory = $true)][string]$ExpectedAppVersion,
+    [Parameter(Mandatory = $true)][string]$DiagnosticEvidenceDirectory,
     [switch]$RequireRawDiagnostics
   )
 
@@ -262,16 +264,21 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
             Where-Object { $null -ne $_ })
           $nativeDiagnostic = $diagnosticRecords |
             Where-Object {
+              $_.appVersion -eq $ExpectedAppVersion -and
               $_.event -eq 'auth.callback.single_instance_received' -and
-              $_.fields.callbackUrl -eq $callbackUrl -and
+              [string]$_.fields.callbackUrl -notin @('', '[redacted]') -and
+              $_.fields.callbackUrlLength -eq ([string]$_.fields.callbackUrl).Length -and
+              $_.fields.callbackPrefixMatches -eq $true -and
               $_.fields.token -eq 'smoke-token' -and
               $_.fields.state -eq $authState
             } |
             Select-Object -Last 1
           $rendererDiagnostic = $diagnosticRecords |
             Where-Object {
+              $_.appVersion -eq $ExpectedAppVersion -and
               $_.event -eq 'auth.callback.renderer_parsed' -and
-              $_.fields.rawUrl -eq $callbackUrl -and
+              [string]$_.fields.rawUrl -notin @('', '[redacted]') -and
+              $_.fields.rawUrlLength -eq ([string]$_.fields.rawUrl).Length -and
               $_.fields.token -eq 'smoke-token' -and
               $_.fields.receivedState -eq $authState -and
               $_.fields.expectedState -eq $authState -and
@@ -280,6 +287,7 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
             Select-Object -Last 1
           $sessionDiagnostic = $diagnosticRecords |
             Where-Object {
+              $_.appVersion -eq $ExpectedAppVersion -and
               $_.event -eq 'session.store.committed' -and
               $_.fields.token -eq 'smoke-token' -and
               $_.fields.userId -eq 'smoke-user'
@@ -292,8 +300,14 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
         }
         Start-Sleep -Milliseconds 200
       }
+      if (Test-Path -LiteralPath $diagnosticLogPath -PathType Leaf) {
+        Copy-Item `
+          -LiteralPath $diagnosticLogPath `
+          -Destination (Join-Path $DiagnosticEvidenceDirectory 'raw-auth-diagnostic.jsonl') `
+          -Force
+      }
       if (-not $rawDiagnosticsVerified) {
-        throw "本地诊断日志未完整保存 callback URL、token、收到/预期 state 或 session：$diagnosticLogPath"
+        throw "本地诊断日志字段不完整：native=$([bool]$nativeDiagnostic)，renderer=$([bool]$rendererDiagnostic)，session=$([bool]$sessionDiagnostic)，path=$diagnosticLogPath"
       }
     }
     # The protocol helper can still be shutting down for a fraction of a
@@ -832,6 +846,8 @@ try {
   Write-Host '验证 Windows 真协议唤起与原生登录回调交付...'
   $report.checks.desktopAuthProtocolCallback = Invoke-DesktopAuthProtocolCallbackSmoke `
     -ExpectedExecutablePath $installedBeforeFirstUninstall.ExecutablePath `
+    -ExpectedAppVersion $ExpectedVersion `
+    -DiagnosticEvidenceDirectory $resolvedEvidence `
     -RequireRawDiagnostics:$RequireRawAuthDiagnostics
   Stop-HualiProcesses
   Assert-NoHualiProcesses -Stage '登录回调协议冒烟测试'
