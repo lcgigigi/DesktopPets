@@ -1,16 +1,16 @@
-name: Build unsigned Windows enterprise MSI v1.0.49
+name: Build unsigned Windows enterprise MSI v1.0.50
 
 on:
   push:
     branches:
-      - codex/p0-auth-notification-1.0.49
+      - codex/p0-auth-notification-1.0.50
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: windows-enterprise-msi-unsigned-v1049
+  group: windows-enterprise-msi-unsigned-v1050
   cancel-in-progress: false
 
 jobs:
@@ -134,7 +134,7 @@ jobs:
           if (-not $msi) { throw 'MSI artifact was not found.' }
           & .\scripts\windows-msi\Test-HualiAISilentDeployment.ps1 `
             -MsiPath $msi.FullName `
-            -ExpectedVersion '1.0.49' `
+            -ExpectedVersion '1.0.50' `
             -PreviousMsiPath $env:HUALI_PREVIOUS_MSI `
             -PreviousVersion '1.0.48' `
             -PreviousMsiSha256 'f8cbec3e2ff09bba1f8480b8dc630abbeead16243b2c9ca2b7d835ee295acf98' `
@@ -186,7 +186,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: huali-windows-enterprise-msi-intranet-v1.0.49
+          name: huali-windows-enterprise-msi-intranet-v1.0.50
           path: |
             artifacts/windows-msi-intranet/
             artifacts/*-intranet-windows-enterprise-msi-x64.zip
@@ -197,7 +197,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: huali-windows-qa-evidence-v1.0.49-${{ github.run_id }}
+          name: huali-windows-qa-evidence-v1.0.50-${{ github.run_id }}
           path: artifacts/windows-deployment-smoke/
           if-no-files-found: warn
           retention-days: 30
