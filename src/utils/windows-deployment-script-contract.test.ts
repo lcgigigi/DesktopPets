@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import msiValidationSource from '../../scripts/windows-msi/Test-HualiAIMsi.ps1?raw'
 import deploymentSmokeSource from '../../scripts/windows-msi/Test-HualiAISilentDeployment.ps1?raw'
 import visualSmokeSource from '../../scripts/windows-msi/Test-HualiAIWindowsVisualSmoke.ps1?raw'
+import deploymentReadmeSource from '../../scripts/windows-msi/平台部署说明.txt?raw'
 import rustSource from '../../src-tauri/src/main.rs?raw'
 
 describe('Windows administrator deployment smoke contracts', () => {
@@ -85,6 +86,14 @@ describe('Windows administrator deployment smoke contracts', () => {
     expect(normalized).not.toMatch(
       /(?<!@)\(Get-(?:InstalledProducts|HualiProcesses|InteractiveExplorerSessions)\)\.Count/
     )
+  })
+
+  it('tells administrators that the v1.0.51 local diagnostic log preserves raw auth fields', () => {
+    expect(deploymentReadmeSource).toContain('v1.0.51 是登录回调诊断版')
+    expect(deploymentReadmeSource).toContain('完整登录 URL')
+    expect(deploymentReadmeSource).toContain('完整 callback URL')
+    expect(deploymentReadmeSource).toContain('原始 token/userId/state')
+    expect(deploymentReadmeSource).toContain('仅保存在当前 Windows 用户本地')
   })
 
   it('uses isolated programmatic WebView2 options only for the visual child process', () => {
