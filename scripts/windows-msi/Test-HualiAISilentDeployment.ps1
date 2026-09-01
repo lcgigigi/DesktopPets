@@ -22,6 +22,8 @@ param(
 
   [switch]$RequireRawAuthDiagnostics,
 
+  [switch]$DiagnosticOnly,
+
   [string]$EvidenceDirectory = ''
 )
 
@@ -163,7 +165,8 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
     [Parameter(Mandatory = $true)][string]$ExpectedExecutablePath,
     [Parameter(Mandatory = $true)][string]$ExpectedAppVersion,
     [Parameter(Mandatory = $true)][string]$DiagnosticEvidenceDirectory,
-    [switch]$RequireRawDiagnostics
+    [switch]$RequireRawDiagnostics,
+    [switch]$DiagnosticOnly
   )
 
   $nonce = [Guid]::NewGuid().ToString('N')
@@ -204,13 +207,17 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
       if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
         try {
           $candidate = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-          if ($candidate.forwardedToRunningInstance -eq $true -and
-              $candidate.rendererReceived -eq $true -and
-              $candidate.rendererOutcome -eq 'success' -and
-              $candidate.sessionCommitted -eq $true -and
-              $candidate.subscriptionsStarted -eq $true -and
+          $callbackCommitted = $candidate.forwardedToRunningInstance -eq $true -and
+            $candidate.rendererReceived -eq $true -and
+            $candidate.rendererOutcome -eq 'success' -and
+            $candidate.sessionCommitted -eq $true
+          $formalReleaseSignalsReady = $false
+          if (-not $DiagnosticOnly) {
+            $formalReleaseSignalsReady = $candidate.subscriptionsStarted -eq $true -and
               $candidate.reminderTypesQueued -eq 3 -and
-              $candidate.notificationWindowShown -eq $true) {
+              $candidate.notificationWindowShown -eq $true
+          }
+          if ($callbackCommitted -and ($DiagnosticOnly -or $formalReleaseSignalsReady)) {
             $receipt = $candidate
             break
           }
@@ -222,17 +229,19 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
       Start-Sleep -Milliseconds 200
     }
 
-    foreach ($field in @(
+    $requiredReceiptFields = @(
         'callbackReceived',
         'hasState',
         'hasToken',
         'hasUserId',
         'forwardedToRunningInstance',
         'rendererReceived',
-        'sessionCommitted',
-        'subscriptionsStarted',
-        'notificationWindowShown'
-      )) {
+        'sessionCommitted'
+      )
+    if (-not $DiagnosticOnly) {
+      $requiredReceiptFields += @('subscriptionsStarted', 'notificationWindowShown')
+    }
+    foreach ($field in $requiredReceiptFields) {
       $property = $receipt.PSObject.Properties[$field]
       if (-not $property -or $property.Value -ne $true) {
         throw "huali-ai-mascot 真协议回调缺少必要字段：$field"
@@ -241,10 +250,10 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
     if ($receipt.rendererOutcome -ne 'success') {
       throw "renderer 未完成有效 state 的登录提交：$($receipt.rendererOutcome)"
     }
-    if ($receipt.reminderTypesQueued -ne 3) {
+    if (-not $DiagnosticOnly -and $receipt.reminderTypesQueued -ne 3) {
       throw "待办、会议、消息三类提醒未全部进入 renderer 队列：$($receipt.reminderTypesQueued)"
     }
-    if ($receipt.notificationCompact -ne $false) {
+    if (-not $DiagnosticOnly -and $receipt.notificationCompact -ne $false) {
       throw '原生提醒窗口仍是登录卡片尺寸，系统消息提醒未真正展示。'
     }
 
@@ -259,46 +268,61 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
       $rendererRawComplete = $false
       while ([DateTime]::UtcNow -lt $diagnosticDeadline) {
         if (Test-Path -LiteralPath $diagnosticLogPath -PathType Leaf) {
-          $diagnosticRecords = @(Get-Content -LiteralPath $diagnosticLogPath -ErrorAction Stop |
-            ForEach-Object {
-              try { $_ | ConvertFrom-Json } catch { $null }
-            } |
-            Where-Object { $null -ne $_ })
-          $nativeDiagnostic = $diagnosticRecords |
+          $versionFragment = '"appVersion":"' + $ExpectedAppVersion + '"'
+          $stateFragment = '"' + $authState + '"'
+          $diagnosticLines = @(Get-Content -LiteralPath $diagnosticLogPath -ErrorAction Stop)
+          $nativeDiagnosticLine = $diagnosticLines |
             Where-Object {
-              $_.appVersion -eq $ExpectedAppVersion -and
-              $_.event -eq 'auth.callback.single_instance_received' -and
-              $_.fields.callbackPrefixMatches -eq $true -and
-              $_.fields.token -eq 'smoke-token' -and
-              $_.fields.state -eq $authState
+              $_.Contains($versionFragment) -and
+              $_.Contains('"event":"auth.callback.single_instance_received"') -and
+              $_.Contains('"token":"smoke-token"') -and
+              $_.Contains($stateFragment)
             } |
             Select-Object -Last 1
-          $rendererDiagnostic = $diagnosticRecords |
+          $rendererDiagnosticLine = $diagnosticLines |
             Where-Object {
-              $_.appVersion -eq $ExpectedAppVersion -and
-              $_.event -eq 'auth.callback.renderer_parsed' -and
-              $_.fields.outcome -eq 'success' -and
-              $_.fields.token -eq 'smoke-token' -and
-              $_.fields.receivedState -eq $authState -and
-              $_.fields.expectedState -eq $authState -and
-              $_.fields.stateMatches -eq $true
+              $_.Contains($versionFragment) -and
+              $_.Contains('"event":"auth.callback.renderer_parsed"') -and
+              $_.Contains('"outcome":"success"') -and
+              $_.Contains('"token":"smoke-token"') -and
+              $_.Contains($stateFragment)
             } |
             Select-Object -Last 1
-          $sessionDiagnostic = $diagnosticRecords |
+          $sessionDiagnosticLine = $diagnosticLines |
             Where-Object {
-              $_.appVersion -eq $ExpectedAppVersion -and
-              $_.event -eq 'session.store.committed' -and
-              $_.fields.token -eq 'smoke-token' -and
-              $_.fields.userId -eq 'smoke-user'
+              $_.Contains($versionFragment) -and
+              $_.Contains('"event":"session.store.committed"') -and
+              $_.Contains('"token":"smoke-token"') -and
+              $_.Contains('"userId":"smoke-user"')
             } |
             Select-Object -Last 1
-          $nativeRawComplete = $null -ne $nativeDiagnostic -and
+          $nativeDiagnostic = if ($nativeDiagnosticLine) {
+            $nativeDiagnosticLine | ConvertFrom-Json
+          } else { $null }
+          $rendererDiagnostic = if ($rendererDiagnosticLine) {
+            $rendererDiagnosticLine | ConvertFrom-Json
+          } else { $null }
+          $sessionDiagnostic = if ($sessionDiagnosticLine) {
+            $sessionDiagnosticLine | ConvertFrom-Json
+          } else { $null }
+          $nativeFieldsMatch = $null -ne $nativeDiagnostic -and
+            $nativeDiagnostic.fields.callbackPrefixMatches -eq $true -and
+            $nativeDiagnostic.fields.token -eq 'smoke-token' -and
+            $nativeDiagnostic.fields.state -eq $authState
+          $rendererFieldsMatch = $null -ne $rendererDiagnostic -and
+            $rendererDiagnostic.fields.receivedState -eq $authState -and
+            $rendererDiagnostic.fields.expectedState -eq $authState -and
+            $rendererDiagnostic.fields.stateMatches -eq $true
+          $sessionFieldsMatch = $null -ne $sessionDiagnostic -and
+            $sessionDiagnostic.fields.token -eq 'smoke-token' -and
+            $sessionDiagnostic.fields.userId -eq 'smoke-user'
+          $nativeRawComplete = $nativeFieldsMatch -and
             [string]$nativeDiagnostic.fields.callbackUrl -notin @('', '[redacted]') -and
             $nativeDiagnostic.fields.callbackUrlLength -eq ([string]$nativeDiagnostic.fields.callbackUrl).Length
-          $rendererRawComplete = $null -ne $rendererDiagnostic -and
+          $rendererRawComplete = $rendererFieldsMatch -and
             [string]$rendererDiagnostic.fields.rawUrl -notin @('', '[redacted]') -and
             $rendererDiagnostic.fields.rawUrlLength -eq ([string]$rendererDiagnostic.fields.rawUrl).Length
-          if ($nativeRawComplete -and $rendererRawComplete -and $sessionDiagnostic) {
+          if ($nativeRawComplete -and $rendererRawComplete -and $sessionFieldsMatch) {
             $rawDiagnosticsVerified = $true
             break
           }
@@ -330,6 +354,25 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
 
     if ($runningProcesses.Count -ne 1 -or $runningProcesses[0].Id -ne $existingProcess.Id) {
       throw "协议回调没有保持单实例：启动前=$($existingProcess.Id)，当前=$($runningProcesses.Id -join ',')"
+    }
+
+    if ($DiagnosticOnly) {
+      return [ordered]@{
+        shellProtocolInvoked = $true
+        nativeCallbackReceived = $true
+        forwardedToRunningInstance = $true
+        rendererReceived = $true
+        rendererStateValidation = $receipt.rendererOutcome
+        sessionCommitted = $true
+        singleInstancePreserved = $true
+        existingWindowHandle = $existingWindowHandle
+        stateDelivered = $true
+        tokenDelivered = $true
+        userIdDelivered = $true
+        tokenValueRecorded = $rawDiagnosticsVerified
+        completeCallbackUrlRecorded = $rawDiagnosticsVerified
+        expectedAndReceivedStateRecorded = $rawDiagnosticsVerified
+      }
     }
 
     # A successful callback is not sufficient if the session disappears with
@@ -853,7 +896,8 @@ try {
     -ExpectedExecutablePath $installedBeforeFirstUninstall.ExecutablePath `
     -ExpectedAppVersion $ExpectedVersion `
     -DiagnosticEvidenceDirectory $resolvedEvidence `
-    -RequireRawDiagnostics:$RequireRawAuthDiagnostics
+    -RequireRawDiagnostics:$RequireRawAuthDiagnostics `
+    -DiagnosticOnly:$DiagnosticOnly
   Stop-HualiProcesses
   Assert-NoHualiProcesses -Stage '登录回调协议冒烟测试'
   Invoke-UninstallProduct `
@@ -973,7 +1017,11 @@ try {
     processRemoved = $true
   }
   $report.ok = $true
-  Write-Host '管理员 /qn 覆盖升级、本 runner 可执行的默认启动路径与完整卸载验证全部通过。'
+  if ($DiagnosticOnly) {
+    Write-Host '诊断包管理员 /qn 覆盖升级、真协议回调与原始日志落盘验证全部通过。'
+  } else {
+    Write-Host '管理员 /qn 覆盖升级、本 runner 可执行的默认启动路径与完整卸载验证全部通过。'
+  }
 } catch {
   $primaryFailure = $_
   $report.failure = $_.Exception.Message

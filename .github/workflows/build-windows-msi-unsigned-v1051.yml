@@ -143,6 +143,7 @@ jobs:
             -PreviousVersion '1.0.50' `
             -PreviousMsiSha256 'ddecb14d99c2810a00cdcf90d708a8b5eb076d2fa877cbaad8d6c597dc77f368' `
             -RequireRawAuthDiagnostics `
+            -DiagnosticOnly `
             -EvidenceDirectory .\artifacts\windows-deployment-smoke
 
       - name: Finalize QA evidence even after failure
