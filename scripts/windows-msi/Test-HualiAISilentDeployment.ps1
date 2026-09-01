@@ -255,6 +255,8 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
       $nativeDiagnostic = $null
       $rendererDiagnostic = $null
       $sessionDiagnostic = $null
+      $nativeRawComplete = $false
+      $rendererRawComplete = $false
       while ([DateTime]::UtcNow -lt $diagnosticDeadline) {
         if (Test-Path -LiteralPath $diagnosticLogPath -PathType Leaf) {
           $diagnosticRecords = @(Get-Content -LiteralPath $diagnosticLogPath -ErrorAction Stop |
@@ -266,8 +268,6 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
             Where-Object {
               $_.appVersion -eq $ExpectedAppVersion -and
               $_.event -eq 'auth.callback.single_instance_received' -and
-              [string]$_.fields.callbackUrl -notin @('', '[redacted]') -and
-              $_.fields.callbackUrlLength -eq ([string]$_.fields.callbackUrl).Length -and
               $_.fields.callbackPrefixMatches -eq $true -and
               $_.fields.token -eq 'smoke-token' -and
               $_.fields.state -eq $authState
@@ -277,8 +277,7 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
             Where-Object {
               $_.appVersion -eq $ExpectedAppVersion -and
               $_.event -eq 'auth.callback.renderer_parsed' -and
-              [string]$_.fields.rawUrl -notin @('', '[redacted]') -and
-              $_.fields.rawUrlLength -eq ([string]$_.fields.rawUrl).Length -and
+              $_.fields.outcome -eq 'success' -and
               $_.fields.token -eq 'smoke-token' -and
               $_.fields.receivedState -eq $authState -and
               $_.fields.expectedState -eq $authState -and
@@ -293,7 +292,13 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
               $_.fields.userId -eq 'smoke-user'
             } |
             Select-Object -Last 1
-          if ($nativeDiagnostic -and $rendererDiagnostic -and $sessionDiagnostic) {
+          $nativeRawComplete = $null -ne $nativeDiagnostic -and
+            [string]$nativeDiagnostic.fields.callbackUrl -notin @('', '[redacted]') -and
+            $nativeDiagnostic.fields.callbackUrlLength -eq ([string]$nativeDiagnostic.fields.callbackUrl).Length
+          $rendererRawComplete = $null -ne $rendererDiagnostic -and
+            [string]$rendererDiagnostic.fields.rawUrl -notin @('', '[redacted]') -and
+            $rendererDiagnostic.fields.rawUrlLength -eq ([string]$rendererDiagnostic.fields.rawUrl).Length
+          if ($nativeRawComplete -and $rendererRawComplete -and $sessionDiagnostic) {
             $rawDiagnosticsVerified = $true
             break
           }
@@ -307,7 +312,7 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
           -Force
       }
       if (-not $rawDiagnosticsVerified) {
-        throw "本地诊断日志字段不完整：native=$([bool]$nativeDiagnostic)，renderer=$([bool]$rendererDiagnostic)，session=$([bool]$sessionDiagnostic)，path=$diagnosticLogPath"
+        throw "本地诊断日志字段不完整：nativeEvent=$([bool]$nativeDiagnostic)，nativeRaw=$nativeRawComplete，rendererEvent=$([bool]$rendererDiagnostic)，rendererRaw=$rendererRawComplete，session=$([bool]$sessionDiagnostic)，path=$diagnosticLogPath"
       }
     }
     # The protocol helper can still be shutting down for a fraction of a
