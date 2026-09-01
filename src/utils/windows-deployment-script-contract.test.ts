@@ -22,6 +22,7 @@ describe('Windows administrator deployment smoke contracts', () => {
     expect(deployment).toContain('Assert-DesktopAuthProtocol -ExpectedExecutablePath $installedExecutablePath')
     expect(deployment).toContain('function Invoke-DesktopAuthProtocolCallbackSmoke')
     expect(deployment).toContain('Start-Process -FilePath $callbackUrl')
+    expect(deployment).toContain('HUALI-AI-MASCOT://AUTH-CALLBACK')
     expect(deployment).toContain('$existingProcess = Start-Process -FilePath $ExpectedExecutablePath -PassThru')
     expect(deployment).toContain('smokeNonce=$nonce')
     expect(deployment).toContain('forwardedToRunningInstance')

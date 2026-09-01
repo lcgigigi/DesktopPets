@@ -4,6 +4,7 @@ import {
   getOrCreateDesktopAuthState,
   parseDesktopAuthCallback,
 } from './desktop-auth.service'
+import desktopAuthServiceSource from './desktop-auth.service.ts?raw'
 import { storage } from '../utils/storage'
 
 function createLocalStorage() {
@@ -53,6 +54,38 @@ describe('desktop auth callback', () => {
         userName: 'Tester',
       },
     })
+  })
+
+  it('accepts Windows protocol callbacks whose custom-scheme host casing changed', () => {
+    expect(
+      parseDesktopAuthCallback(
+        'HUALI-AI-MASCOT://AUTH-CALLBACK?token=token-1&userId=10002&state=expected-state',
+      ),
+    ).toEqual({
+      token: 'token-1',
+      userInfo: {
+        userId: '10002',
+        userName: '10002',
+      },
+    })
+  })
+
+  it('deduplicates only recognized callbacks so redundant native delivery remains useful', () => {
+    const handleUrlsStart = desktopAuthServiceSource.indexOf('async function handleUrls')
+    const handleUrlsEnd = desktopAuthServiceSource.indexOf(
+      'export async function prepareDesktopReleaseSmokeState',
+      handleUrlsStart,
+    )
+    const handleUrls = desktopAuthServiceSource.slice(handleUrlsStart, handleUrlsEnd)
+    const parsedAt = handleUrls.indexOf('const result = parseDesktopAuthCallbackResult(url)')
+    const ignoredAt = handleUrls.indexOf("if (result.status === 'ignored') return")
+    const rememberedAt = handleUrls.indexOf('handledUrls.add(url)', ignoredAt)
+
+    expect(handleUrlsStart).toBeGreaterThanOrEqual(0)
+    expect(handleUrlsEnd).toBeGreaterThan(handleUrlsStart)
+    expect(parsedAt).toBeGreaterThanOrEqual(0)
+    expect(ignoredAt).toBeGreaterThan(parsedAt)
+    expect(rememberedAt).toBeGreaterThan(ignoredAt)
   })
 
   it('rejects a callback with a mismatched state', () => {

@@ -45,6 +45,7 @@ import {
   showMascotSystemNotificationWindow,
   showNotificationWindow,
   showPanelWindow,
+  type MascotMenuVisibilityPayload,
   type MascotSystemNotificationAction,
   type MascotSystemNotificationPresentation,
   type PanelTaskDeliveredPayload,
@@ -127,6 +128,10 @@ let systemNotificationPresentationGeneration = 0
 // suspended/reloaded WebView cannot outrank the new coordinator's intent.
 let systemNotificationSyncGeneration = Date.now() * 1000
 let systemNotificationMessageKey = ''
+// Right-click “隐藏” suppresses only the presentation the user has already
+// seen. A later auth cycle or a newly delivered reminder receives a new key and
+// may wake the assistant, preserving the product promise on the menu action.
+let userHiddenSystemNotificationKey = ''
 const systemNotificationWindowReady = ref(false)
 const contextMenuWindowVisible = ref(false)
 let isDeliveringDeferredTasks = false
@@ -432,6 +437,10 @@ function showNextSysMessage(now = Date.now()) {
 function showIncomingSysMessage(message: ResolvedSysMessage) {
   if (isSysMessageExpired(message.expiresAt)) return false
 
+  // A genuinely new reminder is allowed to wake an explicitly hidden
+  // assistant. Do this before queue mutation so the reactive sync observes the
+  // cleared suppression even when another message is currently at the head.
+  userHiddenSystemNotificationKey = ''
   void emitTo('mascot', 'mascot-close-overlays', {})
 
   if (currentSysMessage.value) {
@@ -696,13 +705,19 @@ async function syncSystemNotificationWindow() {
   const syncGeneration = ++systemNotificationSyncGeneration
   const presentation = buildSystemNotificationPresentation()
   if (!presentation) systemNotificationMessageKey = ''
+  if (!presentation) userHiddenSystemNotificationKey = ''
+  const suppressedByUserHide = Boolean(
+    presentation
+    && systemNotificationMessageKey
+    && systemNotificationMessageKey === userHiddenSystemNotificationKey
+  )
   await emitTo(
     'mascot-notification',
     MASCOT_SYSTEM_NOTIFICATION_PRESENT_EVENT,
-    presentation,
+    suppressedByUserHide ? null : presentation,
   )
   if (syncGeneration !== systemNotificationSyncGeneration) return
-  if (!presentation) {
+  if (!presentation || suppressedByUserHide) {
     // Native visibility is the final authority. Do not depend solely on a Vue
     // after-leave callback: a suspended WebView2 renderer could otherwise leave
     // a transparent always-on-top window intercepting clicks after the card is
@@ -711,6 +726,7 @@ async function syncSystemNotificationWindow() {
     recordDesktopDiagnostic('notification.sync.hidden', {
       success: hidden,
       generation: syncGeneration,
+      reason: suppressedByUserHide ? 'user-hide' : 'no-presentation',
     })
     return
   }
@@ -975,8 +991,13 @@ async function startDesktopLogin() {
     statePresent: Boolean(state),
     stateLength: state.length,
   })
+  // Clicking the mascot or login action is an explicit request to see the auth
+  // flow again, even if the same card was previously hidden from its menu.
+  const authPresentationWasHidden = userHiddenSystemNotificationKey === 'auth'
+  userHiddenSystemNotificationKey = ''
   authPending.value = true
   authErrorMessage.value = ''
+  if (authPresentationWasHidden) void syncSystemNotificationWindow()
   const opened = await openDesktopLogin(state)
   recordDesktopDiagnostic('auth.login.open_completed', { opened })
   if (!opened) {
@@ -1078,16 +1099,32 @@ onMounted(async () => {
         void syncSystemNotificationWindow()
       },
     )
-    removeContextMenuVisibilityListener = await listen<boolean>(
+    removeContextMenuVisibilityListener = await listen<MascotMenuVisibilityPayload>(
       MASCOT_CONTEXT_MENU_VISIBILITY_EVENT,
       (event) => {
+        const { visible, restoreNotification } = event.payload
         const wasVisible = contextMenuWindowVisible.value
-        contextMenuWindowVisible.value = event.payload
-        if (event.payload) {
+        contextMenuWindowVisible.value = visible
+        recordDesktopDiagnostic('interaction.context_menu.visibility_received', {
+          visible,
+          restoreNotification,
+          wasVisible,
+        })
+        if (visible) {
           const hideGeneration = ++systemNotificationSyncGeneration
           void hideMascotSystemNotificationWindow(hideGeneration)
         }
-        if (wasVisible && !event.payload) void syncSystemNotificationWindow()
+        if (!visible && !restoreNotification) {
+          userHiddenSystemNotificationKey = systemNotificationMessageKey
+          recordDesktopDiagnostic('interaction.context_menu.hide_intent', {
+            presentationKind: systemNotificationMessageKey === 'auth'
+              ? 'auth'
+              : systemNotificationMessageKey.startsWith('message:')
+                ? 'message'
+                : 'none',
+          })
+        }
+        if (wasVisible && !visible && restoreNotification) void syncSystemNotificationWindow()
       },
     )
     systemNotificationWindowReady.value = await isMascotSystemNotificationReady()

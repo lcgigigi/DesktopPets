@@ -162,7 +162,10 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
   $nonce = [Guid]::NewGuid().ToString('N')
   $receiptPath = Join-Path $env:TEMP "huali-ai-desktop-auth-smoke-$nonce.json"
   $authState = "smoke-$nonce"
-  $callbackUrl = "huali-ai-mascot://auth-callback?state=$authState&token=smoke-token&userId=smoke-user&smokeNonce=$nonce"
+  # Windows protocol activation is case-insensitive, while URL handling for a
+  # custom scheme may preserve host casing. Exercise that production variant
+  # so renderer validation cannot regress to a case-sensitive comparison.
+  $callbackUrl = "HUALI-AI-MASCOT://AUTH-CALLBACK?state=$authState&token=smoke-token&userId=smoke-user&smokeNonce=$nonce"
   $previousSmokeEnabled = $env:HUALI_AI_RELEASE_SMOKE
   $previousSmokeState = $env:HUALI_AI_RELEASE_SMOKE_AUTH_STATE
   $previousSmokeNonce = $env:HUALI_AI_RELEASE_SMOKE_NONCE

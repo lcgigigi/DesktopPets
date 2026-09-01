@@ -1772,6 +1772,46 @@ try {
   }
   Save-ScreenCapture -FileName '06-context-menu-below-top-edge-full-screen.png' | Out-Null
 
+  # The final menu action exercises the regression reported from production:
+  # while the persistent login card exists, choosing “隐藏” must not be
+  # mistaken for an ordinary outside-click dismissal that restores the card.
+  $hideActionX = $menuBelow.Left + [int][Math]::Round(60 * $belowMenuScale)
+  $hideActionY = $menuBelow.Top + [int][Math]::Round(35 * $belowMenuScale)
+  Invoke-MouseClick `
+    -X $hideActionX `
+    -Y $hideActionY `
+    -Button Left `
+    -ExpectedRootHandle $menuHandle
+  $hiddenWindows = Wait-ForWindows -Process $process -Condition {
+    param($windows)
+    $null -eq (Find-WindowByHandle -Windows $windows -Handle $menuHandle) -and
+      $null -eq (Find-WindowByHandle -Windows $windows -Handle $mascotHandle) -and
+      $null -eq (Find-WindowByHandle -Windows $windows -Handle $authHandle)
+  }
+  $hideStabilityMs = 1800
+  Start-Sleep -Milliseconds $hideStabilityMs
+  $stableHiddenWindows = @(Get-WindowSnapshot -Process $process)
+  $menuRestored = $null -ne (Find-WindowByHandle -Windows $stableHiddenWindows -Handle $menuHandle)
+  $mascotRestored = $null -ne (Find-WindowByHandle -Windows $stableHiddenWindows -Handle $mascotHandle)
+  $authRestored = $null -ne (Find-WindowByHandle -Windows $stableHiddenWindows -Handle $authHandle)
+  if ($menuRestored -or $mascotRestored -or $authRestored) {
+    throw "右键隐藏后状态同步又显示了窗口：菜单=$menuRestored，机器人=$mascotRestored，登录卡=$authRestored。"
+  }
+  if ($process.HasExited) {
+    throw '右键隐藏应保持后台进程，但程序已退出。'
+  }
+  $report.checks.contextMenuHide = [ordered]@{
+    clickX = $hideActionX
+    clickY = $hideActionY
+    menuHidden = $true
+    mascotHidden = $true
+    authNotificationHidden = $true
+    remainedHiddenForMs = $hideStabilityMs
+    processStillRunning = $true
+    visibleHelperWindowsAfterHide = $hiddenWindows.Count
+  }
+  Save-ScreenCapture -FileName '07-context-menu-hide-stays-hidden.png' | Out-Null
+
   $report.ok = $true
   $report.completedAt = [DateTime]::UtcNow.ToString('o')
 } catch {

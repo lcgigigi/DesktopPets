@@ -13,6 +13,7 @@ import {
   MASCOT_REVEAL_EVENT,
   PANEL_ACTIVITY_EVENT,
   PANEL_VISIBILITY_EVENT,
+  type MascotMenuVisibilityPayload,
   type MascotDockSide,
   type PanelActivityPayload,
   finishMascotNotificationCollapse,
@@ -738,12 +739,12 @@ onMounted(async () => {
     window.clearTimeout(peekTransitionTimer)
     scheduleIdleHide()
   })
-  removeContextMenuVisibilityListener = await listen<boolean>(
+  removeContextMenuVisibilityListener = await listen<MascotMenuVisibilityPayload>(
     MASCOT_CONTEXT_MENU_VISIBILITY_EVENT,
     (event) => {
-      isContextMenuVisible.value = event.payload
+      isContextMenuVisible.value = event.payload.visible
       refreshIdleHideSchedule()
-      if (!event.payload) void releaseDismissedNotificationLayout()
+      if (!event.payload.visible) void releaseDismissedNotificationLayout()
     }
   )
   removeWindowMovedListener = await getCurrentWindow().onMoved(({ payload }) => {

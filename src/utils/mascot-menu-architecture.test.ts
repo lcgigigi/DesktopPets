@@ -165,8 +165,25 @@ describe('mascot context menu architecture', () => {
     expect(menuActions).toContain('void exitAssistant()')
     expect(mascotMenuWindowSource).not.toContain('@close="closeMenu"')
     expect(nativeHide).toMatch(
-      /hide_mascot_context_menu_window\(&app\)[\s\S]*?hide_mascot_system_notification_native_window\(&app\)[\s\S]*?hide_transparent_window_safely\(&window\)[\s\S]*?hide_panel_and_notify\(&app\)/,
+      /hide_mascot_context_menu_window_with_restore\(&app, false\)[\s\S]*?hide_mascot_system_notification_native_window\(&app\)[\s\S]*?hide_transparent_window_safely\(&window\)[\s\S]*?hide_panel_and_notify\(&app\)/,
     )
+
+    const notificationRestore = sourceBetween(
+      appSource,
+      'removeContextMenuVisibilityListener = await listen<MascotMenuVisibilityPayload>',
+      'systemNotificationWindowReady.value = await isMascotSystemNotificationReady()',
+    )
+    expect(windowServiceSource).toMatch(
+      /interface MascotMenuVisibilityPayload\s*\{[\s\S]*?visible: boolean[\s\S]*?restoreNotification: boolean[\s\S]*?\}/,
+    )
+    expect(notificationRestore).toContain('const { visible, restoreNotification } = event.payload')
+    expect(notificationRestore).toContain('if (!visible && !restoreNotification)')
+    expect(notificationRestore).toContain('userHiddenSystemNotificationKey = systemNotificationMessageKey')
+    expect(notificationRestore).toContain('if (wasVisible && !visible && restoreNotification)')
+    expect(appSource).toContain('systemNotificationMessageKey === userHiddenSystemNotificationKey')
+    expect(appSource).toContain("reason: suppressedByUserHide ? 'user-hide' : 'no-presentation'")
+    expect(appSource).toContain("const authPresentationWasHidden = userHiddenSystemNotificationKey === 'auth'")
+    expect(nativeHide).toContain('interaction.assistant_hide.completed')
   })
 
   it('keeps enough transparent native gutter for above and below shadows', () => {
@@ -190,8 +207,10 @@ describe('mascot context menu architecture', () => {
     expect(mascotMenuWindowSource).toContain("if (event.key === 'Escape') closeMenu()")
     expect(windowServiceSource).toContain("invoke('hide_mascot_context_menu')")
 
+    expect(rustSource).toMatch(
+      /fn hide_main_window\b[\s\S]{0,900}?hide_mascot_context_menu_window_with_restore\(&app, false\)/,
+    )
     for (const command of [
-      'hide_main_window',
       'show_main_window',
       'show_notification_window',
       'peek_mascot_window',
@@ -216,7 +235,7 @@ describe('mascot context menu architecture', () => {
     }
     expect(rustSource.match(/tauri::WindowEvent::CloseRequested/g)).toHaveLength(4)
     expect(rustSource.match(/api\.prevent_close\(\)/g)).toHaveLength(4)
-    expect(rustSource).toContain('hide_mascot_context_menu_window(&close_app)')
+    expect(rustSource).toContain('hide_mascot_context_menu_window_with_restore(&close_app, false)')
     expect(rustSource).toContain('hide_panel_and_notify(&close_app)')
   })
 })

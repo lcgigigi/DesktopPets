@@ -325,6 +325,25 @@ describe('Windows visual-smoke fixed backdrop contract', () => {
     expect(cycle).toContain('clickThrough = $true')
   })
 
+  it('clicks the real hide action and proves a persistent login card cannot restore the assistant', () => {
+    const source = normalizedPowerShell()
+    const hideStart = source.indexOf('$hideActionX =')
+    const hideEnd = source.indexOf('$report.checks.contextMenuHide', hideStart)
+    const hideGate = source.slice(hideStart, hideEnd)
+
+    expect(hideStart).toBeGreaterThanOrEqual(0)
+    expect(hideEnd).toBeGreaterThan(hideStart)
+    expect(hideGate).toContain('-ExpectedRootHandle $menuHandle')
+    expect(hideGate).toContain('Find-WindowByHandle -Windows $windows -Handle $menuHandle')
+    expect(hideGate).toContain('Find-WindowByHandle -Windows $windows -Handle $mascotHandle')
+    expect(hideGate).toContain('Find-WindowByHandle -Windows $windows -Handle $authHandle')
+    expect(hideGate).toContain('Start-Sleep -Milliseconds $hideStabilityMs')
+    expect(hideGate).toContain('$mascotRestored -or $authRestored')
+    expect(hideGate).toContain('if ($process.HasExited)')
+    expect(source).toContain('remainedHiddenForMs = $hideStabilityMs')
+    expect(source).toContain('processStillRunning = $true')
+  })
+
   it('proves first-appearance hit testing and half-head hover reveal on the same HWND', () => {
     const source = normalizedPowerShell()
     const hoverStart = source.indexOf("-ArgumentList '--huali-visual-smoke-peek'")

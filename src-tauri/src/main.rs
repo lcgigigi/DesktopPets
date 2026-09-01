@@ -3226,6 +3226,13 @@ struct MascotContextMenuPlacementPayload {
     tail_x: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MascotContextMenuVisibilityPayload {
+    visible: bool,
+    restore_notification: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PhysicalRect {
     x: i32,
@@ -3686,9 +3693,25 @@ fn notification_physical_geometry_for_mascot(
 fn emit_mascot_context_menu_visibility(
     app: &tauri::AppHandle,
     visible: bool,
+    restore_notification: bool,
 ) -> Result<(), String> {
-    app.emit_to("mascot", MASCOT_CONTEXT_MENU_VISIBILITY_EVENT, visible)
-        .map_err(|error| format!("failed to publish mascot context menu visibility: {error}"))
+    write_desktop_diagnostic_event(
+        app,
+        "interaction.context_menu.visibility_published",
+        diagnostic_fields(serde_json::json!({
+            "visible": visible,
+            "restoreNotification": restore_notification,
+        })),
+    );
+    app.emit_to(
+        "mascot",
+        MASCOT_CONTEXT_MENU_VISIBILITY_EVENT,
+        MascotContextMenuVisibilityPayload {
+            visible,
+            restore_notification,
+        },
+    )
+    .map_err(|error| format!("failed to publish mascot context menu visibility: {error}"))
 }
 
 fn hide_mascot_context_menu_native_window(app: &tauri::AppHandle) {
@@ -3712,16 +3735,19 @@ fn rollback_mascot_context_menu_generation(
         hide_mascot_context_menu_native_window(app);
     }
     if cancelled {
-        let _ = emit_mascot_context_menu_visibility(app, false);
+        let _ = emit_mascot_context_menu_visibility(app, false, true);
     }
     cancelled
 }
 
-fn hide_mascot_context_menu_window(app: &tauri::AppHandle) {
+fn hide_mascot_context_menu_window_with_restore(
+    app: &tauri::AppHandle,
+    restore_notification: bool,
+) {
     let state = app.state::<MascotContextMenuState>();
     let Ok(_transition) = state.transition.lock() else {
         hide_mascot_context_menu_native_window(app);
-        let _ = emit_mascot_context_menu_visibility(app, false);
+        let _ = emit_mascot_context_menu_visibility(app, false, restore_notification);
         return;
     };
     let _ = state.request_hide();
@@ -3732,11 +3758,15 @@ fn hide_mascot_context_menu_window(app: &tauri::AppHandle) {
     // and click-through until ready closes it.
     #[cfg(windows)]
     if !state.is_ready() {
-        let _ = emit_mascot_context_menu_visibility(app, false);
+        let _ = emit_mascot_context_menu_visibility(app, false, restore_notification);
         return;
     }
     hide_mascot_context_menu_native_window(app);
-    let _ = emit_mascot_context_menu_visibility(app, false);
+    let _ = emit_mascot_context_menu_visibility(app, false, restore_notification);
+}
+
+fn hide_mascot_context_menu_window(app: &tauri::AppHandle) {
+    hide_mascot_context_menu_window_with_restore(app, true);
 }
 
 // Phase one: calculate native bounds while the HWND remains hidden, then send
@@ -3826,12 +3856,12 @@ fn schedule_mascot_context_menu_timeout(
         ));
         let Ok(_transition) = state.transition.lock() else {
             hide_mascot_context_menu_native_window(&app);
-            let _ = emit_mascot_context_menu_visibility(&app, false);
+            let _ = emit_mascot_context_menu_visibility(&app, false, true);
             return;
         };
         if state.expire_pending_show(generation) {
             hide_mascot_context_menu_native_window(&app);
-            let _ = emit_mascot_context_menu_visibility(&app, false);
+            let _ = emit_mascot_context_menu_visibility(&app, false, true);
         }
     });
 }
@@ -3911,7 +3941,7 @@ fn ack_mascot_context_menu_layout(
         rollback_mascot_context_menu_generation(&app, state.inner(), generation);
         return Ok(false);
     }
-    if let Err(error) = emit_mascot_context_menu_visibility(&app, true) {
+    if let Err(error) = emit_mascot_context_menu_visibility(&app, true, true) {
         rollback_mascot_context_menu_generation(&app, state.inner(), generation);
         return Err(error);
     }
@@ -4218,14 +4248,33 @@ fn hide_mascot_system_notification_window(
 fn hide_main_window(
     app: tauri::AppHandle,
     hover_monitor: tauri::State<'_, MascotPeekHoverMonitor>,
-) {
+) -> bool {
     hover_monitor.cancel();
-    hide_mascot_context_menu_window(&app);
+    // A user-selected hide is different from dismissing the context menu by
+    // clicking elsewhere. Publish that intent in the same visibility event so
+    // the mascot renderer cannot immediately restore a persistent auth card.
+    hide_mascot_context_menu_window_with_restore(&app, false);
     hide_mascot_system_notification_native_window(&app);
-    if let Some(window) = app.get_webview_window("mascot") {
-        let _ = hide_transparent_window_safely(&window);
-    }
-    hide_panel_and_notify(&app);
+    let mascot_hidden = app
+        .get_webview_window("mascot")
+        .map(|window| hide_transparent_window_safely(&window))
+        .unwrap_or(true);
+    let panel_hidden = hide_panel_and_notify(&app);
+    let notification_hidden = app
+        .get_webview_window("mascot-notification")
+        .and_then(|window| window.is_visible().ok())
+        .map(|visible| !visible)
+        .unwrap_or(true);
+    write_desktop_diagnostic_event(
+        &app,
+        "interaction.assistant_hide.completed",
+        diagnostic_fields(serde_json::json!({
+            "mascotHidden": mascot_hidden,
+            "notificationHidden": notification_hidden,
+            "panelHidden": panel_hidden,
+        })),
+    );
+    mascot_hidden && notification_hidden
 }
 
 #[tauri::command]
@@ -5121,7 +5170,7 @@ fn main() {
                     tauri::WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         close_app.state::<MascotPeekHoverMonitor>().cancel();
-                        hide_mascot_context_menu_window(&close_app);
+                        hide_mascot_context_menu_window_with_restore(&close_app, false);
                         hide_mascot_system_notification_native_window(&close_app);
                         let _ = hide_transparent_window_safely(&close_window);
                         hide_panel_and_notify(&close_app);
@@ -5236,7 +5285,7 @@ fn main() {
                         }
                     }
                     "hide" => {
-                        hide_mascot_context_menu_window(app);
+                        hide_mascot_context_menu_window_with_restore(app, false);
                         app.state::<MascotPeekHoverMonitor>().cancel();
                         hide_mascot_system_notification_native_window(app);
                         if let Some(window) = app.get_webview_window("mascot") {

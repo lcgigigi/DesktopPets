@@ -30,6 +30,12 @@ export interface MascotContextMenuPlacement {
   tailX: number
 }
 
+export interface MascotMenuVisibilityPayload {
+  visible: boolean
+  /** Whether closing the menu should restore the card hidden behind it. */
+  restoreNotification: boolean
+}
+
 export interface MascotAuthPresentation {
   kind: 'auth'
   generation: number

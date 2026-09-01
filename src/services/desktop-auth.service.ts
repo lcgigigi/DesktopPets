@@ -74,7 +74,12 @@ export function getOrCreateDesktopAuthState(now = Date.now()) {
 }
 
 function isAuthCallbackUrl(url: URL) {
-  return url.protocol === `${DESKTOP_AUTH_SCHEME}:` && url.hostname === AUTH_CALLBACK_HOST
+  // Windows may preserve the registered protocol target's host casing when it
+  // launches a non-special URL. URL normalizes the scheme, but not reliably
+  // the hostname for custom schemes, so compare both components according to
+  // the case-insensitive protocol identity accepted by the native shell.
+  return url.protocol.toLowerCase() === `${DESKTOP_AUTH_SCHEME}:`
+    && url.hostname.toLowerCase() === AUTH_CALLBACK_HOST
 }
 
 function getParam(url: URL, key: string) {
@@ -132,7 +137,6 @@ async function handleUrls(
 
   urls.forEach((url) => {
     if (handledUrls.has(url)) return
-    handledUrls.add(url)
 
     const result = parseDesktopAuthCallbackResult(url)
     let parsedUrl: URL | undefined
@@ -149,6 +153,11 @@ async function handleUrls(
       hasUserId: Boolean(parsedUrl?.searchParams.get('userId')),
       userIdMasked: maskDiagnosticIdentifier(parsedUrl?.searchParams.get('userId')),
     })
+    // Ignore unrelated or malformed URLs without consuming them forever. The
+    // native queue and deep-link plugin intentionally provide redundant
+    // delivery paths; only a recognized auth callback may be deduplicated.
+    if (result.status === 'ignored') return
+    handledUrls.add(url)
     if (result.status === 'success') {
       handler(result.payload)
     } else if (result.status === 'error') {
