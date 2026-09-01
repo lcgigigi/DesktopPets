@@ -996,17 +996,13 @@ fn record_desktop_auth_renderer_receipt(
         return false;
     }
 
-    write_desktop_diagnostic_event(
-        &app,
-        "auth.callback.renderer_outcome",
-        {
-            let mut fields = desktop_auth_callback_diagnostic_fields(&callback_url);
-            fields.extend(diagnostic_fields(serde_json::json!({
-                "outcome": outcome,
-            })));
-            fields
-        },
-    );
+    write_desktop_diagnostic_event(&app, "auth.callback.renderer_outcome", {
+        let mut fields = desktop_auth_callback_diagnostic_fields(&callback_url);
+        fields.extend(diagnostic_fields(serde_json::json!({
+            "outcome": outcome,
+        })));
+        fields
+    });
     persist_desktop_auth_smoke_receipt(&callback_url, None, Some(&outcome))
 }
 
@@ -1024,11 +1020,7 @@ fn take_desktop_auth_callback(
         if let Some(callback_url) = callback.callback_url.as_deref() {
             fields.extend(desktop_auth_callback_diagnostic_fields(callback_url));
         }
-        write_desktop_diagnostic_event(
-            &app,
-            "auth.callback.native_dequeued",
-            fields,
-        );
+        write_desktop_diagnostic_event(&app, "auth.callback.native_dequeued", fields);
     }
     callback
 }
@@ -5212,11 +5204,7 @@ fn main() {
             if let Some(callback_url) = startup_callback.as_deref() {
                 process_start_fields.extend(desktop_auth_callback_diagnostic_fields(callback_url));
             }
-            write_desktop_diagnostic_event(
-                app.handle(),
-                "process.start",
-                process_start_fields,
-            );
+            write_desktop_diagnostic_event(app.handle(), "process.start", process_start_fields);
 
             #[cfg(any(windows, target_os = "linux"))]
             {
