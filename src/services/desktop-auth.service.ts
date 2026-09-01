@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { UserInfo } from '../types/api'
 import { storage } from '../utils/storage'
-import { maskDiagnosticIdentifier, recordDesktopDiagnostic } from './diagnostic.service'
+import { recordDesktopDiagnostic } from './diagnostic.service'
 
 export const DESKTOP_AUTH_SCHEME = 'huali-ai-mascot'
 const AUTH_CALLBACK_HOST = 'auth-callback'
@@ -86,6 +86,73 @@ function getParam(url: URL, key: string) {
   return url.searchParams.get(key)?.trim() || ''
 }
 
+export function getDesktopAuthCallbackDiagnosticFields(
+  rawUrl: string,
+  source: 'deep-link' | 'event' | 'startup' | 'native-poll',
+  outcome: string,
+  duplicate: boolean,
+) {
+  const expectedCallback = `${DESKTOP_AUTH_SCHEME}://${AUTH_CALLBACK_HOST}`
+  const attempt = storage.getDesktopAuthAttempt()
+  const expectedState = attempt?.state || ''
+  let parsedUrl: URL | undefined
+  let parseError = ''
+  try {
+    parsedUrl = new URL(rawUrl)
+  } catch (error) {
+    parseError = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+  }
+
+  const receivedState = parsedUrl?.searchParams.get('state') ?? ''
+  const token = parsedUrl?.searchParams.get('token') ?? ''
+  const userId = parsedUrl?.searchParams.get('userId') ?? ''
+
+  return {
+    source,
+    outcome,
+    duplicate,
+    rawUrl,
+    rawUrlLength: rawUrl.length,
+    expectedCallback,
+    callbackPrefixMatches: rawUrl.slice(0, expectedCallback.length).toLowerCase()
+      === expectedCallback.toLowerCase(),
+    callbackPrefixBoundary: rawUrl.slice(expectedCallback.length, expectedCallback.length + 1),
+    parseSucceeded: Boolean(parsedUrl),
+    parseError,
+    normalizedUrl: parsedUrl?.href ?? '',
+    origin: parsedUrl?.origin ?? '',
+    protocol: parsedUrl?.protocol ?? '',
+    username: parsedUrl?.username ?? '',
+    password: parsedUrl?.password ?? '',
+    host: parsedUrl?.host ?? '',
+    hostname: parsedUrl?.hostname ?? '',
+    port: parsedUrl?.port ?? '',
+    pathname: parsedUrl?.pathname ?? '',
+    search: parsedUrl?.search ?? '',
+    hash: parsedUrl?.hash ?? '',
+    searchParamsJson: parsedUrl
+      ? JSON.stringify(Array.from(parsedUrl.searchParams.entries()))
+      : '',
+    expectedProtocol: `${DESKTOP_AUTH_SCHEME}:`,
+    expectedHostname: AUTH_CALLBACK_HOST,
+    protocolMatches: parsedUrl
+      ? parsedUrl.protocol.toLowerCase() === `${DESKTOP_AUTH_SCHEME}:`
+      : false,
+    hostnameMatches: parsedUrl
+      ? parsedUrl.hostname.toLowerCase() === AUTH_CALLBACK_HOST
+      : false,
+    expectedState,
+    receivedState,
+    stateMatches: Boolean(expectedState && receivedState && expectedState === receivedState),
+    authAttemptCreatedAt: attempt?.createdAt ?? 0,
+    authAttemptAgeMs: attempt ? Math.max(0, Date.now() - attempt.createdAt) : -1,
+    token,
+    userId,
+    userName: parsedUrl?.searchParams.get('userName') ?? '',
+    department: parsedUrl?.searchParams.get('department') ?? '',
+  }
+}
+
 function parseDesktopAuthCallbackResult(rawUrl: string): DesktopAuthCallbackParseResult {
   let url: URL
   try {
@@ -136,23 +203,19 @@ async function handleUrls(
   if (!urls) return
 
   urls.forEach((url) => {
-    if (handledUrls.has(url)) return
+    if (handledUrls.has(url)) {
+      recordDesktopDiagnostic('auth.callback.renderer_parsed',
+        getDesktopAuthCallbackDiagnosticFields(url, source, 'duplicate', true))
+      return
+    }
 
     const result = parseDesktopAuthCallbackResult(url)
-    let parsedUrl: URL | undefined
-    try {
-      parsedUrl = new URL(url)
-    } catch {
-      parsedUrl = undefined
-    }
-    recordDesktopDiagnostic('auth.callback.renderer_parsed', {
+    recordDesktopDiagnostic('auth.callback.renderer_parsed', getDesktopAuthCallbackDiagnosticFields(
+      url,
       source,
-      outcome: result.status === 'error' ? `error:${result.error}` : result.status,
-      hasState: Boolean(parsedUrl?.searchParams.get('state')),
-      hasToken: Boolean(parsedUrl?.searchParams.get('token')),
-      hasUserId: Boolean(parsedUrl?.searchParams.get('userId')),
-      userIdMasked: maskDiagnosticIdentifier(parsedUrl?.searchParams.get('userId')),
-    })
+      result.status === 'error' ? `error:${result.error}` : result.status,
+      false,
+    ))
     // Ignore unrelated or malformed URLs without consuming them forever. The
     // native queue and deep-link plugin intentionally provide redundant
     // delivery paths; only a recognized auth callback may be deduplicated.

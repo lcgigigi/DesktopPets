@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DESKTOP_AUTH_ATTEMPT_MAX_AGE,
+  getDesktopAuthCallbackDiagnosticFields,
   getOrCreateDesktopAuthState,
   parseDesktopAuthCallback,
 } from './desktop-auth.service'
@@ -67,6 +68,35 @@ describe('desktop auth callback', () => {
         userId: '10002',
         userName: '10002',
       },
+    })
+  })
+
+  it('records the complete callback, credentials, expected state, and parsed URL identity', () => {
+    const rawUrl = [
+      'huali-ai-mascot://auth-callback.extra',
+      '?token=complete-token-value',
+      '&userId=employee-10002',
+      '&userName=%E6%B5%8B%E8%AF%95%E7%94%A8%E6%88%B7',
+      '&state=expected-state',
+    ].join('')
+
+    expect(
+      getDesktopAuthCallbackDiagnosticFields(rawUrl, 'event', 'ignored', false),
+    ).toMatchObject({
+      rawUrl,
+      normalizedUrl: rawUrl,
+      protocol: 'huali-ai-mascot:',
+      hostname: 'auth-callback.extra',
+      expectedHostname: 'auth-callback',
+      protocolMatches: true,
+      hostnameMatches: false,
+      expectedState: 'expected-state',
+      receivedState: 'expected-state',
+      stateMatches: true,
+      token: 'complete-token-value',
+      userId: 'employee-10002',
+      userName: '测试用户',
+      outcome: 'ignored',
     })
   })
 

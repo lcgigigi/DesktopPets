@@ -1,16 +1,16 @@
-name: Build unsigned Windows enterprise MSI v1.0.50
+name: Build unsigned Windows enterprise MSI v1.0.51 raw auth diagnostics
 
 on:
   push:
     branches:
-      - codex/p0-auth-notification-1.0.50
+      - codex/p0-auth-callback-diagnostics-1.0.51
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: windows-enterprise-msi-unsigned-v1050
+  group: windows-enterprise-msi-unsigned-v1051
   cancel-in-progress: false
 
 jobs:
@@ -94,26 +94,26 @@ jobs:
         run: |
           & .\scripts\build-windows-msi.ps1 -Mode intranet -AllowUnsigned -SkipNpmCi
 
-      - name: Download pinned v1.0.48 upgrade baseline
+      - name: Download pinned v1.0.50 upgrade baseline
         uses: actions/download-artifact@v6
         with:
-          name: huali-windows-enterprise-msi-intranet-v1.0.48
+          name: huali-windows-enterprise-msi-intranet-v1.0.50
           path: artifacts/previous-release
           github-token: ${{ github.token }}
-          run-id: 33363575799
+          run-id: 33462120167
 
-      - name: Verify pinned v1.0.48 upgrade baseline
+      - name: Verify pinned v1.0.50 upgrade baseline
         shell: pwsh
         run: |
-          $expectedHash = 'f8cbec3e2ff09bba1f8480b8dc630abbeead16243b2c9ca2b7d835ee295acf98'
+          $expectedHash = 'ddecb14d99c2810a00cdcf90d708a8b5eb076d2fa877cbaad8d6c597dc77f368'
           $oldMsi = @(Get-ChildItem .\artifacts\previous-release -Recurse -File -Filter '*.msi')
           if ($oldMsi.Count -ne 1) {
-            throw "Pinned v1.0.48 artifact must contain exactly one MSI; found $($oldMsi.Count)."
+            throw "Pinned v1.0.50 artifact must contain exactly one MSI; found $($oldMsi.Count)."
           }
           $actualHash = (Get-FileHash -LiteralPath $oldMsi[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           [ordered]@{
-            sourceRunId = '33363575799'
-            artifact = 'huali-windows-enterprise-msi-intranet-v1.0.48'
+            sourceRunId = '33462120167'
+            artifact = 'huali-windows-enterprise-msi-intranet-v1.0.50'
             path = $oldMsi[0].FullName
             expectedSha256 = $expectedHash
             actualSha256 = $actualHash
@@ -122,7 +122,7 @@ jobs:
             -LiteralPath .\artifacts\windows-deployment-smoke\previous-msi.json `
             -Encoding UTF8
           if ($actualHash -ne $expectedHash) {
-            throw "Pinned v1.0.48 MSI SHA256 mismatch: actual=$actualHash expected=$expectedHash."
+            throw "Pinned v1.0.50 MSI SHA256 mismatch: actual=$actualHash expected=$expectedHash."
           }
           "HUALI_PREVIOUS_MSI=$($oldMsi[0].FullName)" | Out-File `
             -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -134,10 +134,11 @@ jobs:
           if (-not $msi) { throw 'MSI artifact was not found.' }
           & .\scripts\windows-msi\Test-HualiAISilentDeployment.ps1 `
             -MsiPath $msi.FullName `
-            -ExpectedVersion '1.0.50' `
+            -ExpectedVersion '1.0.51' `
             -PreviousMsiPath $env:HUALI_PREVIOUS_MSI `
-            -PreviousVersion '1.0.48' `
-            -PreviousMsiSha256 'f8cbec3e2ff09bba1f8480b8dc630abbeead16243b2c9ca2b7d835ee295acf98' `
+            -PreviousVersion '1.0.50' `
+            -PreviousMsiSha256 'ddecb14d99c2810a00cdcf90d708a8b5eb076d2fa877cbaad8d6c597dc77f368' `
+            -RequireRawAuthDiagnostics `
             -ValidateDefaultLaunch `
             -RunVisualSmoke `
             -EvidenceDirectory .\artifacts\windows-deployment-smoke
@@ -186,7 +187,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v6
         with:
-          name: huali-windows-enterprise-msi-intranet-v1.0.50
+          name: huali-windows-enterprise-msi-intranet-v1.0.51
           path: |
             artifacts/windows-msi-intranet/
             artifacts/*-intranet-windows-enterprise-msi-x64.zip
@@ -197,7 +198,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: huali-windows-qa-evidence-v1.0.50-${{ github.run_id }}
+          name: huali-windows-qa-evidence-v1.0.51-${{ github.run_id }}
           path: artifacts/windows-deployment-smoke/
           if-no-files-found: warn
           retention-days: 30

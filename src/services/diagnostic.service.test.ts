@@ -33,10 +33,14 @@ describe('desktop diagnostics', () => {
     expect(maskDiagnosticIdentifier('')).toBe('')
   })
 
-  it('sends only the structured event and caller-provided safe fields', async () => {
+  it('sends complete caller-provided callback diagnostics to the native writer', async () => {
     recordDesktopDiagnostic('session.restore', {
+      rawUrl: 'huali-ai-mascot://auth-callback?token=complete-token&state=complete-state',
+      token: 'complete-token',
+      state: 'complete-state',
       tokenPresent: true,
       tokenLength: 128,
+      userId: 'employee-123456',
       userIdMasked: maskDiagnosticIdentifier('employee-123456'),
     })
     await Promise.resolve()
@@ -44,12 +48,15 @@ describe('desktop diagnostics', () => {
     expect(invokeMock).toHaveBeenCalledWith('record_desktop_diagnostic_event', {
       event: 'session.restore',
       fields: {
+        rawUrl: 'huali-ai-mascot://auth-callback?token=complete-token&state=complete-state',
+        token: 'complete-token',
+        state: 'complete-state',
         tokenPresent: true,
         tokenLength: 128,
+        userId: 'employee-123456',
         userIdMasked: 'em***56',
       },
     })
-    expect(JSON.stringify(invokeMock.mock.calls)).not.toContain('employee-123456')
   })
 
   it('extracts only JWT lifetime metadata and never returns credential content', () => {

@@ -2,6 +2,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { invoke } from '@tauri-apps/api/core'
 import { emitTo } from '@tauri-apps/api/event'
 import { DESKTOP_AUTH_SCHEME } from './desktop-auth.service'
+import { recordDesktopDiagnostic } from './diagnostic.service'
 import type { SysMessageNotification } from '../types/sys-message'
 import { env } from '../utils/env'
 import { storage } from '../utils/storage'
@@ -175,18 +176,33 @@ export function openWorkbench(options: { draftId?: string; todoText?: string } =
   return openExternal(buildUrl(`/workbench${query}`))
 }
 
-export function openDesktopLogin(state: string): Promise<boolean> {
+export async function openDesktopLogin(state: string): Promise<boolean> {
+  const desktopCallback = `${DESKTOP_AUTH_SCHEME}://auth-callback`
   const query = buildQuery({
     from: 'desktop',
-    desktopCallback: `${DESKTOP_AUTH_SCHEME}://auth-callback`,
+    desktopCallback,
     state
+  })
+  const loginUrl = buildUrl(`/login${query}`)
+  recordDesktopDiagnostic('auth.login.url_built', {
+    webBaseUrl: getWebBaseUrl(),
+    loginUrl,
+    desktopCallback,
+    state,
   })
 
   // The login URL carries the one-time desktop state. UI Automation can report
   // that an existing tab was reused before the browser has actually navigated,
   // leaving the user visibly signed in but never entering the desktop callback
   // route. Hand the exact URL to the OS opener for every auth attempt instead.
-  return openExternal(buildUrl(`/login${query}`), { reuseExistingTab: false })
+  const opened = await openExternal(loginUrl, { reuseExistingTab: false })
+  recordDesktopDiagnostic('auth.login.url_open_result', {
+    loginUrl,
+    desktopCallback,
+    state,
+    opened,
+  })
+  return opened
 }
 
 export function openCalendar(taskId?: string): Promise<boolean> {

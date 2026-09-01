@@ -35,7 +35,15 @@ describe('Windows administrator deployment smoke contracts', () => {
     expect(deployment).toContain('$restartReceipt.sessionRestoredAfterRestart -eq $true')
     expect(deployment).toContain('singleInstancePreserved = $true')
     expect(deployment).toContain('$report.checks.desktopAuthProtocolCallback = Invoke-DesktopAuthProtocolCallbackSmoke `')
-    expect(deployment).toContain('tokenValueRecorded = $false')
+    expect(deployment).toContain('[switch]$RequireRawAuthDiagnostics')
+    expect(deployment).toContain('-RequireRawDiagnostics:$RequireRawAuthDiagnostics')
+    expect(deployment).toContain("$_.fields.callbackUrl -eq $callbackUrl")
+    expect(deployment).toContain("$_.fields.token -eq 'smoke-token'")
+    expect(deployment).toContain('$_.fields.receivedState -eq $authState')
+    expect(deployment).toContain('$_.fields.expectedState -eq $authState')
+    expect(deployment).toContain('tokenValueRecorded = $rawDiagnosticsVerified')
+    expect(deployment).toContain('completeCallbackUrlRecorded = $rawDiagnosticsVerified')
+    expect(deployment).toContain('expectedAndReceivedStateRecorded = $rawDiagnosticsVerified')
     expect(deployment).toContain('Assert-NoDesktopAuthProtocol -Stage $Stage')
 
     const nativeMain = rustSource.replace(/\r\n?/g, '\n')
@@ -54,7 +62,10 @@ describe('Windows administrator deployment smoke contracts', () => {
     expect(nativeMain).not.toMatch(
       /if let Some\(callback_url\) = single_instance_desktop_auth\.capture[\s\S]{0,700}hide_mascot_system_notification_native_window\(app\)/
     )
-    expect(nativeMain).not.toContain('"tokenValue"')
+    expect(nativeMain).toContain('"callbackUrl": callback_url')
+    expect(nativeMain).toContain('"callbackUrlUtf8Hex": callback_url_utf8_hex')
+    expect(nativeMain).toContain('"state": desktop_auth_callback_query_value(callback_url, "state")')
+    expect(nativeMain).toContain('"token": desktop_auth_callback_query_value(callback_url, "token")')
   })
 
   it('keeps zero, one and many PowerShell results array-shaped under StrictMode', () => {

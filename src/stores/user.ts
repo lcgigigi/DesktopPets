@@ -60,6 +60,7 @@ export const useUserStore = defineStore('user', {
       this.token = token
       storage.setToken(token)
       recordDesktopDiagnostic('session.store.token_set', {
+        token,
         tokenPresent: Boolean(token),
         tokenLength: token.length,
       })
@@ -71,8 +72,12 @@ export const useUserStore = defineStore('user', {
       storage.setUserInfo(params.userInfo)
       storage.clearDesktopAuthState()
       recordDesktopDiagnostic('session.store.committed', {
+        token: params.token,
         tokenPresent: Boolean(params.token),
         tokenLength: params.token.length,
+        userId: params.userInfo.userId,
+        userName: params.userInfo.userName,
+        department: params.userInfo.department || '',
         userIdPresent: Boolean(params.userInfo.userId),
         userIdMasked: maskDiagnosticIdentifier(params.userInfo.userId),
       })

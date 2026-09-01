@@ -20,6 +20,8 @@ param(
 
   [switch]$RequireInteractiveDefaultLaunch,
 
+  [switch]$RequireRawAuthDiagnostics,
+
   [string]$EvidenceDirectory = ''
 )
 
@@ -157,7 +159,10 @@ function Assert-NoDesktopAuthProtocol {
 }
 
 function Invoke-DesktopAuthProtocolCallbackSmoke {
-  param([Parameter(Mandatory = $true)][string]$ExpectedExecutablePath)
+  param(
+    [Parameter(Mandatory = $true)][string]$ExpectedExecutablePath,
+    [switch]$RequireRawDiagnostics
+  )
 
   $nonce = [Guid]::NewGuid().ToString('N')
   $receiptPath = Join-Path $env:TEMP "huali-ai-desktop-auth-smoke-$nonce.json"
@@ -240,6 +245,57 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
     if ($receipt.notificationCompact -ne $false) {
       throw '原生提醒窗口仍是登录卡片尺寸，系统消息提醒未真正展示。'
     }
+
+    $rawDiagnosticsVerified = $false
+    if ($RequireRawDiagnostics) {
+      $diagnosticLogPath = Join-Path $env:LOCALAPPDATA 'com.huali.ai.mascot\logs\desktop-diagnostic.jsonl'
+      $diagnosticDeadline = [DateTime]::UtcNow.AddSeconds(20)
+      $nativeDiagnostic = $null
+      $rendererDiagnostic = $null
+      $sessionDiagnostic = $null
+      while ([DateTime]::UtcNow -lt $diagnosticDeadline) {
+        if (Test-Path -LiteralPath $diagnosticLogPath -PathType Leaf) {
+          $diagnosticRecords = @(Get-Content -LiteralPath $diagnosticLogPath -ErrorAction Stop |
+            ForEach-Object {
+              try { $_ | ConvertFrom-Json } catch { $null }
+            } |
+            Where-Object { $null -ne $_ })
+          $nativeDiagnostic = $diagnosticRecords |
+            Where-Object {
+              $_.event -eq 'auth.callback.single_instance_received' -and
+              $_.fields.callbackUrl -eq $callbackUrl -and
+              $_.fields.token -eq 'smoke-token' -and
+              $_.fields.state -eq $authState
+            } |
+            Select-Object -Last 1
+          $rendererDiagnostic = $diagnosticRecords |
+            Where-Object {
+              $_.event -eq 'auth.callback.renderer_parsed' -and
+              $_.fields.rawUrl -eq $callbackUrl -and
+              $_.fields.token -eq 'smoke-token' -and
+              $_.fields.receivedState -eq $authState -and
+              $_.fields.expectedState -eq $authState -and
+              $_.fields.stateMatches -eq $true
+            } |
+            Select-Object -Last 1
+          $sessionDiagnostic = $diagnosticRecords |
+            Where-Object {
+              $_.event -eq 'session.store.committed' -and
+              $_.fields.token -eq 'smoke-token' -and
+              $_.fields.userId -eq 'smoke-user'
+            } |
+            Select-Object -Last 1
+          if ($nativeDiagnostic -and $rendererDiagnostic -and $sessionDiagnostic) {
+            $rawDiagnosticsVerified = $true
+            break
+          }
+        }
+        Start-Sleep -Milliseconds 200
+      }
+      if (-not $rawDiagnosticsVerified) {
+        throw "本地诊断日志未完整保存 callback URL、token、收到/预期 state 或 session：$diagnosticLogPath"
+      }
+    }
     # The protocol helper can still be shutting down for a fraction of a
     # second after the running renderer has written its receipt. Give Windows
     # a short, bounded grace period before asserting the single-instance gate.
@@ -306,7 +362,9 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
       stateDelivered = $true
       tokenDelivered = $true
       userIdDelivered = $true
-      tokenValueRecorded = $false
+      tokenValueRecorded = $rawDiagnosticsVerified
+      completeCallbackUrlRecorded = $rawDiagnosticsVerified
+      expectedAndReceivedStateRecorded = $rawDiagnosticsVerified
     }
   } finally {
     Remove-Item -LiteralPath $receiptPath -Force -ErrorAction SilentlyContinue
@@ -773,7 +831,8 @@ try {
   $installedBeforeFirstUninstall = Assert-InstalledState -Version $ExpectedVersion
   Write-Host '验证 Windows 真协议唤起与原生登录回调交付...'
   $report.checks.desktopAuthProtocolCallback = Invoke-DesktopAuthProtocolCallbackSmoke `
-    -ExpectedExecutablePath $installedBeforeFirstUninstall.ExecutablePath
+    -ExpectedExecutablePath $installedBeforeFirstUninstall.ExecutablePath `
+    -RequireRawDiagnostics:$RequireRawAuthDiagnostics
   Stop-HualiProcesses
   Assert-NoHualiProcesses -Stage '登录回调协议冒烟测试'
   Invoke-UninstallProduct `

@@ -987,9 +987,15 @@ async function startDesktopLogin() {
   // already-open browser tab becomes stale and its later confirmation can
   // invalidate the user's new attempt.
   const state = getOrCreateDesktopAuthState()
+  const authAttempt = storage.getDesktopAuthAttempt()
   recordDesktopDiagnostic('auth.login.open_requested', {
+    state,
     statePresent: Boolean(state),
     stateLength: state.length,
+    authAttemptCreatedAt: authAttempt?.createdAt ?? 0,
+    authAttemptAgeMs: authAttempt ? Math.max(0, Date.now() - authAttempt.createdAt) : -1,
+    currentToken: userStore.token,
+    currentUserId: userStore.userInfo?.userId || '',
   })
   // Clicking the mascot or login action is an explicit request to see the auth
   // flow again, even if the same card was previously hidden from its menu.
@@ -1077,8 +1083,10 @@ onMounted(async () => {
   if (windowMode === 'mascot') {
     releaseSmokePrepared = await prepareDesktopReleaseSmokeState()
     recordDesktopDiagnostic('renderer.mascot_mounted', {
+      token: userStore.token,
       tokenPresent: Boolean(userStore.token),
       tokenLength: userStore.token.length,
+      userId: userStore.userInfo?.userId || '',
       userIdPresent: Boolean(userStore.userInfo?.userId),
       userIdMasked: maskDiagnosticIdentifier(userStore.userInfo?.userId),
       authenticated: userStore.isAuthenticated,
@@ -1184,8 +1192,12 @@ onMounted(async () => {
     removeDeepLinkListener = await listenDesktopAuthCallbacks(
       (payload) => {
         recordDesktopDiagnostic('auth.callback.accepted', {
+          token: payload.token,
           tokenPresent: Boolean(payload.token),
           tokenLength: payload.token.length,
+          userId: payload.userInfo.userId,
+          userName: payload.userInfo.userName,
+          department: payload.userInfo.department || '',
           userIdPresent: Boolean(payload.userInfo.userId),
           userIdMasked: maskDiagnosticIdentifier(payload.userInfo.userId),
         })
@@ -1195,8 +1207,10 @@ onMounted(async () => {
         userStore.setSession(payload)
         recordDesktopDiagnostic('auth.callback.session_committed', {
           authenticated: userStore.isAuthenticated,
+          token: userStore.token,
           tokenPresent: Boolean(userStore.token),
           tokenLength: userStore.token.length,
+          userId: userStore.userInfo?.userId || '',
           userIdMasked: maskDiagnosticIdentifier(userStore.userInfo?.userId),
         })
         resetSessionUnauthorizedEvidence()

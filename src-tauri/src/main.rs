@@ -616,17 +616,11 @@ fn desktop_diagnostic_log_path(app: &tauri::AppHandle) -> PathBuf {
         .join(DESKTOP_DIAGNOSTIC_LOG_FILE)
 }
 
-fn truncate_diagnostic_string(value: &str) -> String {
-    let sanitized = value
+fn normalize_diagnostic_string(value: &str) -> String {
+    value
         .chars()
         .filter(|character| !character.is_control())
-        .take(200)
-        .collect::<String>();
-    if value.chars().count() > 200 {
-        format!("{sanitized}...")
-    } else {
-        sanitized
-    }
+        .collect()
 }
 
 fn sanitize_diagnostic_fields(
@@ -635,43 +629,16 @@ fn sanitize_diagnostic_fields(
     fields
         .into_iter()
         .map(|(key, value)| {
-            let normalized_key = key.to_ascii_lowercase();
-            let safe_presence_field = matches!(
-                normalized_key.as_str(),
-                "tokenpresent"
-                    | "tokenlength"
-                    | "tokenvalid"
-                    | "useridmasked"
-                    | "useridpresent"
-                    | "statepresent"
-                    | "statelength"
-                    | "hasstate"
-                    | "hastoken"
-                    | "hasuserid"
-            );
-            let sensitive_key = normalized_key.contains("token")
-                || normalized_key.contains("authorization")
-                || normalized_key.contains("password")
-                || normalized_key.contains("secret")
-                || normalized_key.contains("callbackurl")
-                || normalized_key.contains("rawurl")
-                || normalized_key.contains("userid")
-                || normalized_key == "state"
-                || normalized_key.contains("authstate");
-            let sanitized_value = if sensitive_key && !safe_presence_field {
-                serde_json::Value::String("[redacted]".to_owned())
-            } else {
-                match value {
-                    serde_json::Value::String(value) => {
-                        serde_json::Value::String(truncate_diagnostic_string(&value))
-                    }
-                    serde_json::Value::Null
-                    | serde_json::Value::Bool(_)
-                    | serde_json::Value::Number(_) => value,
-                    _ => serde_json::Value::String("[unsupported]".to_owned()),
+            let sanitized_value = match value {
+                serde_json::Value::String(value) => {
+                    serde_json::Value::String(normalize_diagnostic_string(&value))
                 }
+                serde_json::Value::Null
+                | serde_json::Value::Bool(_)
+                | serde_json::Value::Number(_) => value,
+                _ => serde_json::Value::String("[unsupported]".to_owned()),
             };
-            (truncate_diagnostic_string(&key), sanitized_value)
+            (normalize_diagnostic_string(&key), sanitized_value)
         })
         .collect()
 }
@@ -849,6 +816,61 @@ fn desktop_auth_callback_has_value(callback_url: &str, name: &str) -> bool {
     desktop_auth_callback_query_value(callback_url, name).is_some_and(|value| !value.is_empty())
 }
 
+fn desktop_auth_callback_diagnostic_fields(
+    callback_url: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let callback_without_fragment = callback_url.split('#').next().unwrap_or_default();
+    let callback_before_query = callback_without_fragment
+        .split('?')
+        .next()
+        .unwrap_or_default();
+    let raw_query = callback_without_fragment
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
+    let fragment = callback_url
+        .split_once('#')
+        .map(|(_, fragment)| fragment)
+        .unwrap_or_default();
+    let prefix_matches = callback_url
+        .get(..DESKTOP_AUTH_CALLBACK_PREFIX.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(DESKTOP_AUTH_CALLBACK_PREFIX));
+    let callback_prefix_boundary = callback_url
+        .get(DESKTOP_AUTH_CALLBACK_PREFIX.len()..)
+        .and_then(|suffix| suffix.chars().next())
+        .map(|character| character.to_string())
+        .unwrap_or_default();
+    let callback_prefix_remainder_before_query = callback_before_query
+        .get(DESKTOP_AUTH_CALLBACK_PREFIX.len()..)
+        .unwrap_or_default();
+    let callback_url_utf8_hex = callback_url
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    diagnostic_fields(serde_json::json!({
+        "callbackUrl": callback_url,
+        "callbackUrlLength": callback_url.chars().count(),
+        "callbackUrlUtf8Hex": callback_url_utf8_hex,
+        "callbackBeforeQuery": callback_before_query,
+        "rawQuery": raw_query,
+        "fragment": fragment,
+        "expectedCallbackPrefix": DESKTOP_AUTH_CALLBACK_PREFIX,
+        "callbackPrefixMatches": prefix_matches,
+        "callbackPrefixBoundary": callback_prefix_boundary,
+        "callbackPrefixRemainderBeforeQuery": callback_prefix_remainder_before_query,
+        "state": desktop_auth_callback_query_value(callback_url, "state"),
+        "token": desktop_auth_callback_query_value(callback_url, "token"),
+        "userId": desktop_auth_callback_query_value(callback_url, "userId"),
+        "userName": desktop_auth_callback_query_value(callback_url, "userName"),
+        "department": desktop_auth_callback_query_value(callback_url, "department"),
+        "hasState": desktop_auth_callback_has_value(callback_url, "state"),
+        "hasToken": desktop_auth_callback_has_value(callback_url, "token"),
+        "hasUserId": desktop_auth_callback_has_value(callback_url, "userId"),
+    }))
+}
+
 fn persist_desktop_auth_smoke_receipt(
     callback_url: &str,
     forwarded_to_running_instance: Option<bool>,
@@ -977,12 +999,13 @@ fn record_desktop_auth_renderer_receipt(
     write_desktop_diagnostic_event(
         &app,
         "auth.callback.renderer_outcome",
-        diagnostic_fields(serde_json::json!({
-            "outcome": outcome,
-            "hasState": desktop_auth_callback_has_value(&callback_url, "state"),
-            "hasToken": desktop_auth_callback_has_value(&callback_url, "token"),
-            "hasUserId": desktop_auth_callback_has_value(&callback_url, "userId"),
-        })),
+        {
+            let mut fields = desktop_auth_callback_diagnostic_fields(&callback_url);
+            fields.extend(diagnostic_fields(serde_json::json!({
+                "outcome": outcome,
+            })));
+            fields
+        },
     );
     persist_desktop_auth_smoke_receipt(&callback_url, None, Some(&outcome))
 }
@@ -994,13 +1017,17 @@ fn take_desktop_auth_callback(
 ) -> Option<NativeDesktopAuthCallback> {
     let callback = state.take().or_else(take_persisted_desktop_auth_callback);
     if let Some(callback) = callback.as_ref() {
+        let mut fields = diagnostic_fields(serde_json::json!({
+            "argumentCount": callback.argument_count,
+            "callbackPresent": callback.callback_url.is_some(),
+        }));
+        if let Some(callback_url) = callback.callback_url.as_deref() {
+            fields.extend(desktop_auth_callback_diagnostic_fields(callback_url));
+        }
         write_desktop_diagnostic_event(
             &app,
             "auth.callback.native_dequeued",
-            diagnostic_fields(serde_json::json!({
-                "argumentCount": callback.argument_count,
-                "callbackPresent": callback.callback_url.is_some(),
-            })),
+            fields,
         );
     }
     callback
@@ -1487,7 +1514,8 @@ fn peeked_dock_side(
 #[cfg(test)]
 mod desktop_auth_callback_tests {
     use super::{
-        find_desktop_auth_callback, sanitize_diagnostic_fields, PendingDesktopAuthCallback,
+        desktop_auth_callback_diagnostic_fields, find_desktop_auth_callback,
+        sanitize_diagnostic_fields, PendingDesktopAuthCallback,
     };
 
     #[test]
@@ -1551,7 +1579,7 @@ mod desktop_auth_callback_tests {
     }
 
     #[test]
-    fn diagnostic_fields_redact_credentials_and_raw_identity() {
+    fn diagnostic_fields_preserve_complete_callback_credentials_and_identity() {
         let fields = serde_json::json!({
             "token": "secret-token-value",
             "tokenPresent": true,
@@ -1567,14 +1595,46 @@ mod desktop_auth_callback_tests {
         .expect("diagnostic fixture must be an object");
 
         let sanitized = sanitize_diagnostic_fields(fields);
-        assert_eq!(sanitized["token"], "[redacted]");
+        assert_eq!(sanitized["token"], "secret-token-value");
         assert_eq!(sanitized["tokenPresent"], true);
         assert_eq!(sanitized["tokenLength"], 18);
-        assert_eq!(sanitized["userId"], "[redacted]");
+        assert_eq!(sanitized["userId"], "employee-10002");
         assert_eq!(sanitized["userIdMasked"], "em***02");
-        assert_eq!(sanitized["state"], "[redacted]");
+        assert_eq!(sanitized["state"], "one-time-state");
         assert_eq!(sanitized["statePresent"], true);
-        assert_eq!(sanitized["callbackUrl"], "[redacted]");
+        assert_eq!(
+            sanitized["callbackUrl"],
+            "huali-ai-mascot://auth-callback?token=secret"
+        );
+    }
+
+    #[test]
+    fn diagnostic_fields_do_not_truncate_long_callback_urls() {
+        let callback_url = format!(
+            "huali-ai-mascot://auth-callback?token={}&state=complete-state",
+            "x".repeat(512)
+        );
+        let fields = serde_json::json!({ "callbackUrl": callback_url })
+            .as_object()
+            .cloned()
+            .expect("diagnostic fixture must be an object");
+
+        let sanitized = sanitize_diagnostic_fields(fields);
+        assert_eq!(sanitized["callbackUrl"], callback_url);
+    }
+
+    #[test]
+    fn native_callback_diagnostics_preserve_the_prefix_remainder_and_raw_values() {
+        let callback_url = "huali-ai-mascot://auth-callback.extra?state=complete-state&token=complete-token&userId=employee-10002";
+        let fields = desktop_auth_callback_diagnostic_fields(callback_url);
+
+        assert_eq!(fields["callbackUrl"], callback_url);
+        assert_eq!(fields["callbackPrefixMatches"], true);
+        assert_eq!(fields["callbackPrefixBoundary"], ".");
+        assert_eq!(fields["callbackPrefixRemainderBeforeQuery"], ".extra");
+        assert_eq!(fields["state"], "complete-state");
+        assert_eq!(fields["token"], "complete-token");
+        assert_eq!(fields["userId"], "employee-10002");
     }
 }
 
@@ -5034,15 +5094,15 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(
             move |app, argv, _cwd| {
                 if let Some(callback_url) = single_instance_desktop_auth.capture(&argv) {
+                    let mut fields = desktop_auth_callback_diagnostic_fields(&callback_url);
+                    fields.extend(diagnostic_fields(serde_json::json!({
+                        "argumentCount": argv.len(),
+                        "argumentsJson": serde_json::to_string(&argv).unwrap_or_default(),
+                    })));
                     write_desktop_diagnostic_event(
                         app,
                         "auth.callback.single_instance_received",
-                        diagnostic_fields(serde_json::json!({
-                            "argumentCount": argv.len(),
-                            "hasState": desktop_auth_callback_has_value(&callback_url, "state"),
-                            "hasToken": desktop_auth_callback_has_value(&callback_url, "token"),
-                            "hasUserId": desktop_auth_callback_has_value(&callback_url, "userId"),
-                        })),
+                        fields,
                     );
                     // Receipt is not authentication. Keep the login card visible
                     // until Vue validates state + identity and commits the new
@@ -5142,14 +5202,20 @@ fn main() {
             let startup_args = std::env::args().collect::<Vec<_>>();
             app.state::<PendingDesktopAuthCallback>()
                 .capture(&startup_args);
+            let startup_callback = find_desktop_auth_callback(&startup_args);
+            let mut process_start_fields = diagnostic_fields(serde_json::json!({
+                "argumentCount": startup_args.len(),
+                "argumentsJson": serde_json::to_string(&startup_args).unwrap_or_default(),
+                "startupCallbackPresent": startup_callback.is_some(),
+                "releaseSmoke": desktop_release_smoke_nonce().is_some(),
+            }));
+            if let Some(callback_url) = startup_callback.as_deref() {
+                process_start_fields.extend(desktop_auth_callback_diagnostic_fields(callback_url));
+            }
             write_desktop_diagnostic_event(
                 app.handle(),
                 "process.start",
-                diagnostic_fields(serde_json::json!({
-                    "argumentCount": startup_args.len(),
-                    "startupCallbackPresent": find_desktop_auth_callback(&startup_args).is_some(),
-                    "releaseSmoke": desktop_release_smoke_nonce().is_some(),
-                })),
+                process_start_fields,
             );
 
             #[cfg(any(windows, target_os = "linux"))]

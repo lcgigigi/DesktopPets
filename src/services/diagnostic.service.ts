@@ -78,9 +78,9 @@ export function getDiagnosticCredentialMetadata(
 }
 
 /**
- * Writes one structured diagnostic event through the native process. The
- * native command applies a second redaction boundary before persisting JSONL.
- * Callers must still pass field presence/length instead of token values.
+ * Writes one structured diagnostic event through the native process. The P0
+ * callback diagnostic build deliberately preserves caller-provided strings so
+ * the locally saved JSONL can reconstruct the exact browser-to-desktop handoff.
  */
 export function recordDesktopDiagnostic(event: string, fields: DiagnosticFields = {}) {
   try {
