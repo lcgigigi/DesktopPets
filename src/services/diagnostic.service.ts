@@ -1,5 +1,3 @@
-import { invoke } from '@tauri-apps/api/core'
-
 type DiagnosticValue = string | number | boolean | null
 type DiagnosticFields = Record<string, DiagnosticValue>
 
@@ -78,14 +76,11 @@ export function getDiagnosticCredentialMetadata(
 }
 
 /**
- * Writes one structured diagnostic event through the native process. The P0
- * callback diagnostic build deliberately preserves caller-provided strings so
- * the locally saved JSONL can reconstruct the exact browser-to-desktop handoff.
+ * The P0 diagnostic build used this stable call site across renderer modules.
+ * Formal releases intentionally keep it as a no-op so no user-local diagnostic
+ * file can be recreated while the surrounding business instrumentation is
+ * removed independently from product behavior.
  */
-export function recordDesktopDiagnostic(event: string, fields: DiagnosticFields = {}) {
-  try {
-    void invoke<boolean>('record_desktop_diagnostic_event', { event, fields }).catch(() => false)
-  } catch {
-    // Browser previews and isolated unit tests do not host Tauri IPC.
-  }
+export function recordDesktopDiagnostic(_event: string, _fields: DiagnosticFields = {}) {
+  // Intentionally disabled in formal releases.
 }

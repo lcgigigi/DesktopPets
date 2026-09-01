@@ -22,6 +22,8 @@ param(
 
   [switch]$RequireRawAuthDiagnostics,
 
+  [switch]$RequireDiagnosticLogCleanup,
+
   [switch]$DiagnosticOnly,
 
   [string]$EvidenceDirectory = ''
@@ -160,6 +162,36 @@ function Assert-NoDesktopAuthProtocol {
   }
 }
 
+function New-DesktopDiagnosticCleanupFixture {
+  $logDirectory = Join-Path $env:LOCALAPPDATA 'com.huali.ai.mascot\logs'
+  New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+  $primaryPath = Join-Path $logDirectory 'desktop-diagnostic.jsonl'
+  $rotatedPath = Join-Path $logDirectory 'desktop-diagnostic.jsonl.1'
+  $retainedPath = Join-Path $logDirectory 'formal-release-retained-sentinel.txt'
+  Set-Content -LiteralPath $primaryPath -Value 'legacy-primary' -Encoding UTF8
+  Set-Content -LiteralPath $rotatedPath -Value 'legacy-rotated' -Encoding UTF8
+  Set-Content -LiteralPath $retainedPath -Value 'retain' -Encoding UTF8
+  return [ordered]@{
+    primaryPath = $primaryPath
+    rotatedPath = $rotatedPath
+    retainedPath = $retainedPath
+  }
+}
+
+function Assert-DesktopDiagnosticCleanup {
+  param([Parameter(Mandatory = $true)]$Fixture)
+
+  if (Test-Path -LiteralPath $Fixture.primaryPath) {
+    throw "正式版启动后仍残留诊断日志：$($Fixture.primaryPath)"
+  }
+  if (Test-Path -LiteralPath $Fixture.rotatedPath) {
+    throw "正式版启动后仍残留轮转诊断日志：$($Fixture.rotatedPath)"
+  }
+  if (-not (Test-Path -LiteralPath $Fixture.retainedPath -PathType Leaf)) {
+    throw '诊断日志清理误删了非目标用户文件。'
+  }
+}
+
 function Invoke-DesktopAuthProtocolCallbackSmoke {
   param(
     [Parameter(Mandatory = $true)][string]$ExpectedExecutablePath,
@@ -175,7 +207,7 @@ function Invoke-DesktopAuthProtocolCallbackSmoke {
   # Windows protocol activation is case-insensitive, while URL handling for a
   # custom scheme may preserve host casing. Exercise that production variant
   # so renderer validation cannot regress to a case-sensitive comparison.
-  $callbackUrl = "HUALI-AI-MASCOT://AUTH-CALLBACK?state=$authState&token=smoke-token&userId=smoke-user&smokeNonce=$nonce"
+  $callbackUrl = "HUALI-AI-MASCOT://AUTH-CALLBACK/?state=$authState&token=smoke-token&userId=smoke-user&smokeNonce=$nonce"
   $previousSmokeEnabled = $env:HUALI_AI_RELEASE_SMOKE
   $previousSmokeState = $env:HUALI_AI_RELEASE_SMOKE_AUTH_STATE
   $previousSmokeNonce = $env:HUALI_AI_RELEASE_SMOKE_NONCE
@@ -791,6 +823,7 @@ $primaryFailure = $null
 $cleanupFailure = $null
 $cleanupAuthorized = $false
 $lastExecutablePath = ''
+$diagnosticCleanupFixture = $null
 
 try {
   if ($ExpectedVersion -notmatch '^\d+\.\d+\.\d+$') {
@@ -893,6 +926,10 @@ try {
     $report.checks.cleanInstall = $currentState
   }
 
+  if ($RequireDiagnosticLogCleanup) {
+    $diagnosticCleanupFixture = New-DesktopDiagnosticCleanupFixture
+  }
+
   $installedBeforeFirstUninstall = Assert-InstalledState -Version $ExpectedVersion
   Write-Host '验证 Windows 真协议唤起与原生登录回调交付...'
   $report.checks.desktopAuthProtocolCallback = Invoke-DesktopAuthProtocolCallbackSmoke `
@@ -901,6 +938,15 @@ try {
     -DiagnosticEvidenceDirectory $resolvedEvidence `
     -RequireRawDiagnostics:$RequireRawAuthDiagnostics `
     -DiagnosticOnly:$DiagnosticOnly
+  if ($RequireDiagnosticLogCleanup) {
+    Assert-DesktopDiagnosticCleanup -Fixture $diagnosticCleanupFixture
+    $report.checks.diagnosticLogCleanup = [ordered]@{
+      primaryRemoved = $true
+      rotatedRemoved = $true
+      unrelatedFileRetained = $true
+      newDiagnosticLogNotCreated = $true
+    }
+  }
   Stop-HualiProcesses
   Assert-NoHualiProcesses -Stage '登录回调协议冒烟测试'
   Invoke-UninstallProduct `
@@ -1029,6 +1075,15 @@ try {
   $primaryFailure = $_
   $report.failure = $_.Exception.Message
 } finally {
+  if ($diagnosticCleanupFixture) {
+    foreach ($fixturePath in @(
+      $diagnosticCleanupFixture.primaryPath,
+      $diagnosticCleanupFixture.rotatedPath,
+      $diagnosticCleanupFixture.retainedPath
+    )) {
+      Remove-Item -LiteralPath $fixturePath -Force -ErrorAction SilentlyContinue
+    }
+  }
   if ($cleanupAuthorized) {
     try {
       Stop-HualiProcesses

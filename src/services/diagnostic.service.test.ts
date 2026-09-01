@@ -13,6 +13,8 @@ import {
   maskDiagnosticIdentifier,
   recordDesktopDiagnostic,
 } from './diagnostic.service'
+import diagnosticServiceSource from './diagnostic.service.ts?raw'
+import rustSource from '../../src-tauri/src/main.rs?raw'
 
 function toBase64Url(value: object) {
   return btoa(JSON.stringify(value))
@@ -33,7 +35,7 @@ describe('desktop diagnostics', () => {
     expect(maskDiagnosticIdentifier('')).toBe('')
   })
 
-  it('sends complete caller-provided callback diagnostics to the native writer', async () => {
+  it('does not send renderer diagnostics to the native writer in formal releases', async () => {
     recordDesktopDiagnostic('session.restore', {
       rawUrl: 'huali-ai-mascot://auth-callback?token=complete-token&state=complete-state',
       token: 'complete-token',
@@ -45,18 +47,26 @@ describe('desktop diagnostics', () => {
     })
     await Promise.resolve()
 
-    expect(invokeMock).toHaveBeenCalledWith('record_desktop_diagnostic_event', {
-      event: 'session.restore',
-      fields: {
-        rawUrl: 'huali-ai-mascot://auth-callback?token=complete-token&state=complete-state',
-        token: 'complete-token',
-        state: 'complete-state',
-        tokenPresent: true,
-        tokenLength: 128,
-        userId: 'employee-123456',
-        userIdMasked: 'em***56',
-      },
-    })
+    expect(invokeMock).not.toHaveBeenCalled()
+  })
+
+  it('removes legacy JSONL files at startup and keeps the native writer disabled', () => {
+    const rendererWriter = diagnosticServiceSource.slice(
+      diagnosticServiceSource.indexOf('export function recordDesktopDiagnostic'),
+    )
+    const nativeWriter = rustSource.slice(
+      rustSource.indexOf('fn write_desktop_diagnostic_event'),
+      rustSource.indexOf('fn diagnostic_fields'),
+    )
+
+    expect(rendererWriter).not.toContain('invoke<')
+    expect(nativeWriter).toContain('false')
+    expect(nativeWriter).not.toContain('OpenOptions')
+    expect(nativeWriter).not.toContain('write_all')
+    expect(rustSource).toContain('path.is_file()')
+    expect(rustSource).toContain('fs::remove_file(path)')
+    expect(rustSource).toContain('primary_path.with_extension("jsonl.1")')
+    expect(rustSource).toContain('cleanup_desktop_diagnostic_logs(app.handle());')
   })
 
   it('extracts only JWT lifetime metadata and never returns credential content', () => {

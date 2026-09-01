@@ -2,10 +2,9 @@
 
 use std::collections::VecDeque;
 use std::fs;
-use std::fs::OpenOptions;
-use std::io::Write;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::path::Path;
 use std::path::PathBuf;
 #[cfg(any(target_os = "macos", windows))]
 use std::process::Command;
@@ -14,7 +13,7 @@ use std::sync::{
     Arc, Mutex, OnceLock,
 };
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::window::Color;
@@ -61,7 +60,6 @@ const DESKTOP_AUTH_CALLBACK_PREFIX: &str = "huali-ai-mascot://auth-callback";
 const DESKTOP_AUTH_CALLBACK_FILE: &str = "huali-ai-mascot-auth-callback.tmp";
 const DESKTOP_AUTH_CALLBACK_QUEUE_CAPACITY: usize = 8;
 const DESKTOP_DIAGNOSTIC_LOG_FILE: &str = "desktop-diagnostic.jsonl";
-const DESKTOP_DIAGNOSTIC_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const DESKTOP_RELEASE_SMOKE_ENABLED_ENV: &str = "HUALI_AI_RELEASE_SMOKE";
 const DESKTOP_RELEASE_SMOKE_AUTH_STATE_ENV: &str = "HUALI_AI_RELEASE_SMOKE_AUTH_STATE";
 const DESKTOP_RELEASE_SMOKE_NONCE_ENV: &str = "HUALI_AI_RELEASE_SMOKE_NONCE";
@@ -73,7 +71,6 @@ const MASCOT_NATIVE_REVEALED_EVENT: &str = "mascot-native-revealed";
 const MASCOT_NATIVE_HOVER_REVEALED_EVENT: &str = "mascot-native-hover-revealed";
 const VISUAL_SMOKE_PEEK_ARGUMENT: &str = "--huali-visual-smoke-peek";
 
-static DESKTOP_DIAGNOSTIC_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static DESKTOP_AUTH_SMOKE_RECEIPT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Clone, Default)]
@@ -616,87 +613,44 @@ fn desktop_diagnostic_log_path(app: &tauri::AppHandle) -> PathBuf {
         .join(DESKTOP_DIAGNOSTIC_LOG_FILE)
 }
 
-fn normalize_diagnostic_string(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect()
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DesktopDiagnosticCleanupResult {
+    primary_existed: bool,
+    primary_removed: bool,
+    rotated_existed: bool,
+    rotated_removed: bool,
 }
 
-fn sanitize_diagnostic_fields(
-    fields: serde_json::Map<String, serde_json::Value>,
-) -> serde_json::Map<String, serde_json::Value> {
-    fields
-        .into_iter()
-        .map(|(key, value)| {
-            let sanitized_value = match value {
-                serde_json::Value::String(value) => {
-                    serde_json::Value::String(normalize_diagnostic_string(&value))
-                }
-                serde_json::Value::Null
-                | serde_json::Value::Bool(_)
-                | serde_json::Value::Number(_) => value,
-                _ => serde_json::Value::String("[unsupported]".to_owned()),
-            };
-            (normalize_diagnostic_string(&key), sanitized_value)
-        })
-        .collect()
+fn remove_desktop_diagnostic_file_if_present(path: &Path) -> (bool, bool) {
+    let existed = path.is_file();
+    let removed = existed && fs::remove_file(path).is_ok();
+    (existed, removed)
+}
+
+fn cleanup_desktop_diagnostic_files(primary_path: &Path) -> DesktopDiagnosticCleanupResult {
+    let rotated_path = primary_path.with_extension("jsonl.1");
+    let (primary_existed, primary_removed) =
+        remove_desktop_diagnostic_file_if_present(primary_path);
+    let (rotated_existed, rotated_removed) =
+        remove_desktop_diagnostic_file_if_present(&rotated_path);
+    DesktopDiagnosticCleanupResult {
+        primary_existed,
+        primary_removed,
+        rotated_existed,
+        rotated_removed,
+    }
+}
+
+fn cleanup_desktop_diagnostic_logs(app: &tauri::AppHandle) -> DesktopDiagnosticCleanupResult {
+    cleanup_desktop_diagnostic_files(&desktop_diagnostic_log_path(app))
 }
 
 fn write_desktop_diagnostic_event(
-    app: &tauri::AppHandle,
-    event: &str,
-    fields: serde_json::Map<String, serde_json::Value>,
+    _app: &tauri::AppHandle,
+    _event: &str,
+    _fields: serde_json::Map<String, serde_json::Value>,
 ) -> bool {
-    if event.is_empty()
-        || event.len() > 80
-        || !event
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
-    {
-        return false;
-    }
-
-    let Ok(_log_guard) = DESKTOP_DIAGNOSTIC_LOG_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-    else {
-        return false;
-    };
-    let path = desktop_diagnostic_log_path(app);
-    let Some(parent) = path.parent() else {
-        return false;
-    };
-    if fs::create_dir_all(parent).is_err() {
-        return false;
-    }
-    if fs::metadata(&path)
-        .map(|metadata| metadata.len() >= DESKTOP_DIAGNOSTIC_LOG_MAX_BYTES)
-        .unwrap_or(false)
-    {
-        let rotated_path = path.with_extension("jsonl.1");
-        let _ = fs::remove_file(&rotated_path);
-        let _ = fs::rename(&path, rotated_path);
-    }
-
-    let unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    let record = serde_json::json!({
-        "unixMs": unix_ms,
-        "appVersion": app.package_info().version.to_string(),
-        "pid": std::process::id(),
-        "event": event,
-        "fields": sanitize_diagnostic_fields(fields),
-    });
-    let Ok(serialized) = serde_json::to_vec(&record) else {
-        return false;
-    };
-    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
-        return false;
-    };
-    file.write_all(&serialized).is_ok() && file.write_all(b"\n").is_ok()
+    false
 }
 
 fn diagnostic_fields(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -1506,9 +1460,10 @@ fn peeked_dock_side(
 #[cfg(test)]
 mod desktop_auth_callback_tests {
     use super::{
-        desktop_auth_callback_diagnostic_fields, find_desktop_auth_callback,
-        sanitize_diagnostic_fields, PendingDesktopAuthCallback,
+        cleanup_desktop_diagnostic_files, desktop_auth_callback_diagnostic_fields,
+        find_desktop_auth_callback, DesktopDiagnosticCleanupResult, PendingDesktopAuthCallback,
     };
+    use std::fs;
 
     #[test]
     fn callback_argument_accepts_windows_quotes_whitespace_and_case() {
@@ -1571,48 +1526,38 @@ mod desktop_auth_callback_tests {
     }
 
     #[test]
-    fn diagnostic_fields_preserve_complete_callback_credentials_and_identity() {
-        let fields = serde_json::json!({
-            "token": "secret-token-value",
-            "tokenPresent": true,
-            "tokenLength": 18,
-            "userId": "employee-10002",
-            "userIdMasked": "em***02",
-            "state": "one-time-state",
-            "statePresent": true,
-            "callbackUrl": "huali-ai-mascot://auth-callback?token=secret",
-        })
-        .as_object()
-        .cloned()
-        .expect("diagnostic fixture must be an object");
+    fn formal_release_removes_only_existing_diagnostic_jsonl_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "huali-ai-diagnostic-cleanup-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).expect("temporary diagnostic directory should be created");
+        let primary = directory.join("desktop-diagnostic.jsonl");
+        let rotated = directory.join("desktop-diagnostic.jsonl.1");
+        let retained = directory.join("retained-user-config.json");
+        fs::write(&primary, b"primary").expect("primary fixture should be written");
+        fs::write(&rotated, b"rotated").expect("rotated fixture should be written");
+        fs::write(&retained, b"keep").expect("retained fixture should be written");
 
-        let sanitized = sanitize_diagnostic_fields(fields);
-        assert_eq!(sanitized["token"], "secret-token-value");
-        assert_eq!(sanitized["tokenPresent"], true);
-        assert_eq!(sanitized["tokenLength"], 18);
-        assert_eq!(sanitized["userId"], "employee-10002");
-        assert_eq!(sanitized["userIdMasked"], "em***02");
-        assert_eq!(sanitized["state"], "one-time-state");
-        assert_eq!(sanitized["statePresent"], true);
         assert_eq!(
-            sanitized["callbackUrl"],
-            "huali-ai-mascot://auth-callback?token=secret"
+            cleanup_desktop_diagnostic_files(&primary),
+            DesktopDiagnosticCleanupResult {
+                primary_existed: true,
+                primary_removed: true,
+                rotated_existed: true,
+                rotated_removed: true,
+            }
         );
-    }
-
-    #[test]
-    fn diagnostic_fields_do_not_truncate_long_callback_urls() {
-        let callback_url = format!(
-            "huali-ai-mascot://auth-callback?token={}&state=complete-state",
-            "x".repeat(512)
+        assert!(!primary.exists());
+        assert!(!rotated.exists());
+        assert!(retained.is_file());
+        assert_eq!(
+            cleanup_desktop_diagnostic_files(&primary),
+            DesktopDiagnosticCleanupResult::default()
         );
-        let fields = serde_json::json!({ "callbackUrl": callback_url })
-            .as_object()
-            .cloned()
-            .expect("diagnostic fixture must be an object");
 
-        let sanitized = sanitize_diagnostic_fields(fields);
-        assert_eq!(sanitized["callbackUrl"], callback_url);
+        fs::remove_dir_all(directory).expect("temporary diagnostic directory should be removed");
     }
 
     #[test]
@@ -5179,6 +5124,11 @@ fn main() {
             record_desktop_release_smoke_restart
         ])
         .setup(move |app| {
+            // v1.0.51 was a temporary P0 diagnostic build. Formal releases
+            // remove only its two known per-user JSONL files when present;
+            // the log directory and all other user configuration are retained.
+            cleanup_desktop_diagnostic_logs(app.handle());
+
             #[cfg(windows)]
             if visual_smoke_force_motion {
                 let visual_smoke_data_directory = std::env::temp_dir()

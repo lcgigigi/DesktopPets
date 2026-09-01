@@ -37,9 +37,14 @@ describe('Windows administrator deployment smoke contracts', () => {
     expect(deployment).toContain('singleInstancePreserved = $true')
     expect(deployment).toContain('$report.checks.desktopAuthProtocolCallback = Invoke-DesktopAuthProtocolCallbackSmoke `')
     expect(deployment).toContain('[switch]$RequireRawAuthDiagnostics')
+    expect(deployment).toContain('[switch]$RequireDiagnosticLogCleanup')
     expect(deployment).toContain('[switch]$DiagnosticOnly')
     expect(deployment).toContain('-RequireRawDiagnostics:$RequireRawAuthDiagnostics')
     expect(deployment).toContain('-DiagnosticOnly:$DiagnosticOnly')
+    expect(deployment).toContain('HUALI-AI-MASCOT://AUTH-CALLBACK/?state=')
+    expect(deployment).toContain('New-DesktopDiagnosticCleanupFixture')
+    expect(deployment).toContain('Assert-DesktopDiagnosticCleanup -Fixture $diagnosticCleanupFixture')
+    expect(deployment).toContain('newDiagnosticLogNotCreated = $true')
     expect(deployment).toContain("$_.Contains('\"event\":\"auth.callback.renderer_parsed\"')")
     expect(deployment).toContain("$_.Contains('\"outcome\":\"success\"')")
     expect(deployment.match(/ConvertFrom-Json -AsHashtable/g)).toHaveLength(3)
@@ -93,12 +98,13 @@ describe('Windows administrator deployment smoke contracts', () => {
     )
   })
 
-  it('tells administrators that the v1.0.51 local diagnostic log preserves raw auth fields', () => {
-    expect(deploymentReadmeSource).toContain('v1.0.51 是登录回调诊断版')
-    expect(deploymentReadmeSource).toContain('完整登录 URL')
-    expect(deploymentReadmeSource).toContain('完整 callback URL')
-    expect(deploymentReadmeSource).toContain('原始 token/userId/state')
-    expect(deploymentReadmeSource).toContain('仅保存在当前 Windows 用户本地')
+  it('tells administrators that v1.0.52 removes only legacy diagnostic JSONL files', () => {
+    expect(deploymentReadmeSource).toContain('v1.0.52 为正式版')
+    expect(deploymentReadmeSource).toContain('存在才删除')
+    expect(deploymentReadmeSource).toContain('desktop-diagnostic.jsonl')
+    expect(deploymentReadmeSource).toContain('desktop-diagnostic.jsonl.1')
+    expect(deploymentReadmeSource).toContain('不删除日志目录')
+    expect(deploymentReadmeSource).toContain('后续启动不会重新生成这两个文件')
   })
 
   it('uses isolated programmatic WebView2 options only for the visual child process', () => {

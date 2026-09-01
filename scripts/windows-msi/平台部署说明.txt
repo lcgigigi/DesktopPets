@@ -119,9 +119,10 @@ WINDOWS_CERTIFICATE_PASSWORD    PFX 密码
 
 注意：公司组策略或终端安全软件可以禁止 HKLM Run，这种情况安装包仍会正确写入自启动项，但组策略优先级更高，需由桌面管理员放行。
 
-十、登录与提醒诊断日志
+十、v1.0.51 诊断日志清理
 
-发生“网页已登录但桌面仍等待”或“没有主动提醒”时，请收集当前 Windows 用户目录下的：
+v1.0.52 为正式版，不再记录桌面诊断 JSONL。每个 Windows 用户首次启动新版时，程序会先判断以下两个文件是否存在，存在才删除：
 %LOCALAPPDATA%\com.huali.ai.mascot\logs\desktop-diagnostic.jsonl
+%LOCALAPPDATA%\com.huali.ai.mascot\logs\desktop-diagnostic.jsonl.1
 
-v1.0.51 是登录回调诊断版。日志包含版本号、PID、完整登录 URL、完整 callback URL、原始 token/userId/state、会话状态、订阅/轮询/WebSocket 状态和原生提醒窗口调用结果。日志仅保存在当前 Windows 用户本地；单文件达到 5 MB 后保留一份轮转日志。
+清理只针对上述两个 v1.0.51 诊断文件，不删除日志目录，也不修改登录状态、机器人位置及其他用户配置。后续启动不会重新生成这两个文件。

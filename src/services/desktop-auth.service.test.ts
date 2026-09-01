@@ -71,6 +71,32 @@ describe('desktop auth callback', () => {
     })
   })
 
+  it('accepts the trailing slash serialized by the deployed Web confirmation page', () => {
+    expect(
+      parseDesktopAuthCallback(
+        'huali-ai-mascot://auth-callback/?token=token-1&userId=10002&userName=Tester&state=expected-state',
+      ),
+    ).toEqual({
+      token: 'token-1',
+      userInfo: {
+        userId: '10002',
+        userName: 'Tester',
+      },
+    })
+  })
+
+  it('does not treat a lookalike host or path as an authentication callback', () => {
+    for (const callback of [
+      'huali-ai-mascot://auth-callback.extra?token=token-1&userId=10002&state=expected-state',
+      'huali-ai-mascot://auth-callback/unexpected?token=token-1&userId=10002&state=expected-state',
+      'huali-ai-mascot://auth-callback//?token=token-1&userId=10002&state=expected-state',
+      'huali-ai-mascot://other?token=token-1&userId=10002&state=expected-state',
+      'huali-ai-mascot://auth-callback#ignored?token=token-1&userId=10002&state=expected-state',
+    ]) {
+      expect(parseDesktopAuthCallback(callback)).toBeNull()
+    }
+  })
+
   it('records the complete callback, credentials, expected state, and parsed URL identity', () => {
     const rawUrl = [
       'huali-ai-mascot://auth-callback.extra',
@@ -90,6 +116,8 @@ describe('desktop auth callback', () => {
       expectedHostname: 'auth-callback',
       protocolMatches: true,
       hostnameMatches: false,
+      rawIdentityMatches: false,
+      canonicalUrl: '',
       expectedState: 'expected-state',
       receivedState: 'expected-state',
       stateMatches: true,

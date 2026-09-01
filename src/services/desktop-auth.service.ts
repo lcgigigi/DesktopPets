@@ -32,22 +32,53 @@ type DesktopAuthCallbackParseResult =
   | { status: 'error'; error: DesktopAuthCallbackError }
   | { status: 'ignored' }
 
+interface RecognizedDesktopAuthCallback {
+  canonicalUrl: string
+  searchParams: URLSearchParams
+}
+
+function recognizeDesktopAuthCallback(rawUrl: string): RecognizedDesktopAuthCallback | null {
+  const expectedCallback = `${DESKTOP_AUTH_SCHEME}://${AUTH_CALLBACK_HOST}`
+  const candidate = rawUrl.trim()
+  const prefix = candidate.slice(0, expectedCallback.length)
+  if (prefix.toLowerCase() !== expectedCallback.toLowerCase()) return null
+
+  let suffix = candidate.slice(expectedCallback.length)
+  if (suffix.startsWith('/')) {
+    // The Web confirmation page serializes this non-special URL with one
+    // trailing slash on some browser engines. Accept only that exact
+    // authority terminator; a second slash or a real path remains invalid.
+    if (suffix.length > 1 && suffix[1] !== '?' && suffix[1] !== '#') return null
+    suffix = suffix.slice(1)
+  } else if (suffix && suffix[0] !== '?' && suffix[0] !== '#') {
+    return null
+  }
+
+  const queryStart = suffix.indexOf('?')
+  const fragmentStart = suffix.indexOf('#')
+  const hasQuery = queryStart >= 0 && (fragmentStart < 0 || queryStart < fragmentStart)
+  const rawQuery = hasQuery
+    ? suffix.slice(queryStart + 1, fragmentStart >= 0 ? fragmentStart : undefined)
+    : ''
+
+  return {
+    canonicalUrl: `${expectedCallback}${suffix}`,
+    searchParams: new URLSearchParams(rawQuery),
+  }
+}
+
 function recordRendererSmokeReceipt(rawUrl: string, result: DesktopAuthCallbackParseResult) {
   if (result.status === 'ignored') return
 
-  try {
-    const url = new URL(rawUrl)
-    if (!url.searchParams.get('smokeNonce')) return
-    const outcome = result.status === 'success'
-      ? 'success'
-      : `error:${result.error}`
-    void invoke<boolean>('record_desktop_auth_renderer_receipt', {
-      callbackUrl: rawUrl,
-      outcome,
-    }).catch(() => undefined)
-  } catch {
-    // Only a valid callback URL can reach the native receipt command.
-  }
+  const callback = recognizeDesktopAuthCallback(rawUrl)
+  if (!callback?.searchParams.get('smokeNonce')) return
+  const outcome = result.status === 'success'
+    ? 'success'
+    : `error:${result.error}`
+  void invoke<boolean>('record_desktop_auth_renderer_receipt', {
+    callbackUrl: rawUrl,
+    outcome,
+  }).catch(() => undefined)
 }
 
 function createFallbackState() {
@@ -73,17 +104,8 @@ export function getOrCreateDesktopAuthState(now = Date.now()) {
   return createDesktopAuthState(now)
 }
 
-function isAuthCallbackUrl(url: URL) {
-  // Windows may preserve the registered protocol target's host casing when it
-  // launches a non-special URL. URL normalizes the scheme, but not reliably
-  // the hostname for custom schemes, so compare both components according to
-  // the case-insensitive protocol identity accepted by the native shell.
-  return url.protocol.toLowerCase() === `${DESKTOP_AUTH_SCHEME}:`
-    && url.hostname.toLowerCase() === AUTH_CALLBACK_HOST
-}
-
-function getParam(url: URL, key: string) {
-  return url.searchParams.get(key)?.trim() || ''
+function getParam(callback: RecognizedDesktopAuthCallback, key: string) {
+  return callback.searchParams.get(key)?.trim() || ''
 }
 
 export function getDesktopAuthCallbackDiagnosticFields(
@@ -106,6 +128,7 @@ export function getDesktopAuthCallbackDiagnosticFields(
   const receivedState = parsedUrl?.searchParams.get('state') ?? ''
   const token = parsedUrl?.searchParams.get('token') ?? ''
   const userId = parsedUrl?.searchParams.get('userId') ?? ''
+  const recognizedCallback = recognizeDesktopAuthCallback(rawUrl)
 
   return {
     source,
@@ -119,6 +142,8 @@ export function getDesktopAuthCallbackDiagnosticFields(
     callbackPrefixBoundary: rawUrl.slice(expectedCallback.length, expectedCallback.length + 1),
     parseSucceeded: Boolean(parsedUrl),
     parseError,
+    rawIdentityMatches: Boolean(recognizedCallback),
+    canonicalUrl: recognizedCallback?.canonicalUrl ?? '',
     normalizedUrl: parsedUrl?.href ?? '',
     origin: parsedUrl?.origin ?? '',
     protocol: parsedUrl?.protocol ?? '',
@@ -154,23 +179,17 @@ export function getDesktopAuthCallbackDiagnosticFields(
 }
 
 function parseDesktopAuthCallbackResult(rawUrl: string): DesktopAuthCallbackParseResult {
-  let url: URL
-  try {
-    url = new URL(rawUrl)
-  } catch {
-    return { status: 'ignored' }
-  }
-
-  if (!isAuthCallbackUrl(url)) return { status: 'ignored' }
+  const callback = recognizeDesktopAuthCallback(rawUrl)
+  if (!callback) return { status: 'ignored' }
 
   const expectedState = storage.getDesktopAuthState()
-  const state = getParam(url, 'state')
+  const state = getParam(callback, 'state')
   if (!expectedState || !state || state !== expectedState) {
     return { status: 'error', error: 'expired' }
   }
 
-  const token = getParam(url, 'token')
-  const userId = getParam(url, 'userId')
+  const token = getParam(callback, 'token')
+  const userId = getParam(callback, 'userId')
   if (!token || !userId) {
     return { status: 'error', error: 'missing-identity' }
   }
@@ -181,8 +200,8 @@ function parseDesktopAuthCallbackResult(rawUrl: string): DesktopAuthCallbackPars
       token,
       userInfo: {
         userId,
-        userName: getParam(url, 'userName') || userId,
-        department: getParam(url, 'department') || undefined
+        userName: getParam(callback, 'userName') || userId,
+        department: getParam(callback, 'department') || undefined
       }
     },
   }
